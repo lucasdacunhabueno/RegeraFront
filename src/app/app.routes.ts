@@ -23,11 +23,25 @@ export const routes: Routes = [
       { path: 'catalogo', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Catálogo' } },
       { path: 'empresa', canMatch: [perfilGuard('ADMIN')], loadComponent: emBreve, data: { titulo: 'Empresa' } },
       { path: 'pendencias', loadComponent: emBreve, data: { titulo: 'Pendências de sync' } },
-      // Placeholders preenchidos na Task 10.
-      { path: 'usuarios', canMatch: [perfilGuard('ADMIN')], loadComponent: emBreve, data: { titulo: 'Usuários' } },
-      { path: 'usuarios/novo', canMatch: [perfilGuard('ADMIN')], loadComponent: emBreve, data: { titulo: 'Novo usuário' } },
-      { path: 'usuarios/:id', canMatch: [perfilGuard('ADMIN')], loadComponent: emBreve, data: { titulo: 'Usuário' } },
-      { path: 'perfil/senha', loadComponent: emBreve, data: { titulo: 'Trocar senha' } },
+      {
+        path: 'usuarios',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/usuarios/usuarios-page').then((m) => m.UsuariosPage),
+      },
+      {
+        path: 'usuarios/novo',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/usuarios/usuario-form-page').then((m) => m.UsuarioFormPage),
+      },
+      {
+        path: 'usuarios/:id',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/usuarios/usuario-form-page').then((m) => m.UsuarioFormPage),
+      },
+      {
+        path: 'perfil/senha',
+        loadComponent: () => import('./features/perfil/trocar-senha-page').then((m) => m.TrocarSenhaPage),
+      },
       { path: 'mais', loadComponent: () => import('./features/mais/mais-page').then((m) => m.MaisPage) },
     ],
   },
