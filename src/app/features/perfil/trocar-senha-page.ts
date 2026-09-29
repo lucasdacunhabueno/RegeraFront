@@ -48,8 +48,16 @@ export class TrocarSenhaPage {
 
   protected async salvar(): Promise<void> {
     const { senhaAtual, novaSenha, confirmacao } = this.form.getRawValue();
-    if (this.form.invalid) {
+    if (!senhaAtual) {
+      this.erro.set('Informe a senha atual.');
+      return;
+    }
+    if (this.form.controls.novaSenha.invalid) {
       this.erro.set('A nova senha deve ter entre 8 e 72 caracteres.');
+      return;
+    }
+    if (!confirmacao) {
+      this.erro.set('Confirme a nova senha.');
       return;
     }
     if (novaSenha !== confirmacao) {

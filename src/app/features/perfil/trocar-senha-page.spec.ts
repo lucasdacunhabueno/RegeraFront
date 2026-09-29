@@ -53,4 +53,17 @@ describe('TrocarSenhaPage', () => {
     await vi.waitFor(() => expect(TestBed.inject(Router).navigateByUrl).toHaveBeenCalledWith('/login'));
     expect(auth.logout).toHaveBeenCalled();
   });
+
+  it.each([
+    ['', 'nova-senha-1', 'nova-senha-1', 'Informe a senha atual.'],
+    ['senha-atual', 'curta', 'curta', 'A nova senha deve ter entre 8 e 72 caracteres.'],
+    ['senha-atual', 'nova-senha-1', '', 'Confirme a nova senha.'],
+  ])('mensagem específica (%#)', (atual, nova, confirmacao, mensagem) => {
+    const { fixture } = montar();
+    preencher(fixture, atual, nova, confirmacao);
+    fixture.detectChanges();
+
+    TestBed.inject(HttpTestingController).expectNone('/api/me/senha');
+    expect(fixture.nativeElement.textContent).toContain(mensagem);
+  });
 });

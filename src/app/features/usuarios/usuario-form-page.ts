@@ -54,11 +54,11 @@ import { ROTULO_PERFIL, UsuariosApi } from './usuarios-api';
     </form>
 
     @if (id()) {
-      <form (ngSubmit)="redefinirSenha()" class="mt-4 space-y-3 rounded-xl bg-white p-4">
+      <form (submit)="$event.preventDefault(); redefinirSenha()" class="mt-4 space-y-3 rounded-xl bg-white p-4">
         <h2 class="font-semibold">Redefinir senha</h2>
         <input id="novaSenha" type="password" [value]="novaSenha()" (input)="novaSenha.set($any($event.target).value)"
                autocomplete="new-password" placeholder="Nova senha (mín. 8)" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
-        <button type="submit" [disabled]="novaSenha().length < 8" class="h-12 w-full rounded-lg border border-slate-300 font-semibold disabled:opacity-60">
+        <button type="submit" [disabled]="redefinindo() || novaSenha().length < 8" class="h-12 w-full rounded-lg border border-slate-300 font-semibold disabled:opacity-60">
           Redefinir senha
         </button>
       </form>
@@ -77,6 +77,7 @@ export class UsuarioFormPage {
   protected readonly erro = signal<string | null>(null);
   protected readonly errosServidor = signal<Record<string, string>>({});
   protected readonly novaSenha = signal('');
+  protected readonly redefinindo = signal(false);
 
   protected readonly form = inject(NonNullableFormBuilder).group({
     nome: ['', [Validators.required, Validators.maxLength(120)]],
@@ -124,8 +125,9 @@ export class UsuarioFormPage {
       this.toasts.mostrar('Usuário salvo.');
       await this.router.navigateByUrl('/usuarios');
     } catch (e) {
-      this.errosServidor.set(camposComErro(e));
-      this.erro.set(mensagemDeErro(e));
+      const campos = camposComErro(e);
+      this.errosServidor.set(campos);
+      this.erro.set(Object.keys(campos).length === 0 ? mensagemDeErro(e) : null);
     } finally {
       this.salvando.set(false);
     }
@@ -133,13 +135,16 @@ export class UsuarioFormPage {
 
   protected async redefinirSenha(): Promise<void> {
     const id = this.id();
-    if (!id) return;
+    if (!id || this.redefinindo()) return;
+    this.redefinindo.set(true);
     try {
       await firstValueFrom(this.api.redefinirSenha(id, this.novaSenha()));
       this.novaSenha.set('');
       this.toasts.mostrar('Senha redefinida. As sessões do usuário foram encerradas.');
     } catch (e) {
       this.toasts.erro(mensagemDeErro(e));
+    } finally {
+      this.redefinindo.set(false);
     }
   }
 

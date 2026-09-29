@@ -81,4 +81,50 @@ describe('UsuarioFormPage', () => {
     expect(req.request.body).toEqual({ nome: 'Ana Souza', email: 'ana@regera.test', perfil: 'COMERCIAL', ativo: true });
     req.flush({ id: '1', nome: 'Ana Souza', email: 'ana@regera.test', perfil: 'COMERCIAL', ativo: true });
   });
+
+  it('redefinir senha envia PUT da senha e limpa o campo', async () => {
+    const fixture = montar('1');
+    const http = TestBed.inject(HttpTestingController);
+    http.expectOne('/api/usuarios/1').flush({ id: '1', nome: 'Ana', email: 'ana@regera.test', perfil: 'COMERCIAL', ativo: true });
+    await vi.waitFor(() =>
+      expect((fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>('#nome')!.value).toBe('Ana'),
+    );
+
+    digitar(fixture, '#novaSenha', 'nova-senha-1');
+    fixture.detectChanges();
+    const botao = Array.from((fixture.nativeElement as HTMLElement).querySelectorAll<HTMLButtonElement>('button')).find(
+      (b) => b.textContent?.includes('Redefinir senha'),
+    )!;
+    botao.click();
+
+    const req = http.expectOne('/api/usuarios/1/senha');
+    expect(req.request.method).toBe('PUT');
+    expect(req.request.body).toEqual({ novaSenha: 'nova-senha-1' });
+    req.flush(null);
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect((fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>('#novaSenha')!.value).toBe('');
+    });
+  });
+
+  it('erro de campo do servidor não repete a mensagem geral', async () => {
+    const fixture = montar();
+    digitar(fixture, '#nome', 'Bia');
+    digitar(fixture, '#email', 'bia@regera.test');
+    digitar(fixture, '#senha', 'senha-bia-1');
+    enviar(fixture);
+
+    TestBed.inject(HttpTestingController)
+      .expectOne('/api/usuarios')
+      .flush(
+        { codigo: 'VALIDACAO', detail: 'Dados inválidos.', campos: { email: 'E-mail já cadastrado.' } },
+        { status: 400, statusText: 'x' },
+      );
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      const texto = fixture.nativeElement.textContent as string;
+      expect(texto).toContain('E-mail já cadastrado.');
+      expect(texto).not.toContain('Dados inválidos.');
+    });
+  });
 });
