@@ -1,6 +1,8 @@
 {
-  "name": "regera-front",
-  "short_name": "regera-front",
+  "name": "Regera",
+  "short_name": "Regera",
+  "theme_color": "#1d4ed8",
+  "background_color": "#f8fafc",
   "display": "standalone",
   "scope": "./",
   "start_url": "./",
