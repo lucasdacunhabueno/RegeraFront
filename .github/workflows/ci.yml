@@ -56,6 +56,14 @@ jobs:
     environment: production
     concurrency: deploy-front
     steps:
+      - name: Validar sha
+        env:
+          SHA: ${{ inputs.sha || github.sha }}
+        run: |
+          if [[ ! "$SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "sha inválido: '$SHA' (use os 40 caracteres)"
+            exit 1
+          fi
       - name: Publicar
         uses: appleboy/ssh-action@v1
         env:
