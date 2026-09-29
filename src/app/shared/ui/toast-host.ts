@@ -7,7 +7,7 @@ import { Toast, Toasts } from './toasts';
     <div class="pointer-events-none fixed inset-x-0 bottom-20 z-50 flex flex-col items-center gap-2 px-4 lg:bottom-4">
       @for (t of toasts.itens(); track t.id) {
         <div
-          role="status"
+          [attr.role]="t.tipo === 'erro' ? 'alert' : 'status'"
           class="pointer-events-auto flex w-full max-w-md items-center gap-3 rounded-lg px-4 py-3 text-sm text-white shadow-lg"
           [class.bg-slate-800]="t.tipo === 'info'"
           [class.bg-red-600]="t.tipo === 'erro'"

@@ -13,11 +13,12 @@ import { itensPara } from './navegacao';
     <div class="min-h-dvh lg:flex">
       <aside class="hidden lg:flex lg:w-60 lg:flex-col lg:border-r lg:border-slate-200 lg:bg-white">
         <div class="px-5 py-4 text-lg font-semibold text-blue-700">Regera</div>
-        <nav class="flex flex-col gap-1 px-3">
+        <nav aria-label="Navegação principal" class="flex flex-col gap-1 px-3">
           @for (item of itens(); track item.rota) {
             <a
               [routerLink]="item.rota"
               routerLinkActive="bg-blue-50 text-blue-700"
+              ariaCurrentWhenActive="page"
               class="flex items-center gap-3 rounded-lg px-3 py-2 text-slate-600 hover:bg-slate-100"
             >
               <svg [lucideIcon]="item.icone" [size]="20"></svg>
@@ -57,12 +58,14 @@ import { itensPara } from './navegacao';
       </div>
 
       <nav
+        aria-label="Navegação inferior"
         class="fixed inset-x-0 bottom-0 z-10 flex border-t border-slate-200 bg-white pb-[env(safe-area-inset-bottom)] lg:hidden"
       >
         @for (item of itens(); track item.rota) {
           <a
             [routerLink]="item.rota"
             routerLinkActive="text-blue-700"
+            ariaCurrentWhenActive="page"
             class="flex flex-1 flex-col items-center gap-0.5 py-2 text-xs text-slate-500"
           >
             <svg [lucideIcon]="item.icone" [size]="20"></svg>
