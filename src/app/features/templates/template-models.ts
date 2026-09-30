@@ -142,6 +142,29 @@ export function dadosDoTemplate(t: TemplateLocal): TemplateDados {
   return { nome: t.nome, tipoProposta: t.tipoProposta, padrao: t.padrao, ativo: t.ativo, blocos: t.blocos };
 }
 
+/**
+ * O padrão que vale para o tipo, sem desmarcar ninguém localmente (se a mutação de B fosse rejeitada e descartada,
+ * A ficaria desmarcado para sempre). Candidatos: templates do tipo com `padrao && ativo`.
+ * - Algum candidato com mutação ainda não sincronizada (`pendentes`): vale a intenção local mais recente, isto é, o
+ *   último candidato na ordem de `pendentes` (do mais antigo ao mais recente; ver `lerNaoSincronizados`).
+ * - Nenhum pendente: o de menor `nomeBusca`, depois o menor `id` (determinístico; o servidor garante um só).
+ */
+export function padraoEfetivo(
+  templates: readonly TemplateLocal[],
+  tipo: TipoProposta,
+  pendentes: ReadonlySet<string>,
+): TemplateLocal | undefined {
+  const candidatos = templates.filter((t) => t.tipoProposta === tipo && t.padrao && t.ativo);
+  const porId = new Map(candidatos.map((t) => [t.id, t]));
+  const pendente = [...pendentes].filter((id) => porId.has(id)).pop();
+  if (pendente !== undefined) {
+    return porId.get(pendente);
+  }
+  return candidatos.sort((a, b) =>
+    a.nomeBusca !== b.nomeBusca ? (a.nomeBusca < b.nomeBusca ? -1 : 1) : a.id < b.id ? -1 : a.id > b.id ? 1 : 0,
+  )[0];
+}
+
 /** Bloco novo com a configuração padrão do tipo. */
 export function novoBloco(tipo: TipoBloco): Bloco {
   const id = uuidv7();

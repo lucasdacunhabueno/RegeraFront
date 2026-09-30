@@ -1,5 +1,5 @@
 {
- "_nota": "Casos compartilhados do BlocosValidator (servidor) e de validarBlocos (front). Os dois arquivos precisam ficar IDÊNTICOS: RegeraServer/src/test/resources/casos-blocos.json e RegeraFront/src/app/features/templates/casos-blocos.json. Ao mudar, atualize SHA_CASOS nos dois testes. Um texto exatamente \"<<c*n>>\" vale o caractere c repetido n vezes. \"erros\" é o mapa exato (chave -> mensagem), na ordem.",
+ "_nota": "Casos compartilhados do BlocosValidator (servidor) e de validarBlocos (front). Os dois arquivos precisam ficar IDÊNTICOS: RegeraServer/src/test/resources/casos-blocos.json e RegeraFront/src/app/features/templates/casos-blocos.json. Ao mudar, atualize SHA_CASOS nos dois testes. Um texto exatamente \"<<c*n>>\" vale o caractere c repetido n vezes; c é só ASCII imprimível ([ -~]) sem aspas nem barra invertida, e n são dígitos decimais. \"erros\" é o mapa exato (chave -> mensagem), na ordem.",
  "casos": [
   {
    "grupo": "valido",

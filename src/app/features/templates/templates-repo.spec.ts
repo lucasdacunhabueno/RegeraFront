@@ -71,18 +71,43 @@ describe('TemplatesRepo', () => {
     expect(await db.templates.count()).toBe(0);
   });
 
-  it('marcar B como padrão desmarca A (mesmo tipo) localmente, sem mutação para A; outro tipo fica', async () => {
+  it('marcar B como padrão não mexe em A nem enfileira nada para A; B pendente é o padrão efetivo', async () => {
     await db.templates.bulkPut([
       paraTemplateLocal('a', 2, dados('A', 'SERVICO', true)),
       paraTemplateLocal('c', 1, dados('C', 'VENDA', true)),
     ]);
     const b = await repo.salvar(dados('B', 'SERVICO', true));
-    expect((await db.templates.get('a'))?.padrao).toBe(false);
-    expect((await db.templates.get('a'))?.version).toBe(2);
-    expect((await db.templates.get('c'))?.padrao).toBe(true);
+    expect(await db.templates.get('a')).toMatchObject({ padrao: true, version: 2 });
+    expect((await db.outbox.toArray()).map((m) => m.agregadoId)).toEqual([b]);
+    expect((await repo.padraoPorTipo('SERVICO'))?.id).toBe(b);
+    expect((await repo.padraoPorTipo('VENDA'))?.id).toBe('c');
+    expect(await firstValueFrom(repo.observarPadroesEfetivos())).toEqual(new Map([['SERVICO', b], ['VENDA', 'c']]));
+  });
+
+  it('depois do sync de B (sem mutação) e do pull que desmarca A, o padrão é B', async () => {
+    await db.templates.bulkPut([paraTemplateLocal('a', 2, dados('A', 'SERVICO', true))]);
+    const b = await repo.salvar(dados('B', 'SERVICO', true));
+    await db.outbox.clear();
+    await db.templates.put(paraTemplateLocal('a', 3, dados('A', 'SERVICO', false)));
+    expect((await repo.padraoPorTipo('SERVICO'))?.id).toBe(b);
+  });
+
+  it('B descartado (sem pendência) com A ainda padrão: A volta a ser o padrão efetivo', async () => {
+    await db.templates.bulkPut([paraTemplateLocal('a', 2, dados('A', 'SERVICO', true))]);
+    const b = await repo.salvar(dados('B', 'SERVICO', true));
+    await db.outbox.clear();
     expect((await db.templates.get(b))?.padrao).toBe(true);
-    const outbox = await db.outbox.toArray();
-    expect(outbox.map((m) => m.agregadoId)).toEqual([b]);
+    expect((await repo.padraoPorTipo('SERVICO'))?.id).toBe('a');
+    expect(await firstValueFrom(repo.observarPadroesEfetivos())).toEqual(new Map([['SERVICO', 'a']]));
+  });
+
+  it('padrão inativo lança ErroCampo("padrao") e não enfileira', async () => {
+    const erro = await repo.salvar({ ...dados('X', 'SERVICO', true), ativo: false }).catch((e: unknown) => e);
+    expect(erro).toBeInstanceOf(ErroCampo);
+    expect((erro as ErroCampo).campo).toBe('padrao');
+    expect((erro as ErroCampo).message).toBe('Um template inativo não pode ser o padrão.');
+    expect(await db.outbox.count()).toBe(0);
+    expect(await db.templates.count()).toBe(0);
   });
 
   it('excluir remove local, limpa só rejeições de template e enfileira DELETE', async () => {

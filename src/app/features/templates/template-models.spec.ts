@@ -1,5 +1,7 @@
 // NOTA: casos-blocos.json precisa ficar IDÊNTICO a RegeraServer/src/test/resources/casos-blocos.json
 // (BlocosValidatorCasosCompartilhadosTest). Ao mudar um, copie para o outro e atualize SHA_CASOS nos dois testes.
+// Limitação: o SHA só pega uma cópia alterada sozinha. Quem muda o arquivo e o SHA_CASOS juntos num repo só vê esse
+// repo passar; a divergência aparece apenas no teste do outro repo, que continua com o SHA antigo.
 import casosTexto from './casos-blocos.json' with { loader: 'text' };
 import {
   Bloco,
@@ -7,6 +9,7 @@ import {
   COLUNAS_ITENS,
   dadosDoTemplate,
   novoBloco,
+  padraoEfetivo,
   paraTemplateLocal,
   TemplateDados,
   TIPOS_PROPOSTA,
@@ -16,7 +19,7 @@ import {
 } from './template-models';
 
 /** SHA-256 do arquivo com fins de linha normalizados para LF. O teste Java tem a mesma constante. */
-const SHA_CASOS = 'a59db76ef7a5c2baa527423b61727efed5b51994c0c4257979758474a0c2cf83';
+const SHA_CASOS = '0aa0363b93869e03f2603674e2e5f621bf3fb2adcc7105f786d3247071c13fab';
 
 interface Caso {
   grupo: string;
@@ -26,8 +29,11 @@ interface Caso {
 }
 
 const texto = (casosTexto as unknown as string).replace(/\r\n/g, '\n');
-/** Um texto JSON exatamente "<<c*n>>" vale o caractere c repetido n vezes (igual ao teste Java). */
-const expandido = texto.replace(/"<<(.)\*(\d+)>>"/g, (_, c: string, n: string) => `"${c.repeat(Number(n))}"`);
+/**
+ * Um texto JSON exatamente "<<c*n>>" vale o caractere c repetido n vezes; c é ASCII imprimível sem aspas nem barra
+ * invertida e n são dígitos decimais (mesma regex do teste Java).
+ */
+const expandido = texto.replace(/"<<([ !#-[\]-~])\*([0-9]+)>>"/g, (_, c: string, n: string) => `"${c.repeat(Number(n))}"`);
 const casos = (JSON.parse(expandido) as { casos: Caso[] }).casos;
 
 const TIPOS: TipoBloco[] = ['CABECALHO', 'TEXTO', 'ITENS', 'TOTAIS', 'ASSINATURA', 'QUEBRA_PAGINA'];
@@ -94,6 +100,30 @@ describe('template-models', () => {
     expect(TIPOS_PROPOSTA.map((t) => t.rotulo)).toEqual(['Venda', 'Serviço', 'Manutenção', 'Locação']);
     expect(COLUNAS_ITENS.map((c) => c.valor)).toEqual(
       ['codigo', 'descricao', 'quantidade', 'unidade', 'precoUnitario', 'desconto', 'meses', 'subtotal']);
+  });
+
+  describe('padraoEfetivo', () => {
+    const t = (id: string, nome: string, padrao = true, ativo = true, tipo: TemplateDados['tipoProposta'] = 'SERVICO') =>
+      paraTemplateLocal(id, 1, { nome, tipoProposta: tipo, padrao, ativo, blocos: [] });
+    const lista = [t('a', 'Alfa'), t('b', 'Beta'), t('c', 'Gama'), t('i', 'Inativo', true, false), t('n', 'Não', false),
+      t('v', 'Venda', true, true, 'VENDA')];
+
+    it('sem pendentes: o de menor nome (depois id) entre os padrão e ativos do tipo', () => {
+      expect(padraoEfetivo(lista, 'SERVICO', new Set())?.id).toBe('a');
+      expect(padraoEfetivo([t('z', 'Mesmo'), t('y', 'Mesmo')], 'SERVICO', new Set())?.id).toBe('y');
+      expect(padraoEfetivo(lista, 'VENDA', new Set())?.id).toBe('v');
+      expect(padraoEfetivo(lista, 'LOCACAO', new Set())).toBeUndefined();
+    });
+
+    it('prefere o pendente; entre vários, o mais recente (último do conjunto)', () => {
+      expect(padraoEfetivo(lista, 'SERVICO', new Set(['c']))?.id).toBe('c');
+      expect(padraoEfetivo(lista, 'SERVICO', new Set(['c', 'b']))?.id).toBe('b');
+      expect(padraoEfetivo(lista, 'SERVICO', new Set(['b', 'c']))?.id).toBe('c');
+    });
+
+    it('pendente que não é padrão ativo não conta', () => {
+      expect(padraoEfetivo(lista, 'SERVICO', new Set(['i', 'n', 'v']))?.id).toBe('a');
+    });
   });
 
   it('paraTemplateLocal / dadosDoTemplate: nome de busca e ida e volta; bloco desconhecido é preservado', () => {

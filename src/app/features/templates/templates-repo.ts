@@ -2,11 +2,19 @@ import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { observar } from '../../core/db/observar';
 import { RegeraDb } from '../../core/db/regera-db';
-import { observarNaoSincronizados } from '../../core/sync/nao-sincronizados';
+import { lerNaoSincronizados, observarNaoSincronizados } from '../../core/sync/nao-sincronizados';
 import { SyncService } from '../../core/sync/sync-service';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { uuidv7 } from '../../core/util/uuid';
-import { paraTemplateLocal, TemplateDados, TemplateLocal, TipoProposta, validarBlocos } from './template-models';
+import {
+  padraoEfetivo,
+  paraTemplateLocal,
+  TemplateDados,
+  TemplateLocal,
+  TIPOS_PROPOSTA,
+  TipoProposta,
+  validarBlocos,
+} from './template-models';
 
 @Injectable({ providedIn: 'root' })
 export class TemplatesRepo {
@@ -29,16 +37,31 @@ export class TemplatesRepo {
     return (await this.db.pendencias.where('agregadoId').equals(id).count()) > 0;
   }
 
-  /** O template padrão (ativo) do tipo, se houver. */
+  /** O padrão efetivo do tipo (ver `padraoEfetivo`): a intenção local não sincronizada vence o que veio do servidor. */
   async padraoPorTipo(tipo: TipoProposta): Promise<TemplateLocal | undefined> {
     const doTipo = await this.db.templates.where('tipoProposta').equals(tipo).toArray();
-    return doTipo.find((t) => t.padrao && t.ativo);
+    return padraoEfetivo(doTipo, tipo, await lerNaoSincronizados(this.db));
+  }
+
+  /** Tipo → id do padrão efetivo; a lista mostra o selo "Padrão" só nesses. */
+  observarPadroesEfetivos(): Observable<Map<TipoProposta, string>> {
+    return observar(async () => {
+      const todos = await this.db.templates.toArray();
+      const pendentes = await lerNaoSincronizados(this.db);
+      const mapa = new Map<TipoProposta, string>();
+      for (const { valor } of TIPOS_PROPOSTA) {
+        const padrao = padraoEfetivo(todos, valor, pendentes);
+        if (padrao) mapa.set(valor, padrao.id);
+      }
+      return mapa;
+    });
   }
 
   /**
    * versaoCarregada: versão que o formulário carregou — usada como base para o servidor detectar conflito.
-   * Marcar como padrão desmarca os outros do mesmo tipo só aqui no aparelho, sem mutação para eles: o servidor
-   * desmarca na mesma transação e o pull traz as versões novas.
+   * Marcar como padrão não mexe nos outros do tipo aqui (se esta mutação fosse rejeitada e descartada, eles ficariam
+   * desmarcados para sempre): o servidor desmarca na mesma transação, o pull traz as versões novas e, até lá,
+   * `padraoPorTipo`/`observarPadroesEfetivos` dão preferência ao pendente.
    */
   async salvar(dados: TemplateDados, id?: string, versaoCarregada?: number | null): Promise<string> {
     // a tela mostra os erros de cada bloco com validarBlocos; aqui é a última barreira antes da outbox
@@ -54,14 +77,6 @@ export class TemplatesRepo {
     await this.db.transaction('rw', [this.db.templates, this.db.outbox, this.db.pendencias], async () => {
       const atual = await this.db.templates.get(agregadoId);
       const version = versaoCarregada !== undefined ? versaoCarregada : (atual?.version ?? null);
-      if (normalizados.padrao) {
-        const outros = await this.db.templates
-          .where('tipoProposta')
-          .equals(normalizados.tipoProposta)
-          .filter((t) => t.padrao && t.id !== agregadoId)
-          .toArray();
-        await this.db.templates.bulkPut(outros.map((t) => ({ ...t, padrao: false })));
-      }
       await this.db.templates.put(paraTemplateLocal(agregadoId, version, normalizados));
       await this.db.pendencias
         .where('agregadoId')
