@@ -6,6 +6,7 @@ import { ConectividadeService } from '../../core/conectividade/conectividade-ser
 import { ClienteDados, paraClienteLocal } from './cliente-models';
 import { ClienteFormPage } from './cliente-form-page';
 import { ClientesRepo, ErroCampo } from './clientes-repo';
+import { Toasts } from '../../shared/ui/toasts';
 import { ConsultasExternas } from './consultas-externas';
 
 const existente: ClienteDados = {
@@ -142,5 +143,64 @@ describe('ClienteFormPage', () => {
     clicar(el, '[data-testid=excluir]');
     await vi.waitFor(() => expect(repo.excluir).toHaveBeenCalledWith('id1'));
     expect(navegar).toHaveBeenCalledWith('/clientes');
+  });
+
+  it('limita a 10 endereços', () => {
+    const { fixture, el } = montar();
+    for (let i = 0; i < 11; i++) {
+      el.querySelector<HTMLButtonElement>('[data-testid=adicionar-endereco]')!.click();
+      fixture.detectChanges();
+    }
+    expect(el.querySelectorAll('[data-testid=endereco]')).toHaveLength(10);
+    expect(el.querySelector<HTMLButtonElement>('[data-testid=adicionar-endereco]')!.disabled).toBe(true);
+    expect(el.textContent).toContain('Máximo de 10 endereços.');
+  });
+
+  it('envio inválido não salva e mostra aviso geral', () => {
+    const { fixture, el, repo } = montar();
+    digitar(fixture, '#documento', '52998224725');
+    digitar(fixture, '#nome', 'Maria');
+    clicar(el, '[data-testid=adicionar-endereco]');
+    fixture.detectChanges();
+    digitar(fixture, '[data-testid=endereco] input[formcontrolname=uf]', 'X1');
+    clicar(el, 'button[type=submit]');
+    fixture.detectChanges();
+    expect(repo.salvar).not.toHaveBeenCalled();
+    expect(el.querySelector('[role=alert]')?.textContent).toContain('Corrija os campos destacados.');
+    expect(el.textContent).toContain('UF inválida.');
+  });
+
+  it('falha ao excluir mostra erro e não navega', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { el, repo, navegar } = montar({ id: 'id1' });
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    repo.excluir.mockRejectedValue(new Error('x'));
+    await vi.waitFor(() => expect(el.querySelector('[data-testid=excluir]')).not.toBeNull());
+    clicar(el, '[data-testid=excluir]');
+    await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('Não foi possível excluir o cliente.'));
+    expect(navegar).not.toHaveBeenCalled();
+  });
+
+  it('CEP sem logradouro mantém o digitado', async () => {
+    const { fixture, el, consultas } = montar();
+    consultas.buscarCep.mockResolvedValue({ logradouro: null, bairro: 'Sé', cidade: 'São Paulo', uf: 'SP' });
+    clicar(el, '[data-testid=adicionar-endereco]');
+    fixture.detectChanges();
+    digitar(fixture, '[data-testid=endereco] input[formcontrolname=logradouro]', 'Rua Minha');
+    digitar(fixture, '[data-testid=endereco] input[formcontrolname=cep]', '01001000');
+    clicar(el, '[data-testid=buscar-cep]');
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLInputElement>('[data-testid=endereco] input[formcontrolname=cidade]')!.value).toBe('São Paulo');
+    });
+    expect(el.querySelector<HTMLInputElement>('[data-testid=endereco] input[formcontrolname=logradouro]')!.value).toBe('Rua Minha');
+  });
+
+  it('cancelar a confirmação não exclui', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(false);
+    const { el, repo } = montar({ id: 'id1' });
+    await vi.waitFor(() => expect(el.querySelector('[data-testid=excluir]')).not.toBeNull());
+    clicar(el, '[data-testid=excluir]');
+    expect(repo.excluir).not.toHaveBeenCalled();
   });
 });

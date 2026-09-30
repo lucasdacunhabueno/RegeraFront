@@ -19,12 +19,12 @@ import { ConsultasExternas } from './consultas-externas';
 function criarGrupoEndereco(fb: NonNullableFormBuilder, e?: Partial<EnderecoDados>) {
   return fb.group({
     tipo: fb.control<TipoEndereco>(e?.tipo ?? 'PRINCIPAL'),
-    cep: [formatarCep(e?.cep)],
-    logradouro: [e?.logradouro ?? ''],
-    numero: [e?.numero ?? ''],
-    complemento: [e?.complemento ?? ''],
-    bairro: [e?.bairro ?? ''],
-    cidade: [e?.cidade ?? ''],
+    cep: [formatarCep(e?.cep), Validators.maxLength(9)],
+    logradouro: [e?.logradouro ?? '', Validators.maxLength(160)],
+    numero: [e?.numero ?? '', Validators.maxLength(20)],
+    complemento: [e?.complemento ?? '', Validators.maxLength(80)],
+    bairro: [e?.bairro ?? '', Validators.maxLength(80)],
+    cidade: [e?.cidade ?? '', Validators.maxLength(80)],
     uf: [e?.uf ?? '', Validators.pattern(/^([A-Za-z]{2})?$/)],
   });
 }
@@ -80,7 +80,7 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
 
         <div class="space-y-1">
           <label for="nome" class="text-sm font-medium">{{ tipo() === 'PF' ? 'Nome' : 'Razão social' }}</label>
-          <input id="nome" formControlName="nome" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          <input id="nome" formControlName="nome" maxlength="160" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
           @if (form.controls.nome.touched && form.controls.nome.invalid) {
             <p class="text-sm text-red-600">Informe o nome.</p>
           }
@@ -89,16 +89,25 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
         @if (tipo() === 'PJ') {
           <div class="space-y-1">
             <label for="nomeFantasia" class="text-sm font-medium">Nome fantasia</label>
-            <input id="nomeFantasia" formControlName="nomeFantasia" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+            <input id="nomeFantasia" formControlName="nomeFantasia" maxlength="160" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          @if (form.controls.nomeFantasia.touched && form.controls.nomeFantasia.invalid) {
+            <p class="text-sm text-red-600">Máximo de 160 caracteres.</p>
+          }
           </div>
           <div class="grid grid-cols-2 gap-3">
             <div class="space-y-1">
               <label for="inscricaoEstadual" class="text-sm font-medium">Inscrição estadual</label>
-              <input id="inscricaoEstadual" formControlName="inscricaoEstadual" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+              <input id="inscricaoEstadual" formControlName="inscricaoEstadual" maxlength="30" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          @if (form.controls.inscricaoEstadual.touched && form.controls.inscricaoEstadual.invalid) {
+            <p class="text-sm text-red-600">Máximo de 30 caracteres.</p>
+          }
             </div>
             <div class="space-y-1">
               <label for="inscricaoMunicipal" class="text-sm font-medium">Inscrição municipal</label>
-              <input id="inscricaoMunicipal" formControlName="inscricaoMunicipal" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+              <input id="inscricaoMunicipal" formControlName="inscricaoMunicipal" maxlength="30" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          @if (form.controls.inscricaoMunicipal.touched && form.controls.inscricaoMunicipal.invalid) {
+            <p class="text-sm text-red-600">Máximo de 30 caracteres.</p>
+          }
             </div>
           </div>
         }
@@ -108,33 +117,37 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
         <h2 class="font-semibold">Contato</h2>
         <div class="space-y-1">
           <label for="email" class="text-sm font-medium">E-mail</label>
-          <input id="email" type="email" formControlName="email" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          <input id="email" type="email" formControlName="email" maxlength="160" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
           @if (form.controls.email.touched && form.controls.email.invalid) {
-            <p class="text-sm text-red-600">E-mail inválido.</p>
+            <p class="text-sm text-red-600">E-mail inválido (máximo de 160 caracteres).</p>
           }
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1">
             <label for="telefone" class="text-sm font-medium">Telefone</label>
-            <input id="telefone" formControlName="telefone" inputmode="tel" (input)="mascararTelefone('telefone')"
+            <input id="telefone" formControlName="telefone" inputmode="tel" maxlength="15" (input)="mascararTelefone('telefone')"
                    class="h-12 w-full rounded-lg border border-slate-300 px-3" />
           </div>
           <div class="space-y-1">
             <label for="whatsapp" class="text-sm font-medium">WhatsApp</label>
-            <input id="whatsapp" formControlName="whatsapp" inputmode="tel" (input)="mascararTelefone('whatsapp')"
+            <input id="whatsapp" formControlName="whatsapp" inputmode="tel" maxlength="15" (input)="mascararTelefone('whatsapp')"
                    class="h-12 w-full rounded-lg border border-slate-300 px-3" />
           </div>
         </div>
         <div class="space-y-1">
           <label for="contatoNome" class="text-sm font-medium">Pessoa de contato</label>
-          <input id="contatoNome" formControlName="contatoNome" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          <input id="contatoNome" formControlName="contatoNome" maxlength="120" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          @if (form.controls.contatoNome.touched && form.controls.contatoNome.invalid) {
+            <p class="text-sm text-red-600">Máximo de 120 caracteres.</p>
+          }
         </div>
       </section>
 
       <section class="space-y-4 rounded-xl bg-white p-4" formArrayName="enderecos">
         <div class="flex items-center justify-between">
           <h2 class="font-semibold">Endereços</h2>
-          <button type="button" data-testid="adicionar-endereco" (click)="adicionarEndereco()" class="text-sm font-semibold text-blue-700">
+          <button type="button" data-testid="adicionar-endereco" (click)="adicionarEndereco()" [disabled]="enderecos.length >= maxEnderecos"
+                  class="text-sm font-semibold text-blue-700 disabled:opacity-50">
             + Endereço
           </button>
         </div>
@@ -149,7 +162,7 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
               <button type="button" (click)="removerEndereco(i)" class="h-12 rounded-lg px-3 text-sm text-red-600">Remover</button>
             </div>
             <div class="flex gap-2">
-              <input formControlName="cep" placeholder="CEP" aria-label="CEP" inputmode="numeric" (input)="mascararCep(i)"
+              <input formControlName="cep" placeholder="CEP" aria-label="CEP" inputmode="numeric" maxlength="9" (input)="mascararCep(i)"
                      class="h-12 w-full rounded-lg border border-slate-300 px-3" />
               @if (online()) {
                 <button type="button" data-testid="buscar-cep" (click)="buscarCep(i)" [disabled]="consultando()"
@@ -158,32 +171,41 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
                 </button>
               }
             </div>
-            <input formControlName="logradouro" placeholder="Logradouro" aria-label="Logradouro" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+            <input formControlName="logradouro" maxlength="160" placeholder="Logradouro" aria-label="Logradouro" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
             <div class="grid grid-cols-3 gap-2">
-              <input formControlName="numero" placeholder="Número" aria-label="Número" class="h-12 rounded-lg border border-slate-300 px-3" />
-              <input formControlName="complemento" placeholder="Complemento" aria-label="Complemento" class="col-span-2 h-12 rounded-lg border border-slate-300 px-3" />
+              <input formControlName="numero" maxlength="20" placeholder="Número" aria-label="Número" class="h-12 rounded-lg border border-slate-300 px-3" />
+              <input formControlName="complemento" maxlength="80" placeholder="Complemento" aria-label="Complemento" class="col-span-2 h-12 rounded-lg border border-slate-300 px-3" />
             </div>
-            <input formControlName="bairro" placeholder="Bairro" aria-label="Bairro" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+            <input formControlName="bairro" maxlength="80" placeholder="Bairro" aria-label="Bairro" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
             <div class="grid grid-cols-4 gap-2">
-              <input formControlName="cidade" placeholder="Cidade" aria-label="Cidade" class="col-span-3 h-12 rounded-lg border border-slate-300 px-3" />
+              <input formControlName="cidade" maxlength="80" placeholder="Cidade" aria-label="Cidade" class="col-span-3 h-12 rounded-lg border border-slate-300 px-3" />
               <input formControlName="uf" placeholder="UF" aria-label="UF" maxlength="2" class="h-12 rounded-lg border border-slate-300 px-3 uppercase" />
             </div>
+            @if (g.controls.uf.touched && g.controls.uf.invalid) {
+              <p class="text-sm text-red-600">UF inválida.</p>
+            }
           </div>
         } @empty {
           <p class="text-sm text-slate-500">Nenhum endereço.</p>
+        }
+        @if (enderecos.length >= maxEnderecos) {
+          <p class="text-sm text-slate-500">Máximo de 10 endereços.</p>
         }
       </section>
 
       <section class="space-y-1 rounded-xl bg-white p-4">
         <label for="observacoes" class="text-sm font-medium">Observações</label>
-        <textarea id="observacoes" formControlName="observacoes" rows="3" class="w-full rounded-lg border border-slate-300 px-3 py-2"></textarea>
+        <textarea id="observacoes" formControlName="observacoes" maxlength="2000" rows="3" class="w-full rounded-lg border border-slate-300 px-3 py-2"></textarea>
       </section>
 
+      @if (erroGeral()) {
+        <p role="alert" class="text-sm text-red-600">{{ erroGeral() }}</p>
+      }
       <button type="submit" [disabled]="salvando()" class="h-12 w-full rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
         Salvar
       </button>
       @if (id()) {
-        <button type="button" data-testid="excluir" (click)="excluir()" class="h-12 w-full rounded-lg border border-red-300 font-semibold text-red-600">
+        <button type="button" data-testid="excluir" (click)="excluir()" [disabled]="excluindo()" class="h-12 w-full rounded-lg border border-red-300 font-semibold text-red-600 disabled:opacity-60">
           Excluir cliente
         </button>
       }
@@ -203,6 +225,9 @@ export class ClienteFormPage {
   protected readonly rotuloTipo = ROTULO_TIPO_ENDERECO;
   protected readonly salvando = signal(false);
   protected readonly consultando = signal(false);
+  protected readonly excluindo = signal(false);
+  protected readonly erroGeral = signal<string | null>(null);
+  protected readonly maxEnderecos = 10;
   protected readonly erroDocumento = signal<string | null>(null);
   protected readonly temPendencia = signal(false);
   protected readonly naoEncontrado = signal(false);
@@ -211,13 +236,13 @@ export class ClienteFormPage {
     tipo: this.fb.control<TipoPessoa>('PF'),
     documento: ['', Validators.required],
     nome: ['', [Validators.required, Validators.maxLength(160)]],
-    nomeFantasia: [''],
-    inscricaoEstadual: [''],
-    inscricaoMunicipal: [''],
-    email: ['', Validators.email],
-    telefone: [''],
-    whatsapp: [''],
-    contatoNome: [''],
+    nomeFantasia: ['', Validators.maxLength(160)],
+    inscricaoEstadual: ['', Validators.maxLength(30)],
+    inscricaoMunicipal: ['', Validators.maxLength(30)],
+    email: ['', [Validators.email, Validators.maxLength(160)]],
+    telefone: ['', Validators.maxLength(15)],
+    whatsapp: ['', Validators.maxLength(15)],
+    contatoNome: ['', Validators.maxLength(120)],
     observacoes: ['', Validators.maxLength(2000)],
     enderecos: this.fb.array<GrupoEndereco>([]),
   });
@@ -253,6 +278,7 @@ export class ClienteFormPage {
   }
 
   protected adicionarEndereco(e?: Partial<EnderecoDados>): void {
+    if (this.enderecos.length >= this.maxEnderecos) return;
     this.enderecos.push(criarGrupoEndereco(this.fb, e));
   }
 
@@ -269,7 +295,12 @@ export class ClienteFormPage {
         this.toasts.erro('CEP não encontrado.');
         return;
       }
-      grupo.patchValue({ logradouro: r.logradouro ?? '', bairro: r.bairro ?? '', cidade: r.cidade ?? '', uf: r.uf ?? '' });
+      const patch: Record<string, string> = {};
+      if (r.logradouro) patch['logradouro'] = r.logradouro;
+      if (r.bairro) patch['bairro'] = r.bairro;
+      if (r.cidade) patch['cidade'] = r.cidade;
+      if (r.uf) patch['uf'] = r.uf;
+      grupo.patchValue(patch);
     } finally {
       this.consultando.set(false);
     }
@@ -283,12 +314,12 @@ export class ClienteFormPage {
         this.toasts.erro('Não foi possível consultar este CNPJ.');
         return;
       }
-      this.form.patchValue({
-        nome: r.nome ?? this.form.controls.nome.value,
-        nomeFantasia: r.nomeFantasia ?? '',
-        email: r.email ?? this.form.controls.email.value,
-        telefone: r.telefone ? formatarTelefone(r.telefone) : this.form.controls.telefone.value,
-      });
+      const patch: Record<string, string> = {};
+      if (r.nome) patch['nome'] = r.nome;
+      if (r.nomeFantasia) patch['nomeFantasia'] = r.nomeFantasia;
+      if (r.email) patch['email'] = r.email;
+      if (r.telefone) patch['telefone'] = formatarTelefone(r.telefone);
+      this.form.patchValue(patch);
       if (this.enderecos.length === 0) this.adicionarEndereco({ tipo: 'PRINCIPAL', ...r.endereco });
     } finally {
       this.consultando.set(false);
@@ -298,8 +329,10 @@ export class ClienteFormPage {
   protected async salvar(): Promise<void> {
     if (this.form.invalid) {
       this.form.markAllAsTouched();
+      this.erroGeral.set('Corrija os campos destacados.');
       return;
     }
+    this.erroGeral.set(null);
     const v = this.form.getRawValue();
     const documento = normalizarDocumento(v.documento);
     if (!documentoValido(v.tipo, documento)) {
@@ -348,10 +381,17 @@ export class ClienteFormPage {
 
   protected async excluir(): Promise<void> {
     const id = this.id();
-    if (!id || !window.confirm('Excluir este cliente?')) return;
-    await this.repo.excluir(id);
-    this.toasts.mostrar('Cliente excluído.');
-    await this.router.navigateByUrl('/clientes');
+    if (!id || this.excluindo() || !window.confirm('Excluir este cliente?')) return;
+    this.excluindo.set(true);
+    try {
+      await this.repo.excluir(id);
+      this.toasts.mostrar('Cliente excluído.');
+      await this.router.navigateByUrl('/clientes');
+    } catch {
+      this.toasts.erro('Não foi possível excluir o cliente.');
+    } finally {
+      this.excluindo.set(false);
+    }
   }
 
   private async carregar(id: string): Promise<void> {
