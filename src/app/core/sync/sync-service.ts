@@ -252,9 +252,11 @@ export class SyncService {
     const itens = await this.db.itens.filter((i) => i.ativo && !!i.fotoArquivoId).toArray();
     const ids = [...new Set([...empresas.map((e) => e.logoArquivoId), ...itens.map((i) => i.fotoArquivoId)])]
       .filter((id): id is string => !!id);
+    // logout ou troca de sessão no meio: para, sem pedir arquivos sem token nem para outra sessão
+    const geracao = this.arquivos.geracaoAtual();
     const trabalhador = async () => {
       for (let id = ids.shift(); id !== undefined; id = ids.shift()) {
-        if (!this.conectividade.online()) return;
+        if (!this.conectividade.online() || !this.auth.autenticado() || this.arquivos.geracaoAtual() !== geracao) return;
         await this.arquivos.garantirCache(id);
       }
     };

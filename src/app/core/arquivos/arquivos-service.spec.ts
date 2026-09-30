@@ -3,6 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
+import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
 import { ArquivosService } from './arquivos-service';
@@ -13,13 +14,21 @@ describe('ArquivosService', () => {
   let db: RegeraDb;
   const online = signal(true);
 
+  const autenticado = signal(true);
+
   beforeEach(() => {
     online.set(true);
+    autenticado.set(true);
     let n = 0;
     (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = vi.fn(() => `blob:fake${n++ || ''}`);
     (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = vi.fn();
     TestBed.configureTestingModule({
-      providers: [provideHttpClient(), provideHttpClientTesting(), { provide: ConectividadeService, useValue: { online } }],
+      providers: [
+        provideHttpClient(),
+        provideHttpClientTesting(),
+        { provide: ConectividadeService, useValue: { online } },
+        { provide: AuthService, useValue: { autenticado } },
+      ],
     });
     svc = TestBed.inject(ArquivosService);
     http = TestBed.inject(HttpTestingController);
@@ -133,5 +142,31 @@ describe('ArquivosService', () => {
     online.set(false);
     await expect(svc.garantirCache('b3')).resolves.toBeUndefined();
     http.expectNone('/api/arquivos/b3');
+  });
+
+  it('limpar() durante um garantirCache em voo não regrava os bytes depois', async () => {
+    const p = svc.garantirCache('b4');
+    const req = await vi.waitFor(() => http.expectOne('/api/arquivos/b4'));
+    svc.limpar();
+    req.flush(new Blob([new Uint8Array([1])], { type: 'image/png' }));
+    await p;
+    expect(await db.arquivos.get('b4')).toBeUndefined();
+  });
+
+  it('logout (limparTudo) durante um download em voo não deixa bytes da sessão anterior', async () => {
+    const p = svc.obterUrl('b5');
+    const req = await vi.waitFor(() => http.expectOne('/api/arquivos/b5'));
+    await db.limparTudo();
+    req.flush(new Blob([new Uint8Array([1])], { type: 'image/png' }));
+    expect(await p).toBeNull();
+    expect(await db.arquivos.get('b5')).toBeUndefined();
+  });
+
+  it('sem sessão não baixa nada', async () => {
+    autenticado.set(false);
+    await svc.garantirCache('b6');
+    expect(await svc.obterUrl('b7')).toBeNull();
+    http.expectNone('/api/arquivos/b6');
+    http.expectNone('/api/arquivos/b7');
   });
 });

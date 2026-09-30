@@ -69,6 +69,8 @@ export class RegeraDb extends Dexie {
   }
 
   async limparTudo(): Promise<void> {
+    // antes: invalida escritas em voo (elas checam antes de gravar); depois: descarta o que foi lido durante a limpeza
+    this.aoLimparTudo.forEach((fn) => fn());
     await this.transaction('rw', this.tables, async () => {
       await Promise.all(this.tables.map((t) => t.clear()));
     });

@@ -29,15 +29,17 @@ describe('SyncService', () => {
   let http: HttpTestingController;
   const online = signal(true);
   let perfil = 'ADMIN';
+  let autenticado = true;
 
   beforeEach(() => {
     online.set(true);
     perfil = 'ADMIN';
+    autenticado = true;
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: AuthService, useValue: { autenticado: () => true, sessaoExpirada: () => false, usuario: () => ({ id: 'u1', perfil }) } },
+        { provide: AuthService, useValue: { autenticado: () => autenticado, sessaoExpirada: () => false, usuario: () => ({ id: 'u1', perfil }) } },
         { provide: ConectividadeService, useValue: { online } },
       ],
     });
@@ -330,6 +332,49 @@ describe('SyncService', () => {
     await vi.waitFor(() => expect(garantir).toHaveBeenCalledWith('logo-1'));
     await vi.waitFor(() => expect(garantir).toHaveBeenCalledWith('foto-a'));
     expect(garantir).not.toHaveBeenCalledWith('foto-b');
+  });
+
+  it('prefetch para de pedir arquivos depois do logout', async () => {
+    const resolvers: (() => void)[] = [];
+    const garantir = vi.spyOn(TestBed.inject(ArquivosService), 'garantirCache')
+      .mockImplementation(() => new Promise<void>((r) => resolvers.push(r)));
+    const promessa = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+      cursor: 4, temMais: false, usuarios: [],
+      mudancas: [
+        { entidade: 'empresa', id: ID_EMPRESA, version: 1, deleted: false, dados: { razaoSocial: 'Regera', logoArquivoId: 'logo-1' } },
+        { entidade: 'item_catalogo', id: 'i1', version: 0, deleted: false, dados: { ...item('A'), fotoArquivoId: 'foto-a' } },
+        { entidade: 'item_catalogo', id: 'i3', version: 0, deleted: false, dados: { ...item('C'), fotoArquivoId: 'foto-c' } },
+      ],
+    });
+    await promessa;
+    await vi.waitFor(() => expect(garantir).toHaveBeenCalledTimes(2));
+    autenticado = false;
+    resolvers.forEach((r) => r());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(garantir).toHaveBeenCalledTimes(2);
+    expect(garantir).not.toHaveBeenCalledWith('foto-c');
+  });
+
+  it('prefetch para quando o cache de arquivos é limpo (troca de sessão)', async () => {
+    const arquivos = TestBed.inject(ArquivosService);
+    const resolvers: (() => void)[] = [];
+    const garantir = vi.spyOn(arquivos, 'garantirCache').mockImplementation(() => new Promise<void>((r) => resolvers.push(r)));
+    const promessa = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+      cursor: 4, temMais: false, usuarios: [],
+      mudancas: [
+        { entidade: 'empresa', id: ID_EMPRESA, version: 1, deleted: false, dados: { razaoSocial: 'Regera', logoArquivoId: 'logo-1' } },
+        { entidade: 'item_catalogo', id: 'i1', version: 0, deleted: false, dados: { ...item('A'), fotoArquivoId: 'foto-a' } },
+        { entidade: 'item_catalogo', id: 'i3', version: 0, deleted: false, dados: { ...item('C'), fotoArquivoId: 'foto-c' } },
+      ],
+    });
+    await promessa;
+    await vi.waitFor(() => expect(garantir).toHaveBeenCalledTimes(2));
+    arquivos.limpar();
+    resolvers.forEach((r) => r());
+    await new Promise((r) => setTimeout(r, 20));
+    expect(garantir).toHaveBeenCalledTimes(2);
   });
 
   it('pull sem mudanças não busca arquivos; falha no prefetch não vira erro do sync', async () => {

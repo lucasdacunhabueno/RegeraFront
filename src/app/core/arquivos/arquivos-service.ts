@@ -1,6 +1,7 @@
 import { HttpClient } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
+import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { ArquivoLocal, RegeraDb } from '../db/regera-db';
 
@@ -30,6 +31,7 @@ export class ArquivosService {
   private readonly http = inject(HttpClient);
   private readonly db = inject(RegeraDb);
   private readonly conectividade = inject(ConectividadeService);
+  private readonly auth = inject(AuthService);
   private readonly urls = new Map<string, string>();
   /** obterUrl em andamento por id: chamadas concorrentes compartilham o mesmo download e a mesma URL. */
   private readonly pendentes = new Map<string, Promise<string | null>>();
@@ -81,6 +83,11 @@ export class ArquivosService {
     }
   }
 
+  /** Muda a cada limpar(): quem começou um trabalho em segundo plano compara para saber se deve parar. */
+  geracaoAtual(): number {
+    return this.geracao;
+  }
+
   /** Revoga todas as object URLs e esquece o que está em memória. */
   limpar(): void {
     this.geracao++;
@@ -99,12 +106,16 @@ export class ArquivosService {
   }
 
   private async lerOuBaixar(id: string): Promise<ArquivoLocal | null> {
+    const geracao = this.geracao;
     const cache = await this.db.arquivos.get(id);
     if (cache) return cache;
-    if (!this.conectividade.online()) return null;
+    // sem sessão o pedido voltaria 401 e o interceptor marcaria a sessão como expirada
+    if (!this.conectividade.online() || !this.auth.autenticado() || geracao !== this.geracao) return null;
     try {
       const blob = await firstValueFrom(this.http.get(`/api/arquivos/${id}`, { responseType: 'blob' }).pipe(timeout(30_000)));
       const novo = { id, mime: blob.type || 'application/octet-stream', bytes: await paraBytes(blob) };
+      // limpo (logout/troca de sessão) durante o download: não regravar bytes da sessão anterior
+      if (geracao !== this.geracao) return null;
       await this.db.arquivos.put(novo);
       return novo;
     } catch {
