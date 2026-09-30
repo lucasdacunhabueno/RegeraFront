@@ -204,4 +204,32 @@ describe('ClienteFormPage', () => {
     clicar(el, '[data-testid=excluir]');
     expect(repo.excluir).not.toHaveBeenCalled();
   });
+  it('alterações não salvas: limpo ao abrir, sujo ao editar, limpo depois de salvar', async () => {
+    const { fixture, el, navegar } = montar();
+    const pagina = fixture.componentInstance;
+    expect(pagina.temAlteracoes()).toBe(false);
+    digitar(fixture, '#documento', '52998224725');
+    expect(pagina.temAlteracoes()).toBe(true);
+    digitar(fixture, '#nome', 'Maria');
+    el.querySelector<HTMLButtonElement>('button[type=submit]')!.click();
+    await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/clientes'));
+    expect(pagina.temAlteracoes()).toBe(false);
+  });
+
+  it('alterações não salvas na edição: limpo depois de carregar, sujo ao remover endereço, excluir libera', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { fixture, el, navegar } = montar({ id: 'id1' });
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.querySelectorAll('[data-testid=endereco]').length).toBe(1);
+    });
+    const pagina = fixture.componentInstance;
+    expect(pagina.temAlteracoes()).toBe(false);
+    [...el.querySelectorAll<HTMLButtonElement>('[data-testid=endereco] button')].find((b) => b.textContent?.trim() === 'Remover')!.click();
+    fixture.detectChanges();
+    expect(pagina.temAlteracoes()).toBe(true);
+    clicar(el, '[data-testid=excluir]');
+    await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/clientes'));
+    expect(pagina.temAlteracoes()).toBe(false);
+  });
 });

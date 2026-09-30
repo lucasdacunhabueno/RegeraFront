@@ -6,7 +6,7 @@ import { AuthService } from '../../core/auth/auth-service';
 import { formatarMoeda } from '../../core/util/moeda';
 import { CatalogoRepo } from './catalogo-repo';
 import { FotoItem } from './foto-item';
-import { FiltroCatalogo, filtrarItens, ItemLocal } from './item-models';
+import { FiltroCatalogo, filtrarItens } from './item-models';
 
 @Component({
   selector: 'app-catalogo-page',
@@ -38,7 +38,9 @@ import { FiltroCatalogo, filtrarItens, ItemLocal } from './item-models';
       }
     </div>
 
-    @if (filtrados().length === 0) {
+    @if (todos() === undefined) {
+      <p class="py-8 text-center text-slate-500">Carregando…</p>
+    } @else if (filtrados().length === 0) {
       <p class="py-8 text-center text-slate-500">
         {{ busca().trim() || filtro() !== 'TODOS' ? 'Nenhum item encontrado.' : 'Nenhum item no catálogo ainda.' }}
       </p>
@@ -96,10 +98,11 @@ export class CatalogoPage {
     { valor: 'SERVICO', rotulo: 'Serviços' },
     { valor: 'LOCAVEL', rotulo: 'Locáveis' },
   ];
-  protected readonly todos = toSignal(this.repo.observarTodos(), { initialValue: [] as ItemLocal[] });
+  /** undefined até a primeira leitura do banco: sem isso a tela piscaria o vazio. */
+  protected readonly todos = toSignal(this.repo.observarTodos());
   protected readonly naoSincronizados = toSignal(this.repo.observarNaoSincronizados(), { initialValue: new Set<string>() });
   protected readonly filtrados = computed(() =>
-    filtrarItens(this.todos(), this.filtro(), this.busca(), this.admin() && this.inativos()),
+    filtrarItens(this.todos() ?? [], this.filtro(), this.busca(), this.admin() && this.inativos()),
   );
   protected readonly moeda = formatarMoeda;
 }

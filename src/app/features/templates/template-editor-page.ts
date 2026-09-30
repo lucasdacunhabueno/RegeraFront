@@ -10,10 +10,12 @@ import {
   Injector,
   input,
   signal,
+  viewChild,
 } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { Router, RouterLink } from '@angular/router';
 import { RegeraDb } from '../../core/db/regera-db';
+import { avisarAoSairDaPagina, ComAlteracoes, instantaneo } from '../../core/navegacao/alteracoes-guard';
 import { entradaFicticia } from '../../core/pdf/dados-ficticios';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { ErroCampo } from '../../core/util/erro-campo';
@@ -38,12 +40,15 @@ const MAX_NOME = 120;
 const LARGURA_DESKTOP = 1024;
 const CORRIJA = 'Corrija os campos destacados.';
 const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
+/** Uma prévia aberta em outra aba ainda pode estar lendo o blob: a revogação espera. */
+const ESPERA_REVOGAR_MS = 60_000;
 
 type AcaoMover = 'subir' | 'descer';
 
 @Component({
   selector: 'app-template-editor-page',
   imports: [RouterLink, CdkDropList, CdkDrag, CdkDragHandle, BlocoConfig],
+  host: { '(document:pointerdown)': 'pointerFora($event)' },
   styles: `
     .cdk-drag-preview { box-shadow: 0 8px 24px rgb(15 23 42 / 0.2); border-radius: 0.75rem; background: white; }
     .cdk-drag-placeholder { opacity: 0.3; }
@@ -67,6 +72,7 @@ type AcaoMover = 'subir' | 'descer';
           <p data-testid="erro-geral" role="alert" class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800">{{ erro }}</p>
         }
 
+        @if (!indisponivel()) {
         <section class="space-y-4 rounded-xl bg-white p-4">
           <div class="space-y-1">
             <label for="nome" class="text-sm font-medium">Nome</label>
@@ -94,20 +100,20 @@ type AcaoMover = 'subir' | 'descer';
             <label class="flex min-h-12 items-center gap-3" [class.text-slate-400]="!ativo()">
               <input id="padrao" type="checkbox" class="size-5" [checked]="padrao()" [disabled]="!ativo()"
                      (change)="padrao.set($any($event.target).checked); erroPadrao.set(null)"
-                     aria-describedby="padrao-ajuda" />
+                     [attr.aria-describedby]="erroPadrao() ? 'padrao-ajuda padrao-erro' : 'padrao-ajuda'" />
               Padrão do tipo
             </label>
             <p id="padrao-ajuda" class="text-sm text-slate-500">
               {{ ativo() ? 'Usado nas novas propostas deste tipo; marcar aqui tira a marca do padrão anterior.' : 'Só um template ativo pode ser o padrão.' }}
             </p>
-            @if (erroPadrao(); as erro) { <p class="text-sm text-red-600">{{ erro }}</p> }
+            @if (erroPadrao(); as erro) { <p id="padrao-erro" role="alert" class="text-sm text-red-600">{{ erro }}</p> }
           </div>
         </section>
 
         <section class="space-y-3 rounded-xl bg-white p-4" aria-labelledby="titulo-blocos">
           <div class="flex items-center justify-between gap-3">
             <h2 id="titulo-blocos" class="font-semibold">Blocos</h2>
-            <div class="relative">
+            <div #areaMenu class="relative">
               <button #botaoMais type="button" aria-haspopup="menu" [attr.aria-expanded]="menuAberto() ? 'true' : 'false'"
                       aria-controls="menu-blocos" (click)="alternarMenu()" [disabled]="carregando()"
                       class="h-12 rounded-lg border border-blue-600 px-4 text-sm font-semibold text-blue-700 disabled:opacity-60">+ Bloco</button>
@@ -134,7 +140,8 @@ type AcaoMover = 'subir' | 'descer';
                 <li cdkDrag [attr.data-bloco-id]="b.id" class="rounded-xl border bg-white"
                     [class.border-slate-200]="!errosPorBloco().has(b.id)" [class.border-red-400]="errosPorBloco().has(b.id)">
                   <div class="flex items-stretch gap-1 p-1">
-                    <button type="button" cdkDragHandle aria-label="Arrastar para reordenar o bloco" title="Arrastar"
+                    <!-- fora da ordem de Tab: pelo teclado, ↑ e ↓ -->
+                    <button type="button" cdkDragHandle tabindex="-1" aria-label="Arrastar para reordenar o bloco" title="Arrastar"
                             class="flex w-10 shrink-0 cursor-grab touch-none items-center justify-center rounded-lg text-slate-400 hover:bg-slate-100">
                       <span aria-hidden="true">⋮⋮</span>
                     </button>
@@ -166,6 +173,7 @@ type AcaoMover = 'subir' | 'descer';
             </ul>
           }
         </section>
+        }
 
         @if (naoEncontrado()) {
           <p class="rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900" role="alert">Template não encontrado neste aparelho.</p>
@@ -181,7 +189,9 @@ type AcaoMover = 'subir' | 'descer';
         }
       </form>
 
-      <section class="mt-4 space-y-3 rounded-xl bg-white p-4 lg:sticky lg:top-4 lg:mt-0" aria-labelledby="titulo-previa">
+      @if (!indisponivel()) {
+      <!-- 4.5rem: abaixo do cabeçalho fixo do app -->
+      <section class="mt-4 space-y-3 rounded-xl bg-white p-4 lg:sticky lg:top-[4.5rem] lg:mt-0" aria-labelledby="titulo-previa">
         <div class="flex flex-wrap items-center justify-between gap-3">
           <h2 id="titulo-previa" class="font-semibold">Prévia</h2>
           <button type="button" (click)="gerarPrevia()" [disabled]="gerando() || carregando()" aria-describedby="previa-ajuda"
@@ -201,10 +211,11 @@ type AcaoMover = 'subir' | 'descer';
           <p class="text-sm text-slate-600">A prévia foi aberta em uma nova aba.</p>
         }
       </section>
+      }
     </div>
   `,
 })
-export class TemplateEditorPage {
+export class TemplateEditorPage implements ComAlteracoes {
   readonly id = input<string>();
 
   private readonly repo = inject(TemplatesRepo);
@@ -215,6 +226,7 @@ export class TemplateEditorPage {
   private readonly sanitizer = inject(DomSanitizer);
   private readonly injector = inject(Injector);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
+  private readonly areaMenu = viewChild<ElementRef<HTMLElement>>('areaMenu');
 
   protected readonly tiposProposta = TIPOS_PROPOSTA;
   protected readonly tiposBloco = TIPOS_BLOCO;
@@ -247,6 +259,19 @@ export class TemplateEditorPage {
     return !!id && this.carregadoId() !== id;
   });
   private versaoCarregada: number | null | undefined;
+  protected readonly indisponivel = computed(() => this.naoEncontrado() || this.falhaCarga());
+
+  // ---- alterações não salvas (P4a-R12) ----
+  private readonly estadoAtual = computed(() =>
+    instantaneo({ nome: this.nome(), tipo: this.tipo(), ativo: this.ativo(), padrao: this.padrao(), blocos: this.blocos() }),
+  );
+  /** Estado ao abrir, depois de carregar ou depois de salvar. */
+  private readonly estadoSalvo = signal('');
+  /** Depois de excluir, sair não pergunta nada. */
+  private readonly liberado = signal(false);
+  private readonly alterado = computed(
+    () => !this.liberado() && !this.carregando() && !this.indisponivel() && this.estadoAtual() !== this.estadoSalvo(),
+  );
 
   protected readonly erroNome = computed(() => {
     if (!this.tentouSalvar()) return null;
@@ -287,12 +312,30 @@ export class TemplateEditorPage {
   protected readonly linkPrevia = computed(() => (this.modoPrevia() === 'bloqueada' ? this.urlPrevia() : null));
   protected readonly abertaEmAba = computed(() => this.modoPrevia() === 'aba');
 
+  private destruido = false;
+
   constructor() {
+    this.estadoSalvo.set(this.estadoAtual());
     effect(() => {
       const id = this.id();
       if (id) void this.carregar(id);
     });
-    inject(DestroyRef).onDestroy(() => this.revogarPrevia());
+    avisarAoSairDaPagina(this.alterado);
+    inject(DestroyRef).onDestroy(() => {
+      this.destruido = true;
+      this.descartarPrevia();
+    });
+  }
+
+  temAlteracoes(): boolean {
+    return this.alterado();
+  }
+
+  /** Toque fora do "+ Bloco" e do menu fecha o menu. */
+  protected pointerFora(e: Event): void {
+    if (!this.menuAberto()) return;
+    const area = this.areaMenu()?.nativeElement;
+    if (area && !area.contains(e.target as Node)) this.menuAberto.set(false);
   }
 
   protected alternarAtivo(ativo: boolean): void {
@@ -385,7 +428,7 @@ export class TemplateEditorPage {
     this.erroRepo.set(null);
     this.erroPadrao.set(null);
     if (this.erroGeral()) {
-      this.abrirPrimeiroComErro();
+      this.focarPrimeiroErro();
       return;
     }
     const dados: TemplateDados = {
@@ -398,6 +441,7 @@ export class TemplateEditorPage {
     this.salvando.set(true);
     try {
       await this.repo.salvar(dados, this.id(), this.versaoCarregada);
+      this.estadoSalvo.set(this.estadoAtual());
       this.toasts.mostrar('Template salvo.');
       await this.router.navigateByUrl('/templates');
     } catch (e) {
@@ -415,6 +459,7 @@ export class TemplateEditorPage {
     this.excluindo.set(true);
     try {
       await this.repo.excluir(id, this.versaoCarregada);
+      this.liberado.set(true);
       this.toasts.mostrar('Template excluído.');
       await this.router.navigateByUrl('/templates');
     } catch {
@@ -438,7 +483,16 @@ export class TemplateEditorPage {
       const empresa = (await this.db.empresa.get(ID_EMPRESA)) ?? null;
       const logo = await this.pdf.logoDataUrl(empresa);
       const blob = await this.pdf.gerarBlob(entradaFicticia(this.blocos(), empresa, logo));
-      this.revogarPrevia();
+      if (this.destruido) {
+        // saiu do editor durante a geração: só a aba já aberta ainda quer o PDF; nada de URL sem dono
+        if (janela) {
+          const url = URL.createObjectURL(blob);
+          janela.location.href = url;
+          this.revogar(url, true);
+        }
+        return;
+      }
+      this.descartarPrevia();
       const url = URL.createObjectURL(blob);
       this.urlPrevia.set(url);
       if (desktop) {
@@ -472,17 +526,32 @@ export class TemplateEditorPage {
     return janela;
   }
 
-  private revogarPrevia(): void {
+  /** Tira a prévia atual. No iframe, revoga já; em outra aba (ou no link), só depois de um tempo. */
+  private descartarPrevia(): void {
     const url = this.urlPrevia();
-    if (url) URL.revokeObjectURL(url);
+    const modo = this.modoPrevia();
     this.urlPrevia.set(null);
     this.modoPrevia.set(null);
+    if (url) this.revogar(url, modo !== 'iframe');
   }
 
-  private abrirPrimeiroComErro(): void {
+  private revogar(url: string, adiar: boolean): void {
+    if (adiar) window.setTimeout(() => URL.revokeObjectURL(url), ESPERA_REVOGAR_MS);
+    else URL.revokeObjectURL(url);
+  }
+
+  /** Nome inválido: foco no #nome. Senão abre o primeiro bloco com erro e foca o card dele. */
+  private focarPrimeiroErro(): void {
+    if (this.erroNome()) {
+      this.focar('#nome');
+      return;
+    }
     const erros = this.errosPorBloco();
     const primeiro = this.blocos().find((b) => erros.has(b.id));
-    if (primeiro) this.aberto.set(primeiro.id);
+    if (primeiro) {
+      this.aberto.set(primeiro.id);
+      this.focar(`li[data-bloco-id="${primeiro.id}"] [data-testid=abrir-bloco]`);
+    }
   }
 
   private anunciarPosicao(b: Bloco, indice: number, total: number): void {
@@ -501,7 +570,10 @@ export class TemplateEditorPage {
     this.falhaCarga.set(false);
     try {
       const t = await this.repo.buscar(id);
-      this.temPendencia.set(await this.repo.temPendencia(id));
+      const pendencia = await this.repo.temPendencia(id);
+      // o id mudou durante a leitura: a carga do id novo é que preenche a tela
+      if (this.id() !== id) return;
+      this.temPendencia.set(pendencia);
       this.naoEncontrado.set(!t);
       if (!t) return;
       this.versaoCarregada = t.version;
@@ -512,6 +584,7 @@ export class TemplateEditorPage {
       // blocos de tipo desconhecido (vindos do pull) ficam como estão
       this.blocos.set(t.blocos);
       this.aberto.set(null);
+      this.estadoSalvo.set(this.estadoAtual());
     } catch {
       // editor vazio salvaria por cima do template existente: bloqueia
       if (this.id() === id) this.falhaCarga.set(true);

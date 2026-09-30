@@ -1,7 +1,7 @@
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 import { vi } from 'vitest';
 import { ArquivosService } from '../../core/arquivos/arquivos-service';
 import { Perfil } from '../../core/auth/auth-models';
@@ -94,5 +94,25 @@ describe('CatalogoPage', () => {
       expect(el.querySelectorAll('li')).toHaveLength(1);
       expect(el.textContent).toContain('Gerador');
     });
+  });
+  it('antes da primeira emissão mostra "Carregando…", não o vazio', () => {
+    const todos = new Subject<ReturnType<typeof paraItemLocal>[]>();
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        { provide: CatalogoRepo, useValue: { observarTodos: () => todos, observarNaoSincronizados: () => of(new Set<string>()) } },
+        { provide: AuthService, useValue: { usuario: signal({ id: 'u', nome: 'U', email: 'u@u', perfil: 'ADMIN', ativo: true }) } },
+        { provide: ArquivosService, useValue: { obterUrl: vi.fn().mockResolvedValue(null) } },
+      ],
+    });
+    const fixture = TestBed.createComponent(CatalogoPage);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Carregando…');
+    expect(el.textContent).not.toContain('Nenhum item no catálogo ainda.');
+    todos.next([]);
+    fixture.detectChanges();
+    expect(el.textContent).not.toContain('Carregando…');
+    expect(el.textContent).toContain('Nenhum item no catálogo ainda.');
   });
 });

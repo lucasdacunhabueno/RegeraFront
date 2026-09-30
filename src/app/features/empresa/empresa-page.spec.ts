@@ -227,4 +227,18 @@ describe('EmpresaPage', () => {
     expect(el.textContent).toContain('precisa de internet');
     expect(el.querySelector<HTMLButtonElement>('button[type=submit]')!.disabled).toBe(true);
   });
+  it('alterações não salvas: limpo depois de carregar, sujo ao editar, limpo depois de salvar', async () => {
+    const { fixture, el, api } = montar();
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLInputElement>('#razaoSocial')!.value).toBe('Regera Energia Ltda');
+    });
+    const pagina = fixture.componentInstance;
+    expect(pagina.temAlteracoes()).toBe(false);
+    digitar(fixture, '#razaoSocial', 'Outra Ltda');
+    expect(pagina.temAlteracoes()).toBe(true);
+    el.querySelector<HTMLButtonElement>('button[type=submit]')!.click();
+    await vi.waitFor(() => expect(api.salvar).toHaveBeenCalled());
+    await vi.waitFor(() => expect(pagina.temAlteracoes()).toBe(false));
+  });
 });

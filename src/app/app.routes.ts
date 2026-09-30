@@ -2,6 +2,7 @@ import { inject } from '@angular/core';
 import { Routes } from '@angular/router';
 import { autenticadoGuard, perfilGuard } from './core/auth/auth-guards';
 import { AuthService } from './core/auth/auth-service';
+import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 
 const emBreve = () => import('./features/em-breve/em-breve-page').then((m) => m.EmBrevePage);
 
@@ -22,11 +23,13 @@ export const routes: Routes = [
       {
         path: 'clientes/novo',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
         loadComponent: () => import('./features/clientes/cliente-form-page').then((m) => m.ClienteFormPage),
       },
       {
         path: 'clientes/:id',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
         loadComponent: () => import('./features/clientes/cliente-form-page').then((m) => m.ClienteFormPage),
       },
       {
@@ -37,11 +40,13 @@ export const routes: Routes = [
       {
         path: 'catalogo/novo',
         canMatch: [perfilGuard('ADMIN')],
+        canDeactivate: [alteracoesGuard],
         loadComponent: () => import('./features/catalogo/item-form-page').then((m) => m.ItemFormPage),
       },
       {
         path: 'catalogo/:id',
         canMatch: [perfilGuard('ADMIN')],
+        canDeactivate: [alteracoesGuard],
         loadComponent: () => import('./features/catalogo/item-form-page').then((m) => m.ItemFormPage),
       },
       {
@@ -52,11 +57,13 @@ export const routes: Routes = [
       {
         path: 'templates/novo',
         canMatch: [perfilGuard('ADMIN')],
+        canDeactivate: [alteracoesGuard],
         loadComponent: () => import('./features/templates/template-editor-page').then((m) => m.TemplateEditorPage),
       },
       {
         path: 'templates/:id',
         canMatch: [perfilGuard('ADMIN')],
+        canDeactivate: [alteracoesGuard],
         loadComponent: () => import('./features/templates/template-editor-page').then((m) => m.TemplateEditorPage),
       },
       {
@@ -67,6 +74,7 @@ export const routes: Routes = [
       {
         path: 'empresa',
         canMatch: [perfilGuard('ADMIN')],
+        canDeactivate: [alteracoesGuard],
         loadComponent: () => import('./features/empresa/empresa-page').then((m) => m.EmpresaPage),
       },
       {

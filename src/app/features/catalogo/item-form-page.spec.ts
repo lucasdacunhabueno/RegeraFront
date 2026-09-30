@@ -300,4 +300,50 @@ describe('ItemFormPage', () => {
     await vi.waitFor(() => expect(repo.excluir).toHaveBeenCalledWith('i1', 4));
     expect(navegar).toHaveBeenCalledWith('/catalogo');
   });
+  it('alterações não salvas: limpo ao abrir, sujo ao editar, limpo depois de salvar', async () => {
+    const { fixture, navegar, el } = montar();
+    const pagina = fixture.componentInstance;
+    expect(pagina.temAlteracoes()).toBe(false);
+    digitar(fixture, '#codigo', 'X');
+    expect(pagina.temAlteracoes()).toBe(true);
+    digitar(fixture, '#nome', 'Item');
+    digitar(fixture, '#precoVenda', '10');
+    enviar(el);
+    await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/catalogo'));
+    expect(pagina.temAlteracoes()).toBe(false);
+  });
+
+  it('alterações não salvas na edição: limpo depois de carregar, sujo ao remover a foto', async () => {
+    const { fixture, el } = montar({ id: 'i1', buscar: Promise.resolve(paraItemLocal('i1', 4, { ...existente, fotoArquivoId: 'f1' })) });
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLInputElement>('#codigo')!.value).toBe('PNL');
+      expect(el.textContent).toContain('Remover foto');
+    });
+    expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+    [...el.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Remover foto')!.click();
+    fixture.detectChanges();
+    expect(fixture.componentInstance.temAlteracoes()).toBe(true);
+  });
+
+  it('troca de id durante a carga: só o último id preenche os campos', async () => {
+    const { fixture, el, repo } = montar();
+    const pendentes = new Map<string, (v: unknown) => void>();
+    repo.buscar.mockImplementation((id: string) => new Promise((r) => pendentes.set(id, r)));
+    fixture.componentRef.setInput('id', 'a');
+    fixture.detectChanges();
+    await vi.waitFor(() => expect(repo.buscar).toHaveBeenCalledWith('a'));
+    fixture.componentRef.setInput('id', 'b');
+    fixture.detectChanges();
+    await vi.waitFor(() => expect(repo.buscar).toHaveBeenCalledWith('b'));
+    pendentes.get('b')!(paraItemLocal('b', 9, { ...existente, codigo: 'SEGUNDO' }));
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLInputElement>('#codigo')!.value).toBe('SEGUNDO');
+    });
+    pendentes.get('a')!(paraItemLocal('a', 1, { ...existente, codigo: 'PRIMEIRO' }));
+    await new Promise((r) => setTimeout(r, 0));
+    fixture.detectChanges();
+    expect(el.querySelector<HTMLInputElement>('#codigo')!.value).toBe('SEGUNDO');
+  });
 });

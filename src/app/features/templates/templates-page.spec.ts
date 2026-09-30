@@ -1,7 +1,7 @@
 import { Component } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 import { blocosIniciais, paraTemplateLocal, TemplateDados, TemplateLocal, TipoProposta } from './template-models';
 import { TemplatesPage } from './templates-page';
 import { TemplatesRepo } from './templates-repo';
@@ -98,5 +98,30 @@ describe('TemplatesPage', () => {
     link.click();
     await fixture.whenStable();
     expect(TestBed.inject(Router).url).toBe('/templates/novo');
+  });
+  it('antes da primeira emissão mostra "Carregando…", não o vazio', () => {
+    const todos = new Subject<TemplateLocal[]>();
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        {
+          provide: TemplatesRepo,
+          useValue: {
+            observarTodos: () => todos,
+            observarNaoSincronizados: () => of(new Set<string>()),
+            observarPadroesEfetivos: () => of(new Map()),
+          },
+        },
+      ],
+    });
+    const fixture = TestBed.createComponent(TemplatesPage);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(el.textContent).toContain('Carregando…');
+    expect(el.textContent).not.toContain('Nenhum template ainda.');
+    todos.next([]);
+    fixture.detectChanges();
+    expect(el.textContent).not.toContain('Carregando…');
+    expect(el.textContent).toContain('Nenhum template ainda.');
   });
 });

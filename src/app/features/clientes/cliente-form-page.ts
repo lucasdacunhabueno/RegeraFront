@@ -1,8 +1,9 @@
-import { Component, DestroyRef, effect, inject, input, signal } from '@angular/core';
+import { Component, computed, DestroyRef, effect, inject, input, signal } from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormArray, NonNullableFormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
+import { avisarAoSairDaPagina, ComAlteracoes, instantaneo } from '../../core/navegacao/alteracoes-guard';
 import { documentoValido, normalizarDocumento } from '../../core/util/documentos';
 import {
   formatarCep,
@@ -212,7 +213,7 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
     </form>
   `,
 })
-export class ClienteFormPage {
+export class ClienteFormPage implements ComAlteracoes {
   readonly id = input<string>();
 
   private readonly fb = inject(NonNullableFormBuilder);
@@ -251,12 +252,36 @@ export class ClienteFormPage {
 
   protected readonly tipo = toSignal(this.form.controls.tipo.valueChanges, { initialValue: 'PF' as TipoPessoa });
 
+  /** Estado ao abrir, depois de carregar ou de salvar (P4a-R12). */
+  private estadoSalvo = '';
+  /** Depois de excluir, sair não pergunta nada. */
+  private liberado = false;
+  /** Até a carga da edição terminar, nada conta como alteração. */
+  private readonly carregado = signal(true);
+  private readonly valores = toSignal(this.form.valueChanges);
+  private readonly alterado = computed(() => {
+    this.valores();
+    this.carregado();
+    return this.temAlteracoes();
+  });
+
   constructor() {
+    this.estadoSalvo = this.estado();
+    avisarAoSairDaPagina(this.alterado);
     this.form.controls.tipo.valueChanges.pipe(takeUntilDestroyed(inject(DestroyRef))).subscribe(() => this.aoDigitarDocumento());
     effect(() => {
       const id = this.id();
       if (id) void this.carregar(id);
     });
+  }
+
+  temAlteracoes(): boolean {
+    if (this.liberado || !this.carregado() || this.naoEncontrado()) return false;
+    return this.estado() !== this.estadoSalvo;
+  }
+
+  private estado(): string {
+    return instantaneo(this.form.getRawValue());
   }
 
   protected get enderecos(): FormArray<GrupoEndereco> {
@@ -368,6 +393,7 @@ export class ClienteFormPage {
     this.salvando.set(true);
     try {
       await this.repo.salvar(dados, this.id(), this.versaoCarregada);
+      this.estadoSalvo = this.estado();
       this.toasts.mostrar('Cliente salvo.');
       await this.router.navigateByUrl('/clientes');
     } catch (e) {
@@ -387,6 +413,7 @@ export class ClienteFormPage {
     this.excluindo.set(true);
     try {
       await this.repo.excluir(id, this.versaoCarregada);
+      this.liberado = true;
       this.toasts.mostrar('Cliente excluído.');
       await this.router.navigateByUrl('/clientes');
     } catch {
@@ -397,8 +424,23 @@ export class ClienteFormPage {
   }
 
   private async carregar(id: string): Promise<void> {
+    this.carregado.set(false);
+    try {
+      await this.preencher(id);
+    } finally {
+      if (this.id() === id) {
+        this.estadoSalvo = this.estado();
+        this.carregado.set(true);
+      }
+    }
+  }
+
+  private async preencher(id: string): Promise<void> {
     const c = await this.repo.buscar(id);
-    this.temPendencia.set(await this.repo.temPendencia(id));
+    const pendencia = await this.repo.temPendencia(id);
+    // o id mudou durante a leitura: a carga do id novo é que preenche o formulário
+    if (this.id() !== id) return;
+    this.temPendencia.set(pendencia);
     if (!c) {
       this.naoEncontrado.set(true);
       return;

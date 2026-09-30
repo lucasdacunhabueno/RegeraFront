@@ -26,9 +26,11 @@ const ROTULO_TIPO = new Map<string, string>(TIPOS_PROPOSTA.map((t) => [t.valor, 
       }
     </div>
 
-    @if (filtrados().length === 0) {
+    @if (todos() === undefined) {
+      <p class="py-8 text-center text-slate-500">Carregando…</p>
+    } @else if (filtrados().length === 0) {
       <p class="py-8 text-center text-slate-500">
-        {{ todos().length === 0 ? 'Nenhum template ainda.' : 'Nenhum template deste tipo.' }}
+        {{ todos()!.length === 0 ? 'Nenhum template ainda.' : 'Nenhum template deste tipo.' }}
       </p>
     } @else {
       <ul class="divide-y divide-slate-200 overflow-hidden rounded-xl bg-white">
@@ -66,7 +68,8 @@ export class TemplatesPage {
     { valor: 'TODOS', rotulo: 'Todos' },
     ...TIPOS_PROPOSTA,
   ];
-  protected readonly todos = toSignal(this.repo.observarTodos(), { initialValue: [] as TemplateLocal[] });
+  /** undefined até a primeira leitura do banco: sem isso a tela piscaria "Nenhum template ainda.". */
+  protected readonly todos = toSignal(this.repo.observarTodos());
   protected readonly naoSincronizados = toSignal(this.repo.observarNaoSincronizados(), { initialValue: new Set<string>() });
   /** P4a-R5: só o padrão efetivo de cada tipo leva o selo (dois marcados no mesmo tipo podem coexistir até o sync). */
   protected readonly padroes = toSignal(this.repo.observarPadroesEfetivos(), {
@@ -74,7 +77,8 @@ export class TemplatesPage {
   });
   protected readonly filtrados = computed(() => {
     const f = this.filtro();
-    return f === 'TODOS' ? this.todos() : this.todos().filter((t) => t.tipoProposta === f);
+    const todos = this.todos() ?? [];
+    return f === 'TODOS' ? todos : todos.filter((t) => t.tipoProposta === f);
   });
 
   protected rotuloTipo(t: TemplateLocal): string {
