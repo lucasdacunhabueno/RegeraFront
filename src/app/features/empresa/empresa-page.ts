@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, inject, signal } from '@angular/core';
+import { Component, ElementRef, inject, signal, viewChild } from '@angular/core';
 import { AbstractControl, NonNullableFormBuilder, ReactiveFormsModule, ValidationErrors, Validators } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { ArquivosService } from '../../core/arquivos/arquivos-service';
@@ -10,7 +10,7 @@ import { camposComErro, mensagemDeErro } from '../../core/http/erro-api';
 import { cnpjValido, normalizarDocumento } from '../../core/util/documentos';
 import { formatarTelefone, mascararDocumento, somenteDigitos } from '../../core/util/formatos';
 import { Toasts } from '../../shared/ui/toasts';
-import { EmpresaApi } from './empresa-api';
+import { EmpresaApi, EmpresaResposta } from './empresa-api';
 import { EmpresaDados, ID_EMPRESA, paraEmpresaLocal } from './empresa-models';
 
 const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
@@ -36,8 +36,12 @@ const naoSoEspacos = (c: AbstractControl<string>): ValidationErrors | null =>
           @if (logoUrl()) {
             <img [src]="logoUrl()" alt="Logo da empresa" class="h-20 w-auto rounded bg-slate-50 object-contain p-2" />
           }
-          <input id="logo" type="file" accept="image/png,image/jpeg,image/webp" [disabled]="!online() || enviandoLogo()"
+          @if (logoArquivoId() && online()) {
+            <button type="button" (click)="removerLogo()" [disabled]="enviandoLogo()" class="block text-sm text-red-600">Remover logo</button>
+          }
+          <input #inputLogo id="logo" type="file" accept="image/png,image/jpeg,image/webp" [disabled]="!online() || enviandoLogo()"
                  (change)="escolherLogo($event)" aria-label="Escolher logo" class="block w-full text-sm" />
+          @if (campo('logoArquivoId')) { <p class="text-sm text-red-600">{{ campo('logoArquivoId') }}</p> }
         </div>
 
         <div class="space-y-1">
@@ -48,6 +52,7 @@ const naoSoEspacos = (c: AbstractControl<string>): ValidationErrors | null =>
         <div class="space-y-1">
           <label for="nomeFantasia" class="text-sm font-medium">Nome fantasia</label>
           <input id="nomeFantasia" formControlName="nomeFantasia" maxlength="160" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          @if (campo('nomeFantasia')) { <p class="text-sm text-red-600">{{ campo('nomeFantasia') }}</p> }
         </div>
         <div class="space-y-1">
           <label for="cnpj" class="text-sm font-medium">CNPJ</label>
@@ -57,21 +62,25 @@ const naoSoEspacos = (c: AbstractControl<string>): ValidationErrors | null =>
         <div class="space-y-1">
           <label for="endereco" class="text-sm font-medium">Endereço</label>
           <input id="endereco" formControlName="endereco" maxlength="300" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          @if (campo('endereco')) { <p class="text-sm text-red-600">{{ campo('endereco') }}</p> }
         </div>
         <div class="grid grid-cols-2 gap-3">
           <div class="space-y-1">
             <label for="telefone" class="text-sm font-medium">Telefone</label>
             <input id="telefone" formControlName="telefone" inputmode="tel" maxlength="15" (input)="mascararTelefone()"
                    class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+            @if (campo('telefone')) { <p class="text-sm text-red-600">{{ campo('telefone') }}</p> }
           </div>
           <div class="space-y-1">
             <label for="email" class="text-sm font-medium">E-mail</label>
             <input id="email" type="email" formControlName="email" maxlength="160" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+            @if (campo('email')) { <p class="text-sm text-red-600">{{ campo('email') }}</p> }
           </div>
         </div>
         <div class="space-y-1">
           <label for="site" class="text-sm font-medium">Site</label>
           <input id="site" formControlName="site" maxlength="160" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+          @if (campo('site')) { <p class="text-sm text-red-600">{{ campo('site') }}</p> }
         </div>
       </section>
 
@@ -87,12 +96,14 @@ const naoSoEspacos = (c: AbstractControl<string>): ValidationErrors | null =>
           <div class="space-y-1">
             <label for="corPrimaria" class="text-sm font-medium">Cor</label>
             <input id="corPrimaria" type="color" formControlName="corPrimaria" class="h-12 w-full rounded-lg border border-slate-300 px-1" />
+            @if (campo('corPrimaria')) { <p class="text-sm text-red-600">{{ campo('corPrimaria') }}</p> }
           </div>
         </div>
         <div class="space-y-1">
           <label for="condicoesPagamentoPadrao" class="text-sm font-medium">Condições de pagamento padrão</label>
           <textarea id="condicoesPagamentoPadrao" formControlName="condicoesPagamentoPadrao" maxlength="500" rows="3"
                     class="w-full rounded-lg border border-slate-300 px-3 py-2"></textarea>
+          @if (campo('condicoesPagamentoPadrao')) { <p class="text-sm text-red-600">{{ campo('condicoesPagamentoPadrao') }}</p> }
         </div>
       </section>
 
@@ -115,7 +126,8 @@ export class EmpresaPage {
   protected readonly erroGeral = signal<string | null>(null);
   protected readonly erros = signal<Record<string, string>>({});
   protected readonly logoUrl = signal<string | null>(null);
-  private readonly logoArquivoId = signal<string | null>(null);
+  protected readonly logoArquivoId = signal<string | null>(null);
+  private readonly inputLogo = viewChild<ElementRef<HTMLInputElement>>('inputLogo');
   private version: number | null = null;
 
   protected readonly form = this.fb.group({
@@ -150,8 +162,16 @@ export class EmpresaPage {
     c.setValue(formatarTelefone(c.value), { emitEvent: false });
   }
 
+  protected removerLogo(): void {
+    this.logoArquivoId.set(null);
+    this.logoUrl.set(null);
+    const input = this.inputLogo()?.nativeElement;
+    if (input) input.value = '';
+  }
+
   protected async escolherLogo(evento: Event): Promise<void> {
-    const arquivo = (evento.target as HTMLInputElement).files?.[0];
+    const input = evento.target as HTMLInputElement;
+    const arquivo = input.files?.[0];
     if (!arquivo) return;
     this.enviandoLogo.set(true);
     try {
@@ -163,6 +183,8 @@ export class EmpresaPage {
       this.toasts.erro(e instanceof HttpErrorResponse ? mensagemDeErro(e) : e instanceof Error ? e.message : mensagemDeErro(e));
     } finally {
       this.enviandoLogo.set(false);
+      // permite escolher o mesmo arquivo de novo
+      input.value = '';
     }
   }
 
@@ -175,6 +197,7 @@ export class EmpresaPage {
     if (cnpj && !cnpjValido(cnpj)) erros['cnpj'] = 'CNPJ inválido.';
     if (this.form.controls.razaoSocial.invalid) erros['razaoSocial'] = 'Informe a razão social.';
     if (this.form.controls.validadePadraoDias.invalid) erros['validadePadraoDias'] = 'Entre 1 e 365 dias.';
+    if (this.form.controls.email.invalid) erros['email'] = 'E-mail inválido.';
     this.erros.set(erros);
     if (Object.keys(erros).length > 0 || this.form.invalid) {
       this.form.markAllAsTouched();
@@ -198,13 +221,17 @@ export class EmpresaPage {
     try {
       const r = await this.api.salvar(this.version, dados);
       this.version = r.version;
-      // cópia local imediata (o pull confirma depois) — o PDF do P4 lê daqui
-      await this.db.empresa.put(paraEmpresaLocal(ID_EMPRESA, r.version, r.dados));
+      try {
+        // cópia local imediata (o pull confirma depois) — o PDF do P4 lê daqui
+        await this.db.empresa.put(paraEmpresaLocal(ID_EMPRESA, r.version, r.dados));
+      } catch {
+        // já está salvo no servidor; o próximo pull grava a cópia local
+      }
       this.toasts.mostrar('Dados da empresa salvos.');
     } catch (e) {
       if (e instanceof HttpErrorResponse && e.status === 409) {
         this.toasts.erro(mensagemDeErro(e));
-        await this.carregar();
+        await this.carregar(true);
       } else {
         this.erros.set(camposComErro(e));
         this.erroGeral.set(mensagemDeErro(e));
@@ -214,17 +241,27 @@ export class EmpresaPage {
     }
   }
 
-  private async carregar(): Promise<void> {
-    let r = null;
+  /** aposConflito: precisa da versão atual do servidor; sem ela, avisa em vez de ficar com a versão velha. */
+  private async carregar(aposConflito = false): Promise<void> {
+    let r: EmpresaResposta | null = null;
+    let erro: unknown = null;
     if (this.online()) {
       try {
         r = await this.api.obter();
       } catch (e) {
-        this.toasts.erro(mensagemDeErro(e));
+        erro = e;
       }
+    } else if (aposConflito) {
+      erro = new HttpErrorResponse({ status: 0 });
     }
-    const d = r?.dados ?? (await this.db.empresa.get(ID_EMPRESA)) ?? null;
-    this.version = r ? r.version : ((await this.db.empresa.get(ID_EMPRESA))?.version ?? null);
+    if (aposConflito && erro) {
+      this.erroGeral.set(`Não foi possível carregar a versão atual: ${mensagemDeErro(erro)} Recarregue antes de salvar de novo.`);
+      return;
+    }
+    if (erro) this.toasts.erro(mensagemDeErro(erro));
+    const local = r ? undefined : await this.db.empresa.get(ID_EMPRESA);
+    const d = r?.dados ?? local ?? null;
+    this.version = r ? r.version : (local?.version ?? null);
     if (!d) return;
     const e = paraEmpresaLocal(ID_EMPRESA, this.version, d);
     this.form.patchValue({
