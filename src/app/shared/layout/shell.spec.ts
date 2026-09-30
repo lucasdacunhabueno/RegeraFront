@@ -9,7 +9,7 @@ import { SyncAgendador } from '../../core/sync/sync-agendador';
 import { SyncService } from '../../core/sync/sync-service';
 import { Shell } from './shell';
 
-function montar(perfil: Perfil, opcoes: { sessaoExpirada?: boolean; pendentes?: number; problemas?: number } = {}) {
+function montar(perfil: Perfil, opcoes: { sessaoExpirada?: boolean; pendentes?: number; problemas?: number; ultimoSync?: string } = {}) {
   const iniciar = vi.fn();
   TestBed.configureTestingModule({
     providers: [
@@ -28,7 +28,7 @@ function montar(perfil: Perfil, opcoes: { sessaoExpirada?: boolean; pendentes?: 
           sincronizando: signal(false),
           naoSincronizados: signal(opcoes.pendentes ?? 0),
           problemas: signal(opcoes.problemas ?? 0),
-          ultimoSync: signal(null),
+          ultimoSync: signal<string | null>(opcoes.ultimoSync ?? null),
         },
       },
       { provide: SyncAgendador, useValue: { iniciar } },
@@ -61,6 +61,14 @@ describe('Shell', () => {
   it('inicia o agendador de sync', () => {
     const { iniciar } = montar('COMERCIAL');
     expect(iniciar).toHaveBeenCalled();
+  });
+
+  it('mostra a hora do último sync ao lado do ícone só quando existe', () => {
+    let { el } = montar('COMERCIAL');
+    expect(el.querySelector('[data-testid=ultimo-sync]')).toBeNull();
+    TestBed.resetTestingModule();
+    ({ el } = montar('COMERCIAL', { ultimoSync: new Date(2026, 8, 30, 12, 34).toISOString() }));
+    expect(el.querySelector('[data-testid=ultimo-sync]')?.textContent?.trim()).toBe('12:34');
   });
 
   it('mostra quantidade não sincronizada e destaca problemas', () => {

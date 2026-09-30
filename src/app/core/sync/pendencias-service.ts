@@ -64,11 +64,17 @@ export class PendenciasService {
     if (!idExistente) throw new Error('Pendência sem idExistente');
     const existente = await this.buscarNoServidor(p, idExistente);
     if (!existente || existente.deleted) throw new Error('O cadastro existente não foi encontrado no servidor.');
+    // atualização: o agregado local existe no servidor, então restaura a cópia dele em vez de apagar
+    const proprio = p.mutacao.baseVersion !== null ? await this.buscarNoServidor(p, p.agregadoId) : null;
     const adaptador = ADAPTADORES[p.entidade];
     const tabela = adaptador.tabela(this.db);
     await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
       await this.limparAgregado(p);
-      await tabela.delete(p.agregadoId);
+      if (proprio && !proprio.deleted) {
+        await tabela.put(adaptador.paraLocal(p.agregadoId, proprio.version, proprio.dados));
+      } else {
+        await tabela.delete(p.agregadoId);
+      }
       await tabela.put(adaptador.paraLocal(idExistente, existente.version, existente.dados));
     });
     return idExistente;

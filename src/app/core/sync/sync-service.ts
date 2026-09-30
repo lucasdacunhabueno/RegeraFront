@@ -11,6 +11,7 @@ import { ADAPTADORES } from './adaptadores';
 import { Entidade, Mudanca, MutacaoLocal, Operacao, RespostaPull, RespostaPush, ResultadoMutacao } from './sync-models';
 
 const CHAVE_CURSOR = 'cursor';
+const CHAVE_CURSOR_DONO = 'cursorDono';
 const CHAVE_ULTIMO_SYNC = 'ultimoSync';
 const LOTE = 100;
 const LIMITE_PULL = 500;
@@ -76,6 +77,13 @@ export class SyncService {
   sincronizar(): Promise<void> {
     this.emAndamento ??= this.executar().finally(() => (this.emAndamento = null));
     return this.emAndamento;
+  }
+
+  /** Espera a sincronização em curso (se houver), com teto de 5 s. */
+  async aguardarOciosa(): Promise<void> {
+    const atual = this.emAndamento;
+    if (!atual) return;
+    await Promise.race([atual.catch(() => undefined), new Promise<void>((r) => setTimeout(r, 5000))]);
   }
 
   async contarNaoSincronizados(): Promise<number> {
@@ -194,7 +202,17 @@ export class SyncService {
   }
 
   private async receber(): Promise<void> {
-    let cursor = (await this.db.lerMeta<number>(CHAVE_CURSOR)) ?? 0;
+    const dono = this.auth.usuario?.()?.id ?? null;
+    const cursorGravado = await this.db.lerMeta<number>(CHAVE_CURSOR);
+    let cursor = cursorGravado ?? 0;
+    if (cursorGravado !== undefined && (await this.db.lerMeta<string | null>(CHAVE_CURSOR_DONO)) !== dono) {
+      // cursor de outra sessão (ex.: escrito por um sync que sobreviveu ao logout): recomeça do zero
+      cursor = 0;
+      await this.db.transaction('rw', [this.db.clientes, this.db.usuarios], async () => {
+        await this.db.clientes.clear();
+        await this.db.usuarios.clear();
+      });
+    }
     for (;;) {
       const resp = await firstValueFrom(
         this.http.get<RespostaPull>('/api/sync/pull', { params: { cursor, limite: LIMITE_PULL } }),
@@ -206,7 +224,10 @@ export class SyncService {
       });
       const avancou = resp.cursor > cursor;
       cursor = resp.cursor;
-      await this.db.gravarMeta(CHAVE_CURSOR, cursor);
+      await this.db.transaction('rw', this.db.meta, async () => {
+        await this.db.gravarMeta(CHAVE_CURSOR, cursor);
+        await this.db.gravarMeta(CHAVE_CURSOR_DONO, dono);
+      });
       if (!resp.temMais || !avancou) return;
     }
   }

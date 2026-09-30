@@ -154,6 +154,23 @@ describe('PendenciasService', () => {
     expect(await db.outbox.count()).toBe(0);
   });
 
+  it('usar cadastro existente numa atualização restaura a cópia do servidor do próprio agregado', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 1, dados('Editado localmente')));
+    const p = pendencia({ tipo: 'REJEITADO', erro: { codigo: 'DOCUMENTO_DUPLICADO', mensagem: 'x', idExistente: 'c9' } });
+    await db.pendencias.put(p);
+
+    const promessa = svc.usarExistente(p);
+    (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/c9')))
+      .flush({ entidade: 'cliente', id: 'c9', version: 3, deleted: false, dados: dados('Original', '11144477735') });
+    (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/c1')))
+      .flush({ entidade: 'cliente', id: 'c1', version: 2, deleted: false, dados: dados('Do servidor', '39053344705') });
+
+    expect(await promessa).toBe('c9');
+    expect(await db.clientes.get('c1')).toMatchObject({ nome: 'Do servidor', version: 2 });
+    expect(await db.clientes.get('c9')).toMatchObject({ nome: 'Original', version: 3 });
+    expect(await db.pendencias.count()).toBe(0);
+  });
+
   it('descartar edição com falha de rede mantém pendência e registro local', async () => {
     await db.clientes.put(paraClienteLocal('c1', 1, dados('Minha')));
     const p = pendencia({ tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } });

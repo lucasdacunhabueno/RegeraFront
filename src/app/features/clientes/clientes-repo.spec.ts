@@ -88,6 +88,33 @@ describe('ClientesRepo', () => {
     expect((await db.outbox.toArray())[0]).toMatchObject({ op: 'DELETE', baseVersion: 2 });
   });
 
+  it('salvar com versaoCarregada usa ela como base mesmo se o local já avançou', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 3, dados()));
+    await repo.salvar(dados('52998224725', 'Editado'), 'c1', 2);
+
+    expect((await db.outbox.toArray())[0].baseVersion).toBe(2);
+    expect((await db.clientes.get('c1'))?.version).toBe(2);
+  });
+
+  it('excluir com versaoCarregada usa ela como base', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 3, dados()));
+    await repo.excluir('c1', 2);
+
+    expect((await db.outbox.toArray())[0]).toMatchObject({ op: 'DELETE', baseVersion: 2 });
+  });
+
+  it('excluir limpa rejeições pendentes do cliente', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 2, dados()));
+    await db.pendencias.put({
+      mutationId: 'm1', entidade: 'cliente', agregadoId: 'c1', tipo: 'REJEITADO',
+      mutacao: { mutationId: 'm1', entidade: 'cliente', agregadoId: 'c1', op: 'UPSERT', baseVersion: 2, dados: null, criadaEm: '' },
+      erro: { codigo: 'VALIDACAO', mensagem: 'x' }, criadaEm: '',
+    });
+    await repo.excluir('c1');
+
+    expect(await db.pendencias.count()).toBe(0);
+  });
+
   it('observa a lista e os ids não sincronizados', async () => {
     const listas: string[][] = [];
     const sub = repo.observarTodos().subscribe((l) => listas.push(l.map((c) => c.nome)));

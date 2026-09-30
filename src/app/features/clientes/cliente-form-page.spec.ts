@@ -103,8 +103,9 @@ describe('ClienteFormPage', () => {
     clicar(el, 'button[type=submit]');
 
     await vi.waitFor(() => expect(repo.salvar).toHaveBeenCalled());
-    const [dados, id] = repo.salvar.mock.calls[0];
+    const [dados, id, versao] = repo.salvar.mock.calls[0];
     expect(id).toBe('id1');
+    expect(versao).toBe(3);
     expect(dados.nome).toBe('Maria Souza');
     expect(dados.enderecos[0]).toMatchObject({ cep: '01001000', uf: 'SP' });
   });
@@ -139,9 +140,9 @@ describe('ClienteFormPage', () => {
   it('excluir pede confirmação', async () => {
     vi.spyOn(window, 'confirm').mockReturnValue(true);
     const { el, repo, navegar } = montar({ id: 'id1' });
-    await vi.waitFor(() => expect(el.querySelector('[data-testid=excluir]')).not.toBeNull());
+    await vi.waitFor(() => expect(el.querySelector<HTMLInputElement>('#nome')!.value).toBe('Maria'));
     clicar(el, '[data-testid=excluir]');
-    await vi.waitFor(() => expect(repo.excluir).toHaveBeenCalledWith('id1'));
+    await vi.waitFor(() => expect(repo.excluir).toHaveBeenCalledWith('id1', 3));
     expect(navegar).toHaveBeenCalledWith('/clientes');
   });
 

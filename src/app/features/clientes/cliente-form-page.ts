@@ -231,6 +231,8 @@ export class ClienteFormPage {
   protected readonly erroDocumento = signal<string | null>(null);
   protected readonly temPendencia = signal(false);
   protected readonly naoEncontrado = signal(false);
+  /** Versão lida ao abrir o formulário (undefined = cliente novo). */
+  private versaoCarregada: number | null | undefined;
 
   protected readonly form = this.fb.group({
     tipo: this.fb.control<TipoPessoa>('PF'),
@@ -365,7 +367,7 @@ export class ClienteFormPage {
     };
     this.salvando.set(true);
     try {
-      await this.repo.salvar(dados, this.id());
+      await this.repo.salvar(dados, this.id(), this.versaoCarregada);
       this.toasts.mostrar('Cliente salvo.');
       await this.router.navigateByUrl('/clientes');
     } catch (e) {
@@ -384,7 +386,7 @@ export class ClienteFormPage {
     if (!id || this.excluindo() || !window.confirm('Excluir este cliente?')) return;
     this.excluindo.set(true);
     try {
-      await this.repo.excluir(id);
+      await this.repo.excluir(id, this.versaoCarregada);
       this.toasts.mostrar('Cliente excluído.');
       await this.router.navigateByUrl('/clientes');
     } catch {
@@ -401,6 +403,7 @@ export class ClienteFormPage {
       this.naoEncontrado.set(true);
       return;
     }
+    this.versaoCarregada = c.version;
     this.form.patchValue({
       tipo: c.tipo,
       documento: formatarDocumento(c.documento),

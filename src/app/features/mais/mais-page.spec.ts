@@ -14,6 +14,7 @@ function montar(perfil: Perfil, contagens: number[] = [0], online = true) {
   contagens.forEach((n) => contar.mockResolvedValueOnce(n));
   contar.mockResolvedValue(contagens.at(-1));
   const sincronizar = vi.fn().mockResolvedValue(undefined);
+  const aguardarOciosa = vi.fn().mockResolvedValue(undefined);
   TestBed.configureTestingModule({
     providers: [
       provideRouter([]),
@@ -21,14 +22,14 @@ function montar(perfil: Perfil, contagens: number[] = [0], online = true) {
       { provide: ConectividadeService, useValue: { online: signal(online) } },
       {
         provide: SyncService,
-        useValue: { naoSincronizados: signal(contagens[0]), problemas: signal(0), contarNaoSincronizados: contar, sincronizar },
+        useValue: { naoSincronizados: signal(contagens[0]), problemas: signal(0), contarNaoSincronizados: contar, sincronizar, aguardarOciosa },
       },
     ],
   });
   const fixture = TestBed.createComponent(MaisPage);
   fixture.detectChanges();
   const navegar = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
-  return { el: fixture.nativeElement as HTMLElement, logout, sincronizar, navegar };
+  return { el: fixture.nativeElement as HTMLElement, logout, sincronizar, navegar, aguardarOciosa };
 }
 
 describe('MaisPage', () => {
@@ -56,6 +57,21 @@ describe('MaisPage', () => {
     el.querySelector<HTMLButtonElement>('[data-testid=sair]')!.click();
     await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/login'));
     expect(logout).toHaveBeenCalled();
+  });
+
+  it('sair espera a sincronização ociosa antes do logout e ignora toque duplo', async () => {
+    const { el, logout, navegar, aguardarOciosa } = montar('COMERCIAL', [0]);
+    let liberar!: () => void;
+    aguardarOciosa.mockReturnValue(new Promise<void>((r) => (liberar = r)));
+    const botao = el.querySelector<HTMLButtonElement>('[data-testid=sair]')!;
+    botao.click();
+    botao.click();
+    await vi.waitFor(() => expect(aguardarOciosa).toHaveBeenCalled());
+    expect(logout).not.toHaveBeenCalled();
+    liberar();
+    await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/login'));
+    expect(aguardarOciosa).toHaveBeenCalledBefore(logout);
+    expect(logout).toHaveBeenCalledTimes(1);
   });
 
   it('com pendências tenta sincronizar e, se sobrar algo e o usuário recusar, não sai', async () => {

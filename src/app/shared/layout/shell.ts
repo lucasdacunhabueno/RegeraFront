@@ -42,6 +42,9 @@ import { itensPara } from './navegacao';
               [attr.aria-label]="tituloSync()"
             >
               <svg [lucideIcon]="iconeSync" [size]="16" [class.animate-spin]="sincronizando()"></svg>
+              @if (horaSync(); as hora) {
+                <span data-testid="ultimo-sync" class="text-xs">{{ hora }}</span>
+              }
               @if (problemas() > 0) {
                 <span class="rounded-full bg-red-600 px-1.5 text-xs font-semibold text-white">{{ problemas() }}</span>
               } @else if (naoSincronizados() > 0) {
@@ -108,11 +111,13 @@ export class Shell {
   protected readonly naoSincronizados = this.sync.naoSincronizados;
   protected readonly problemas = this.sync.problemas;
   protected readonly iconeSync = LucideRefreshCw;
-  protected readonly tituloSync = computed(() => {
+  protected readonly horaSync = computed(() => {
     const quando = this.sync.ultimoSync();
-    const base = quando
-      ? `Último sync: ${new Date(quando).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
-      : 'Ainda não sincronizado';
+    return quando ? new Date(quando).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }) : null;
+  });
+  protected readonly tituloSync = computed(() => {
+    const hora = this.horaSync();
+    const base = hora ? `Último sync: ${hora}` : 'Ainda não sincronizado';
     const n = this.problemas() + this.naoSincronizados();
     return n > 0 ? `${base} · ${n} pendente(s)` : base;
   });

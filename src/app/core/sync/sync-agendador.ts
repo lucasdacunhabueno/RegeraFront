@@ -19,7 +19,7 @@ export class SyncAgendador {
     if (this.efeito) return;
     this.efeito = effect(
       () => {
-        if (this.conectividade.online()) {
+        if (this.conectividade.online() && this.auth.autenticado()) {
           untracked(() => void this.aoConectar());
         }
       },

@@ -27,7 +27,7 @@ describe('SyncService', () => {
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: AuthService, useValue: { autenticado: () => true, sessaoExpirada: () => false } },
+        { provide: AuthService, useValue: { autenticado: () => true, sessaoExpirada: () => false, usuario: () => ({ id: 'u1' }) } },
         { provide: ConectividadeService, useValue: { online } },
       ],
     });
@@ -244,6 +244,48 @@ describe('SyncService', () => {
     await p;
     expect((await db.clientes.get('c1'))?.nome).toBe('Local');
     expect(await db.outbox.count()).toBe(1);
+  });
+
+  it('cursor de outro usuário recomeça do zero e limpa clientes e usuários, sem tocar a outbox', async () => {
+    await db.gravarMeta('cursor', 50);
+    await db.gravarMeta('cursorDono', 'outro');
+    await db.clientes.put(paraClienteLocal('velho', 1, dados('Velho')));
+    await db.usuarios.put({ id: 'x', nome: 'X', perfil: 'ADMIN' } as never);
+    const mut = { mutationId: 'mm', entidade: 'cliente' as const, agregadoId: 'o1', op: 'UPSERT' as const, baseVersion: null, dados: dados('O'), criadaEm: '' };
+    await db.outbox.add(mut);
+    await db.pendencias.put({ mutationId: 'mm', entidade: 'cliente', agregadoId: 'o1', tipo: 'REJEITADO', mutacao: mut, criadaEm: '' });
+
+    const promessa = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull' && r.params.get('cursor') === '0')))
+      .flush({ cursor: 7, temMais: false, mudancas: [], usuarios: [] });
+    await promessa;
+
+    expect(await db.clientes.get('velho')).toBeUndefined();
+    expect(await db.usuarios.count()).toBe(0);
+    expect(await db.outbox.count()).toBe(1);
+    expect(await db.pendencias.count()).toBe(1);
+    expect(await db.lerMeta('cursor')).toBe(7);
+    expect(await db.lerMeta('cursorDono')).toBe('u1');
+  });
+
+  it('cursor do mesmo usuário continua de onde parou', async () => {
+    await db.gravarMeta('cursor', 50);
+    await db.gravarMeta('cursorDono', 'u1');
+    const promessa = sync.sincronizar();
+    await pullVazio(50);
+    await promessa;
+  });
+
+  it('aguardarOciosa espera a sincronização em curso terminar', async () => {
+    const promessa = sync.sincronizar();
+    let ocioso = false;
+    const espera = sync.aguardarOciosa().then(() => (ocioso = true));
+    await new Promise((r) => setTimeout(r, 20));
+    expect(ocioso).toBe(false);
+    await pullVazio();
+    await promessa;
+    await espera;
+    expect(ocioso).toBe(true);
   });
 
   it('cursor que não avança com temMais encerra o pull após uma requisição', async () => {

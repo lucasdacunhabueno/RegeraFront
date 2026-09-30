@@ -1,4 +1,4 @@
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { Router, RouterLink } from '@angular/router';
 import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
@@ -41,7 +41,19 @@ export class MaisPage {
   protected readonly admin = computed(() => this.auth.usuario()?.perfil === 'ADMIN');
   protected readonly pendentes = computed(() => this.sync.naoSincronizados() + this.sync.problemas());
 
+  private readonly saindo = signal(false);
+
   protected async sair(): Promise<void> {
+    if (this.saindo()) return;
+    this.saindo.set(true);
+    try {
+      await this.executarSaida();
+    } finally {
+      this.saindo.set(false);
+    }
+  }
+
+  private async executarSaida(): Promise<void> {
     let pendentes = await this.sync.contarNaoSincronizados();
     if (pendentes > 0 && this.online()) {
       await this.sync.sincronizar();
@@ -55,6 +67,7 @@ export class MaisPage {
     ) {
       return;
     }
+    await this.sync.aguardarOciosa();
     await this.auth.logout();
     await this.router.navigateByUrl('/login');
   }

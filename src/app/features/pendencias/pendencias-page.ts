@@ -40,12 +40,23 @@ import { Toasts } from '../../shared/ui/toasts';
         <li class="rounded-xl bg-white p-4">
           <p class="font-medium">{{ titulo(p) }}</p>
           <p class="mt-1 text-sm" [class.text-amber-800]="p.tipo === 'CONFLITO'" [class.text-red-700]="p.tipo === 'REJEITADO'">
-            {{ p.tipo === 'CONFLITO' ? 'Alterado por outra pessoa enquanto você editava.' : p.erro?.mensagem }}
+            {{ mensagem(p) }}
           </p>
+          @if (p.erro?.campos; as campos) {
+            <ul class="mt-1 text-sm text-red-700">
+              @for (c of listarCampos(campos); track c[0]) {
+                <li>{{ c[0] }}: {{ c[1] }}</li>
+              }
+            </ul>
+          }
           <div class="mt-3 flex flex-wrap gap-2">
             @if (p.tipo === 'CONFLITO') {
-              <button type="button" (click)="manterMinha(p)" class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Manter a minha</button>
-              <button type="button" (click)="usarServidor(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Usar a do servidor</button>
+              @if (excluidoNoServidor(p)) {
+                <button type="button" (click)="usarServidor(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Descartar</button>
+              } @else {
+                <button type="button" (click)="manterMinha(p)" class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Manter a minha</button>
+                <button type="button" (click)="usarServidor(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Usar a do servidor</button>
+              }
             } @else {
               @if (p.erro?.codigo === 'DOCUMENTO_DUPLICADO' && p.erro?.idExistente) {
                 <button type="button" (click)="usarExistente(p)" class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Usar cadastro existente</button>
@@ -72,6 +83,19 @@ export class PendenciasPage {
   protected titulo(p: Pendencia): string {
     const nome = (p.mutacao.dados as { nome?: string } | null)?.nome;
     return nome ?? (p.mutacao.op === 'DELETE' ? 'Exclusão de cliente' : 'Cliente');
+  }
+
+  protected excluidoNoServidor(p: Pendencia): boolean {
+    return p.tipo === 'CONFLITO' && p.dadosServidor == null;
+  }
+
+  protected mensagem(p: Pendencia): string | undefined {
+    if (p.tipo !== 'CONFLITO') return p.erro?.mensagem;
+    return this.excluidoNoServidor(p) ? 'Excluído por outra pessoa.' : 'Alterado por outra pessoa enquanto você editava.';
+  }
+
+  protected listarCampos(campos: Record<string, string>): [string, string][] {
+    return Object.entries(campos);
   }
 
   protected sincronizar(): void {

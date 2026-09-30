@@ -47,6 +47,19 @@ describe('SyncAgendador', () => {
     expect(renovar).toHaveBeenCalledBefore(sincronizar);
   });
 
+  it('login sem recarregar (autenticado false para true) com internet dispara renovar e sincronizar', async () => {
+    online.set(true);
+    autenticado.set(false);
+    agendador.iniciar();
+    TestBed.tick();
+    expect(sincronizar).not.toHaveBeenCalled();
+
+    autenticado.set(true);
+    TestBed.tick();
+    await vi.waitFor(() => expect(sincronizar).toHaveBeenCalled());
+    expect(renovar).toHaveBeenCalledBefore(sincronizar);
+  });
+
   it('não faz nada sem usuário autenticado', async () => {
     autenticado.set(false);
     online.set(true);

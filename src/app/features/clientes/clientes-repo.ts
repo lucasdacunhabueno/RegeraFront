@@ -44,7 +44,8 @@ export class ClientesRepo {
     return (await this.db.pendencias.where('agregadoId').equals(id).count()) > 0;
   }
 
-  async salvar(dados: ClienteDados, id?: string): Promise<string> {
+  /** `versaoCarregada`: versão que o formulário leu; vira a baseVersion para o servidor detectar edição concorrente. */
+  async salvar(dados: ClienteDados, id?: string, versaoCarregada?: number | null): Promise<string> {
     const documento = normalizarDocumento(dados.documento);
     const agregadoId = id ?? uuidv7();
     const normalizados: ClienteDados = { ...dados, documento };
@@ -54,7 +55,7 @@ export class ClientesRepo {
         throw new ErroCampo('documento', 'Já existe um cliente com este CPF/CNPJ neste aparelho.');
       }
       const atual = await this.db.clientes.get(agregadoId);
-      const version = atual?.version ?? null;
+      const version = versaoCarregada !== undefined ? versaoCarregada : (atual?.version ?? null);
       await this.db.clientes.put(paraClienteLocal(agregadoId, version, normalizados));
       await this.db.pendencias
         .where('agregadoId')
@@ -67,11 +68,17 @@ export class ClientesRepo {
     return agregadoId;
   }
 
-  async excluir(id: string): Promise<void> {
-    await this.db.transaction('rw', [this.db.clientes, this.db.outbox], async () => {
+  async excluir(id: string, versaoCarregada?: number | null): Promise<void> {
+    await this.db.transaction('rw', [this.db.clientes, this.db.outbox, this.db.pendencias], async () => {
       const atual = await this.db.clientes.get(id);
+      const version = versaoCarregada !== undefined ? versaoCarregada : (atual?.version ?? null);
       await this.db.clientes.delete(id);
-      await this.sync.registrar('cliente', id, 'DELETE', null, atual?.version ?? null);
+      await this.db.pendencias
+        .where('agregadoId')
+        .equals(id)
+        .filter((p) => p.tipo === 'REJEITADO')
+        .delete();
+      await this.sync.registrar('cliente', id, 'DELETE', null, version);
     });
     void this.sync.sincronizar();
   }
