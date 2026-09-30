@@ -159,4 +159,29 @@ describe('limparTiptap', () => {
       expect(limparTiptap(entrada)).toEqual({ type: 'doc', content: [{ type: 'paragraph' }] });
     }
   });
+
+  it('é idempotente: limpar o que já foi limpo não muda nada', () => {
+    let fundo: TiptapNo = { type: 'paragraph', content: [{ type: 'text', text: 'fundo' }] };
+    for (let i = 0; i < 10; i++) {
+      fundo = { type: 'orderedList', attrs: { start: 0, type: 'a' }, content: [{ type: 'listItem', content: [fundo] }] };
+    }
+    const entradas: unknown[] = [
+      { type: 'doc', content: [fundo] },
+      {
+        type: 'doc',
+        content: [
+          { type: 'table', content: [{ type: 'text', text: 'x', marks: [{ type: 'link', attrs: { href: 'y' } }, { type: 'bold' }] }] },
+          { type: 'heading', attrs: { level: 1, textAlign: 'start' }, content: [{ type: 'variavel', attrs: { nome: 'cliente.nome' } }] },
+          { type: 'bulletList', content: [{ type: 'text', text: 'solto' }, { type: 'listItem', content: [{ type: 'bulletList', content: [] }] }] },
+          { type: 'hardBreak' },
+        ],
+      },
+      null,
+    ];
+    for (const entrada of entradas) {
+      const uma = limparTiptap(entrada);
+      expect(limparTiptap(uma)).toEqual(uma);
+      expect(valida(uma)).toEqual({});
+    }
+  });
 });

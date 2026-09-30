@@ -30,8 +30,9 @@ import {
 import { ChainedCommands, Editor } from '@tiptap/core';
 import { TextAlign } from '@tiptap/extension-text-align';
 import { StarterKit } from '@tiptap/starter-kit';
-import { TiptapDoc, VARIAVEIS } from '../../features/templates/template-models';
+import { TiptapDoc } from '../../features/templates/template-models';
 import { limparTiptap } from './limpar-tiptap';
+import { SeletorVariavel } from './seletor-variavel';
 import { VariavelNode } from './variavel-node';
 
 interface Botao {
@@ -75,18 +76,24 @@ export function normalizarHtmlColado(html: string): string {
   });
 }
 
-const iguais = (a: readonly boolean[], b: readonly boolean[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+/** Quantos emits recentes são lembrados para ignorar o eco atrasado deles. */
+const MAX_EMITIDOS = 20;
+
+const iguais =(a: readonly boolean[], b: readonly boolean[]) => a.length === b.length && a.every((v, i) => v === b[i]);
 
 /**
  * Editor de texto rico restrito (§9.1) sobre o Tiptap 3 (sem binding Angular: `Editor` do `@tiptap/core` num elemento
  * do template). Só é importado por páginas de rota lazy (templates), para o Tiptap não entrar no bundle inicial.
  * - Emite `conteudoChange` a cada `update` com `limparTiptap(editor.getJSON())`: nunca HTML, só o JSON permitido.
- * - `conteudo` vindo de fora, diferente do doc atual, entra com `setContent(..., { emitUpdate: false })`.
+ * - `conteudo` vindo de fora, diferente do doc atual, entra com `setContent(..., { emitUpdate: false })` e fora do
+ *   histórico de desfazer. O pai deve ecoar de forma síncrona (ex.: `[conteudo]="doc()" (conteudoChange)="doc.set($event)"`).
+ *   Mesmo assim, o eco (atrasado ou não) de um dos emits recentes é ignorado enquanto o editor tem foco, para não
+ *   desfazer o que foi digitado depois dele.
  * - Zoneless: os eventos do Tiptap só atualizam signals.
  */
 @Component({
   selector: 'app-editor-texto',
-  imports: [LucideDynamicIcon],
+  imports: [LucideDynamicIcon, SeletorVariavel],
   encapsulation: ViewEncapsulation.None,
   styles: `
     .editor-texto .ProseMirror { min-height: 8rem; outline: none; }
@@ -99,32 +106,27 @@ const iguais = (a: readonly boolean[], b: readonly boolean[]) => a.length === b.
   template: `
     <div class="rounded-lg border border-slate-300 bg-white focus-within:border-blue-600">
       @if (!somenteLeitura()) {
-        <div role="toolbar" aria-label="Formatação do texto" class="flex flex-wrap items-center gap-1 border-b border-slate-200 p-1">
-          @for (b of botoes; track b.rotulo; let i = $index) {
-            <button
-              type="button"
-              [attr.aria-label]="b.rotulo"
-              [attr.aria-pressed]="ativos()[i] ? 'true' : 'false'"
-              [title]="b.rotulo"
-              (mousedown)="$event.preventDefault()"
-              (click)="acionar(b)"
-              class="flex h-12 w-12 items-center justify-center rounded-lg text-slate-700 hover:bg-slate-100 lg:h-9 lg:w-9"
-              [class.bg-blue-100]="ativos()[i]"
-              [class.text-blue-800]="ativos()[i]"
-            >
-              <svg [lucideIcon]="b.icone" [size]="18" aria-hidden="true"></svg>
-            </button>
-          }
-          <select
-            aria-label="Inserir variável"
-            (change)="inserirVariavel($event)"
-            class="h-12 max-w-full rounded-lg border border-slate-300 bg-white px-2 text-sm lg:h-9"
-          >
-            <option value="">Inserir variável</option>
-            @for (v of variaveis; track v.nome) {
-              <option [value]="v.nome">{{ v.rotulo }}</option>
+        <div class="flex flex-wrap items-center gap-1 border-b border-slate-200 p-1">
+          <div #barra role="toolbar" aria-label="Formatação do texto" tabindex="-1" (keydown)="navegar($event)" class="flex flex-wrap items-center gap-1">
+            @for (b of botoes; track b.rotulo; let i = $index) {
+              <button
+                type="button"
+                [attr.aria-label]="b.rotulo"
+                [attr.aria-pressed]="ativos()[i] ? 'true' : 'false'"
+                [title]="b.rotulo"
+                [tabIndex]="i === foco() ? 0 : -1"
+                (focus)="foco.set(i)"
+                (mousedown)="$event.preventDefault()"
+                (click)="acionar(b)"
+                class="flex h-12 w-12 items-center justify-center rounded-lg text-slate-700 hover:bg-slate-100 lg:h-9 lg:w-9"
+                [class.bg-blue-100]="ativos()[i]"
+                [class.text-blue-800]="ativos()[i]"
+              >
+                <svg [lucideIcon]="b.icone" [size]="18" aria-hidden="true"></svg>
+              </button>
             }
-          </select>
+          </div>
+          <app-seletor-variavel (escolher)="inserirVariavel($event)" />
         </div>
       }
       <div #host class="editor-texto px-3 py-2"></div>
@@ -139,12 +141,19 @@ export class EditorTexto implements OnDestroy {
   readonly conteudoChange = output<TiptapDoc>();
 
   protected readonly botoes = BOTOES;
-  protected readonly variaveis = VARIAVEIS;
+  /** Índice do botão da barra que é a parada de Tab (tabindex itinerante). */
+  protected readonly foco = signal(0);
   /** Estado de cada botão da barra (mesma ordem de `botoes`), atualizado a cada transação do Tiptap. */
   protected readonly ativos = signal<readonly boolean[]>([], { equal: iguais });
 
   private readonly host = viewChild.required<ElementRef<HTMLElement>>('host');
+  private readonly barra = viewChild<ElementRef<HTMLElement>>('barra');
   private instancia?: Editor;
+  /**
+   * JSON (string) dos últimos `conteudoChange` desde o último conteúdo de fora ou a última saída do foco: o eco deles
+   * no input `conteudo` é ignorado. Só o último não basta — o eco atrasado do penúltimo chegaria depois do último.
+   */
+  private emitidos: string[] = [];
 
   /** O `Editor` do Tiptap, depois da primeira renderização. */
   get editor(): Editor | undefined {
@@ -159,7 +168,16 @@ export class EditorTexto implements OnDestroy {
     });
     effect(() => {
       const somenteLeitura = this.somenteLeitura();
-      untracked(() => this.instancia?.setEditable(!somenteLeitura, false));
+      this.rotulo();
+      untracked(() => {
+        const editor = this.instancia;
+        if (!editor) return;
+        if (editor.isEditable === somenteLeitura) {
+          editor.setEditable(!somenteLeitura, false);
+        } else {
+          editor.setOptions({}); // reaplica os editorProps: `attributes` lê rotulo()/somenteLeitura() de novo
+        }
+      });
     });
   }
 
@@ -174,13 +192,20 @@ export class EditorTexto implements OnDestroy {
     }
   }
 
-  protected inserirVariavel(evento: Event): void {
-    const menu = evento.target as HTMLSelectElement;
-    const nome = menu.value;
-    menu.value = '';
-    if (nome !== '' && this.instancia) {
-      this.instancia.chain().focus().insertContent({ type: 'variavel', attrs: { nome } }).run();
-    }
+  protected inserirVariavel(nome: string): void {
+    this.instancia?.chain().focus().insertContent({ type: 'variavel', attrs: { nome } }).run();
+  }
+
+  /** Setas esquerda/direita (circular), Home e End movem o foco entre os botões da barra. */
+  protected navegar(e: KeyboardEvent): void {
+    const n = BOTOES.length;
+    const atual = this.foco();
+    const destinos: Record<string, number> = { ArrowRight: (atual + 1) % n, ArrowLeft: (atual - 1 + n) % n, Home: 0, End: n - 1 };
+    const proximo = destinos[e.key];
+    if (proximo === undefined) return;
+    e.preventDefault();
+    this.foco.set(proximo);
+    this.barra()?.nativeElement.querySelectorAll<HTMLButtonElement>('button')[proximo]?.focus();
   }
 
   private criar(): void {
@@ -204,10 +229,21 @@ export class EditorTexto implements OnDestroy {
       content: limparTiptap(this.conteudo()),
       editable: !this.somenteLeitura(),
       editorProps: {
-        attributes: { 'aria-label': this.rotulo(), 'aria-multiline': 'true', role: 'textbox' },
+        attributes: () => ({
+          'aria-label': this.rotulo(),
+          'aria-multiline': 'true',
+          'aria-readonly': this.somenteLeitura() ? 'true' : 'false',
+          role: 'textbox',
+        }),
         transformPastedHTML: normalizarHtmlColado,
       },
-      onUpdate: ({ editor }) => this.conteudoChange.emit(limparTiptap(editor.getJSON())),
+      onUpdate: ({ editor }) => {
+        const json = limparTiptap(editor.getJSON());
+        this.emitidos = [...this.emitidos.slice(1 - MAX_EMITIDOS), JSON.stringify(json)];
+        this.conteudoChange.emit(json);
+      },
+      // fora do foco (ex.: clicou em "Descartar"), um conteúdo igual a um emit antigo é intenção do pai, não eco
+      onBlur: () => (this.emitidos = []),
       onTransaction: ({ editor }) => this.atualizarBarra(editor),
     });
     this.atualizarBarra(this.instancia);
@@ -217,9 +253,11 @@ export class EditorTexto implements OnDestroy {
     const editor = this.instancia;
     if (!editor) return;
     const novo = limparTiptap(conteudo);
-    if (JSON.stringify(novo) !== JSON.stringify(limparTiptap(editor.getJSON()))) {
-      editor.commands.setContent(novo, { emitUpdate: false });
-    }
+    const texto = JSON.stringify(novo);
+    if (this.emitidos.includes(texto) || texto === JSON.stringify(limparTiptap(editor.getJSON()))) return;
+    this.emitidos = [];
+    // um só `tr`: fora do histórico (desfazer não volta ao doc anterior) e sem `update`
+    editor.chain().setMeta('addToHistory', false).setContent(novo, { emitUpdate: false }).run();
   }
 
   private atualizarBarra(editor: Editor): void {

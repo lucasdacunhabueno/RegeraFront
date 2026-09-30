@@ -1,5 +1,7 @@
 import { Component, computed, ElementRef, input, model, viewChild } from '@angular/core';
-import { VARIAVEIS } from './template-models';
+import { SeletorVariavel } from '../../shared/editor/seletor-variavel';
+
+let sequencia = 0;
 
 /**
  * Título do bloco CABECALHO: texto simples (até 200) em que "Inserir variável" põe `{{nome}}` na posição do cursor
@@ -7,6 +9,7 @@ import { VARIAVEIS } from './template-models';
  */
 @Component({
   selector: 'app-titulo-variaveis',
+  imports: [SeletorVariavel],
   template: `
     <div class="flex flex-col gap-2 sm:flex-row">
       <input
@@ -22,16 +25,7 @@ import { VARIAVEIS } from './template-models';
         [class.border-slate-300]="!excedeu()"
         [class.border-red-600]="excedeu()"
       />
-      <select
-        aria-label="Inserir variável"
-        (change)="inserir($event)"
-        class="h-12 rounded-lg border border-slate-300 bg-white px-2 text-sm"
-      >
-        <option value="">Inserir variável</option>
-        @for (v of variaveis; track v.nome) {
-          <option [value]="v.nome">{{ v.rotulo }}</option>
-        }
-      </select>
+      <app-seletor-variavel (escolher)="inserir($event)" />
     </div>
     <div class="mt-1 flex justify-between gap-2 text-sm">
       @if (excedeu()) {
@@ -45,21 +39,15 @@ import { VARIAVEIS } from './template-models';
 })
 export class TituloVariaveis {
   readonly valor = model('');
-  /** `id` do input, para um `<label for>` de fora. */
-  readonly idCampo = input('titulo');
+  /** `id` do input, para um `<label for>` de fora; por padrão, um id único. */
+  readonly idCampo = input(`titulo-variaveis-${++sequencia}`);
 
-  protected readonly variaveis = VARIAVEIS;
   /** Mesmo limite do `validarBlocos` (MAX_TITULO); o token inserido pode passar dele, e aí o erro aparece aqui. */
   protected readonly max = 200;
   protected readonly excedeu = computed(() => this.valor().length > this.max);
   private readonly campo = viewChild.required<ElementRef<HTMLInputElement>>('campo');
 
-  protected inserir(evento: Event): void {
-    const menu = evento.target as HTMLSelectElement;
-    const nome = menu.value;
-    menu.value = '';
-    if (nome === '') return;
-
+  protected inserir(nome: string): void {
     const el = this.campo().nativeElement;
     const atual = el.value;
     const inicio = el.selectionStart ?? atual.length;

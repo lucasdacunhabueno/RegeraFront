@@ -9,6 +9,14 @@ import { TiptapDoc, TiptapMarca, TiptapNo, VARIAVEIS } from '../../features/temp
  * - Texto solto em nível de bloco vai para um parágrafo; filho de lista que não é `listItem` vira item; item sempre
  *   começa por parágrafo (exigência do schema do Tiptap). Listas vazias somem; o doc nunca fica vazio.
  * - Listas aninhadas além da profundidade máxima (12, com o doc em 1) são achatadas em parágrafos.
+ *
+ * Diferenças aceitas entre o que o editor mostra e o que sai (o editor não é travado nesses casos, só a saída):
+ * - Recuo de lista (Tab/`sinkListItem`) sem limite no editor: além da profundidade 12 a saída achata os níveis mais
+ *   fundos em parágrafos, com o texto todo preservado.
+ * - `orderedList.start` 0 ou negativo (ex.: `<ol start="0">` colado): o editor mostra 0, a saída omite o `start` e a
+ *   lista começa em 1.
+ * - Variável com nome fora da lista vinda de JSON (não de HTML colado, que o `VariavelNode` já recusa): some da saída.
+ * É idempotente: `limparTiptap(limparTiptap(x))` é igual a `limparTiptap(x)`.
  */
 export function limparTiptap(json: unknown): TiptapDoc {
   const content = ehObjeto(json) ? blocos(filhos(json), 2) : [];

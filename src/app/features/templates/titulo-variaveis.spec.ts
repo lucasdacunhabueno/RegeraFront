@@ -1,4 +1,5 @@
 import { TestBed } from '@angular/core/testing';
+import { VARIAVEIS } from './template-models';
 import { TituloVariaveis } from './titulo-variaveis';
 
 async function montar(valor: string) {
@@ -10,8 +11,14 @@ async function montar(valor: string) {
   await fixture.whenStable();
   const el = fixture.nativeElement as HTMLElement;
   const input = el.querySelector<HTMLInputElement>('input')!;
-  const menu = el.querySelector<HTMLSelectElement>('select[aria-label="Inserir variável"]')!;
-  return { fixture, input, menu, emitidos };
+  /** Abre "Inserir variável" e clica na opção da variável. */
+  const escolher = async (nome: string) => {
+    el.querySelector<HTMLButtonElement>('button[aria-haspopup=listbox]')!.click();
+    await fixture.whenStable();
+    el.querySelectorAll<HTMLElement>('[role=option]')[VARIAVEIS.findIndex((v) => v.nome === nome)].click();
+    await fixture.whenStable();
+  };
+  return { fixture, el, input, escolher, emitidos };
 }
 
 describe('TituloVariaveis', () => {
@@ -32,34 +39,28 @@ describe('TituloVariaveis', () => {
   });
 
   it('insere {{nome}} na posição do cursor, mesmo depois de o input perder o foco', async () => {
-    const { fixture, input, menu, emitidos } = await montar('Proposta  de');
+    const { el, input, escolher, emitidos } = await montar('Proposta  de');
     input.focus();
     input.setSelectionRange(9, 9);
     input.blur();
 
-    menu.value = 'proposta.numero';
-    menu.dispatchEvent(new Event('change'));
-    await fixture.whenStable();
+    await escolher('proposta.numero');
 
     expect(emitidos).toEqual(['Proposta {{proposta.numero}} de']);
     expect(input.value).toBe('Proposta {{proposta.numero}} de');
-    expect(menu.value).toBe('');
+    expect(el.querySelector('[role=listbox]')).toBeNull();
+    expect(document.activeElement).toBe(input);
     expect(input.selectionStart).toBe(9 + '{{proposta.numero}}'.length);
   });
 
   it('substitui o texto selecionado; sem cursor conhecido insere no fim', async () => {
-    const { fixture, input, menu, emitidos } = await montar('Proposta XXX');
+    const { input, escolher, emitidos } = await montar('Proposta XXX');
     input.setSelectionRange(9, 12);
-    input.dispatchEvent(new Event('select'));
-    menu.value = 'cliente.nome';
-    menu.dispatchEvent(new Event('change'));
-    await fixture.whenStable();
+    await escolher('cliente.nome');
     expect(emitidos.at(-1)).toBe('Proposta {{cliente.nome}}');
 
     const outro = await montar('Para ');
-    outro.menu.value = 'cliente.nome';
-    outro.menu.dispatchEvent(new Event('change'));
-    await outro.fixture.whenStable();
+    await outro.escolher('cliente.nome');
     expect(outro.emitidos).toEqual(['Para {{cliente.nome}}']);
   });
 
@@ -80,5 +81,15 @@ describe('TituloVariaveis', () => {
     expect(erro()?.textContent?.trim()).toBe('Máximo de 200 caracteres.');
     expect(input.getAttribute('aria-invalid')).toBe('true');
     expect(input.getAttribute('aria-describedby')).toContain(erro()!.id);
+  });
+
+  it('sem select nativo; id do input único por instância quando não informado', async () => {
+    const a = await montar('');
+    const b = await montar('');
+
+    expect(a.el.querySelector('select')).toBeNull();
+    expect(a.input.id).not.toBe('');
+    expect(a.input.id).not.toBe(b.input.id);
+    expect(a.el.querySelector(`#${a.input.id}-contagem`)).not.toBeNull();
   });
 });

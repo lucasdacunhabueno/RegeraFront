@@ -29,7 +29,16 @@ export const VariavelNode = Node.create({
   },
 
   parseHTML() {
-    return [{ tag: 'span[data-variavel]', getAttrs: (el: HTMLElement) => ({ nome: el.getAttribute('data-variavel') }) }];
+    // nome fora da lista fechada: a regra não casa e o span entra como texto comum (o texto fica, sem chip)
+    return [
+      {
+        tag: 'span[data-variavel]',
+        getAttrs: (el: HTMLElement) => {
+          const nome = el.getAttribute('data-variavel');
+          return nome !== null && ROTULOS.has(nome) ? { nome } : false;
+        },
+      },
+    ];
   },
 
   renderHTML({ node }) {

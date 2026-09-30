@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { TiptapDoc, TiptapNo, validarBlocos } from '../../features/templates/template-models';
 import { EditorTexto, normalizarHtmlColado } from './editor-texto';
+import { limparTiptap } from './limpar-tiptap';
 
 const doc = (...content: TiptapNo[]): TiptapDoc => ({ type: 'doc', content });
 const paragrafo = (texto: string): TiptapNo => ({ type: 'paragraph', content: [{ type: 'text', text: texto }] });
@@ -15,6 +16,8 @@ function percorrer(no: TiptapNo | TiptapDoc, nos: TiptapNo[] = []): TiptapNo[] {
   return nos;
 }
 const textoDe = (d: TiptapDoc) => percorrer(d).map((n) => n.text ?? '').join('');
+const quadro = () => new Promise<void>((r) => requestAnimationFrame(() => r()));
+const tecla = (el: Element, key: string) => el.dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
 
 async function montar(conteudo: TiptapDoc = doc(paragrafo('Olá mundo'))) {
   const fixture = TestBed.createComponent(EditorTexto);
@@ -66,7 +69,33 @@ describe('EditorTexto', () => {
       'Alinhar à esquerda', 'Centralizar', 'Alinhar à direita', 'Justificar',
     ]);
     expect(rotulos.every(([, p]) => p === 'true' || p === 'false')).toBe(true);
-    expect(el.querySelector('select[aria-label="Inserir variável"]')).not.toBeNull();
+    expect(el.querySelector('select')).toBeNull();
+    expect(el.querySelector('button[aria-haspopup=listbox]')?.textContent).toContain('Inserir variável');
+  });
+
+  it('barra com tabindex itinerante: uma parada de Tab e setas esquerda/direita entre os botões', async () => {
+    const { fixture, el, botao } = await montar();
+    const botoes = () => Array.from(el.querySelectorAll<HTMLButtonElement>('[role=toolbar] button'));
+    const paradas = () => botoes().filter((b) => b.tabIndex === 0);
+    expect(paradas()).toEqual([botao('Parágrafo')]);
+
+    botao('Parágrafo').focus();
+    tecla(botao('Parágrafo'), 'ArrowRight');
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(botao('Título 2'));
+    expect(paradas()).toEqual([botao('Título 2')]);
+
+    tecla(botao('Título 2'), 'ArrowLeft');
+    tecla(botao('Parágrafo'), 'ArrowLeft');
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(botao('Justificar'));
+    tecla(botao('Justificar'), 'ArrowRight');
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(botao('Parágrafo'));
+    tecla(botao('Parágrafo'), 'End');
+    await fixture.whenStable();
+    expect(document.activeElement).toBe(botao('Justificar'));
+    expect(paradas()).toHaveLength(1);
   });
 
   it('Título 2, centralizar e lista numerada geram JSON válido (sem orderedList.type)', async () => {
@@ -110,10 +139,12 @@ describe('EditorTexto', () => {
   it('insere a variável pelo menu: nó variavel com attrs.nome, chip com o rótulo e texto {{nome}}', async () => {
     const { fixture, el, editor, ultimo } = await montar(doc(paragrafo('Cliente: ')));
     editor.commands.focus('end');
-    const menu = el.querySelector<HTMLSelectElement>('select[aria-label="Inserir variável"]')!;
+    await quadro();
 
-    menu.value = 'cliente.nome';
-    menu.dispatchEvent(new Event('change'));
+    el.querySelector<HTMLButtonElement>('button[aria-haspopup=listbox]')!.click();
+    await fixture.whenStable();
+    const opcao = Array.from(el.querySelectorAll<HTMLElement>('[role=option]')).find((o) => o.textContent?.trim() === 'Nome do cliente')!;
+    opcao.click();
     await fixture.whenStable();
 
     expect(ultimo()).toEqual(
@@ -122,7 +153,102 @@ describe('EditorTexto', () => {
     const chip = el.querySelector('.ProseMirror span[data-variavel="cliente.nome"]');
     expect(chip?.textContent).toBe('Nome do cliente');
     expect(editor.getText()).toBe('Cliente: {{cliente.nome}}');
-    expect(menu.value).toBe('');
+    expect(el.querySelector('[role=listbox]')).toBeNull();
+  });
+
+  it('setas no menu de variáveis não inserem nada; Enter insere', async () => {
+    const { fixture, el, editor, emitidos, ultimo } = await montar(doc(paragrafo('A ')));
+    editor.commands.focus('end');
+    await quadro(); // o focus() do Tiptap roda num requestAnimationFrame; senão ele roubaria o foco da lista aberta
+    el.querySelector<HTMLButtonElement>('button[aria-haspopup=listbox]')!.click();
+    await fixture.whenStable();
+    const lista = el.querySelector('[role=listbox]')!;
+
+    tecla(lista, 'ArrowDown');
+    tecla(lista, 'ArrowDown');
+    await fixture.whenStable();
+    expect(emitidos).toEqual([]);
+
+    tecla(lista, 'Enter');
+    await fixture.whenStable();
+    expect(ultimo()).toEqual(
+      doc({ type: 'paragraph', content: [{ type: 'text', text: 'A ' }, { type: 'variavel', attrs: { nome: 'empresa.telefone' } }] }),
+    );
+  });
+
+  it('span[data-variavel] com nome fora da lista, colado, fica como texto (sem chip) e a saída é igual ao editor', async () => {
+    const { fixture, el, editor, ultimo } = await montar(doc({ type: 'paragraph' }));
+
+    editor.view.pasteHTML(
+      '<p>a <span data-variavel="x.y">x.y</span> <span data-variavel="cliente.nome">Nome do cliente</span></p>',
+      new Event('paste') as ClipboardEvent,
+    );
+    await fixture.whenStable();
+
+    expect(el.querySelector('.ProseMirror span[data-variavel="x.y"]')).toBeNull();
+    expect(ultimo()).toEqual(
+      doc({ type: 'paragraph', content: [{ type: 'text', text: 'a x.y ' }, { type: 'variavel', attrs: { nome: 'cliente.nome' } }] }),
+    );
+    expect(ultimo()).toEqual(limparTiptap(editor.getJSON()));
+    expect(percorrer(editor.getJSON() as TiptapDoc).filter((n) => n.type === 'variavel')).toHaveLength(1);
+  });
+
+  it('eco atrasado do pai (conteúdo já emitido) não sobrescreve o que foi digitado depois', async () => {
+    const { fixture, editor, emitidos } = await montar(doc(paragrafo('a')));
+    editor.commands.focus('end');
+    editor.commands.insertContent('b');
+    editor.commands.insertContent('c');
+    await fixture.whenStable();
+    expect(emitidos).toHaveLength(2);
+
+    fixture.componentRef.setInput('conteudo', emitidos[0]); // eco do 1º emit chegando depois do 2º
+    await fixture.whenStable();
+
+    expect(editor.getText()).toBe('abc');
+  });
+
+  it('conteúdo aplicado de fora não entra no histórico: desfazer não apaga o doc carregado', async () => {
+    const { fixture, editor } = await montar(doc(paragrafo('Olá mundo')));
+
+    fixture.componentRef.setInput('conteudo', doc(paragrafo('Template carregado')));
+    await fixture.whenStable();
+    editor.commands.undo();
+
+    expect(editor.getText()).toBe('Template carregado');
+  });
+
+  it('rotulo e somenteLeitura continuam reativos depois de criado; aria-readonly quando só leitura', async () => {
+    const { fixture, el, editor } = await montar();
+    const area = () => el.querySelector('.ProseMirror')!;
+    expect(area().getAttribute('aria-label')).toBe('Texto');
+    expect(area().getAttribute('aria-readonly')).toBe('false');
+
+    fixture.componentRef.setInput('rotulo', 'Introdução');
+    fixture.componentRef.setInput('somenteLeitura', true);
+    await fixture.whenStable();
+    expect(area().getAttribute('aria-label')).toBe('Introdução');
+    expect(area().getAttribute('aria-readonly')).toBe('true');
+    expect(editor.isEditable).toBe(false);
+
+    fixture.componentRef.setInput('somenteLeitura', false);
+    await fixture.whenStable();
+    expect(area().getAttribute('aria-readonly')).toBe('false');
+    expect(editor.isEditable).toBe(true);
+    expect(el.querySelector('[role=toolbar]')).not.toBeNull();
+  });
+
+  it('recuar itens de lista (sinkListItem) além da profundidade máxima: a saída continua válida e com todo o texto', async () => {
+    const { fixture, editor, ultimo } = await montar(doc({ type: 'bulletList', content: [{ type: 'listItem', content: [paragrafo('n0')] }] }));
+    for (let i = 1; i <= 8; i++) {
+      editor.commands.focus('end');
+      editor.commands.splitListItem('listItem');
+      editor.commands.insertContent(`n${i}`);
+      expect(editor.commands.sinkListItem('listItem')).toBe(true);
+    }
+    await fixture.whenStable();
+
+    expect(valida(ultimo())).toEqual({});
+    expect(textoDe(ultimo())).toBe('n0n1n2n3n4n5n6n7n8');
   });
 
   it('HTML colado (Review Focus 1): só o permitido fica, o texto sobrevive e o JSON passa na validação', async () => {
