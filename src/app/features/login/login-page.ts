@@ -4,6 +4,7 @@ import { Router } from '@angular/router';
 import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { mensagemDeErro } from '../../core/http/erro-api';
+import { SyncService } from '../../core/sync/sync-service';
 
 @Component({
   selector: 'app-login-page',
@@ -47,6 +48,7 @@ import { mensagemDeErro } from '../../core/http/erro-api';
 export class LoginPage {
   private readonly auth = inject(AuthService);
   private readonly router = inject(Router);
+  private readonly sync = inject(SyncService);
   protected readonly online = inject(ConectividadeService).online;
   protected readonly enviando = signal(false);
   protected readonly erro = signal<string | null>(null);
@@ -64,6 +66,19 @@ export class LoginPage {
     this.erro.set(null);
     try {
       const { email, senha } = this.form.getRawValue();
+      const anterior = await this.auth.sessaoLocal();
+      if (anterior && anterior.email !== email.trim().toLowerCase()) {
+        const pendentes = await this.sync.contarNaoSincronizados();
+        if (
+          pendentes > 0 &&
+          !window.confirm(
+            `Há ${pendentes} alteração(ões) de ${anterior.nome} ainda não sincronizada(s) neste aparelho. ` +
+              'Entrar com outro usuário vai apagá-las. Continuar?',
+          )
+        ) {
+          return;
+        }
+      }
       await this.auth.login(email, senha);
       await this.router.navigateByUrl('/');
     } catch (e) {
