@@ -49,7 +49,11 @@ export const routes: Routes = [
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
         loadComponent: () => import('./features/catalogo/catalogo-page').then((m) => m.CatalogoPage),
       },
-      { path: 'empresa', canMatch: [perfilGuard('ADMIN')], loadComponent: emBreve, data: { titulo: 'Empresa' } },
+      {
+        path: 'empresa',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/empresa/empresa-page').then((m) => m.EmpresaPage),
+      },
       {
         path: 'pendencias',
         loadComponent: () => import('./features/pendencias/pendencias-page').then((m) => m.PendenciasPage),
