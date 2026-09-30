@@ -3,6 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
+import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
@@ -228,5 +229,59 @@ describe('PendenciasService', () => {
     expect(fila).toHaveLength(1);
     expect(fila[0]).toMatchObject({ op: 'DELETE', baseVersion: 4 });
     expect(await db.pendencias.count()).toBe(0);
+  });
+
+  describe('item do catálogo', () => {
+    const item = (nome: string): ItemCatalogoDados => ({
+      natureza: 'PRODUTO', codigo: 'PNL', nome, descricao: null, unidade: 'un', precoVenda: 1,
+      locavel: false, fotoArquivoId: null, ativo: true,
+    });
+    const pendenciaItem = (p: Partial<Pendencia> & Pick<Pendencia, 'tipo'>): Pendencia => ({
+      mutationId: 'mi', entidade: 'item_catalogo', agregadoId: 'i1', criadaEm: '',
+      mutacao: { mutationId: 'mi', entidade: 'item_catalogo', agregadoId: 'i1', op: 'UPSERT', baseVersion: 1, dados: item('Meu'), criadaEm: '' },
+      ...p,
+    });
+
+    it('manter a minha reenfileira o item local sobre a versão do servidor', async () => {
+      await db.itens.put(paraItemLocal('i1', 1, item('Meu')));
+      const p = pendenciaItem({ tipo: 'CONFLITO', versionServidor: 6, dadosServidor: item('Servidor') });
+      await db.pendencias.put(p);
+
+      await svc.manterMinha(p);
+
+      const fila = await db.outbox.toArray();
+      expect(fila).toHaveLength(1);
+      expect(fila[0]).toMatchObject({ entidade: 'item_catalogo', op: 'UPSERT', baseVersion: 6, dados: { nome: 'Meu' } });
+      expect((await db.itens.get('i1'))?.version).toBe(6);
+      expect(await db.pendencias.count()).toBe(0);
+    });
+
+    it('usar a do servidor busca o item atual e grava na tabela de itens', async () => {
+      await db.itens.put(paraItemLocal('i1', 1, item('Meu')));
+      const p = pendenciaItem({ tipo: 'CONFLITO', versionServidor: 6, dadosServidor: item('Servidor') });
+      await db.pendencias.put(p);
+
+      const promessa = svc.usarServidor(p);
+      (await vi.waitFor(() => http.expectOne('/api/sync/agregado/item_catalogo/i1')))
+        .flush({ entidade: 'item_catalogo', id: 'i1', version: 7, deleted: false, dados: item('Servidor atual') });
+      await promessa;
+
+      expect(await db.itens.get('i1')).toMatchObject({ nome: 'Servidor atual', version: 7 });
+      expect(await db.pendencias.count()).toBe(0);
+    });
+
+    it('descartar criação rejeitada (código duplicado) apaga o item local', async () => {
+      await db.itens.put(paraItemLocal('i1', null, item('Novo')));
+      const p = pendenciaItem({ tipo: 'REJEITADO', erro: { codigo: 'CODIGO_DUPLICADO', mensagem: 'x' } });
+      p.mutacao.baseVersion = null;
+      await db.pendencias.put(p);
+      await db.outbox.add({ ...p.mutacao, mutationId: 'mi2' });
+
+      await svc.descartar(p);
+
+      expect(await db.itens.get('i1')).toBeUndefined();
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.pendencias.count()).toBe(0);
+    });
   });
 });

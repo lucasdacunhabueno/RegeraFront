@@ -3,6 +3,8 @@ import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { of } from 'rxjs';
 import { vi } from 'vitest';
+import { Perfil } from '../../core/auth/auth-models';
+import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { PendenciasService } from '../../core/sync/pendencias-service';
 import { Pendencia } from '../../core/sync/sync-models';
@@ -25,7 +27,23 @@ const comCampos: Pendencia = {
   erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { email: 'E-mail inválido', nome: 'Obrigatório' } },
 };
 
-function montar(itens: Pendencia[], naoSincronizados = 0) {
+const itemDuplicado: Pendencia = {
+  mutationId: 'm5', entidade: 'item_catalogo', agregadoId: 'i1', tipo: 'REJEITADO', criadaEm: '5',
+  erro: { codigo: 'CODIGO_DUPLICADO', mensagem: 'Já existe um item com este código.' },
+  mutacao: { mutationId: 'm5', entidade: 'item_catalogo', agregadoId: 'i1', op: 'UPSERT', baseVersion: null, dados: { codigo: 'PNL', nome: 'Painel' }, criadaEm: '' },
+};
+const itemExcluido: Pendencia = {
+  mutationId: 'm6', entidade: 'item_catalogo', agregadoId: 'i2', tipo: 'CONFLITO', criadaEm: '6', versionServidor: 3,
+  dadosServidor: { codigo: 'GER', nome: 'Gerador' },
+  mutacao: { mutationId: 'm6', entidade: 'item_catalogo', agregadoId: 'i2', op: 'DELETE', baseVersion: 1, dados: null, criadaEm: '' },
+};
+const empresaRejeitada: Pendencia = {
+  mutationId: 'm7', entidade: 'empresa', agregadoId: 'e1', tipo: 'REJEITADO', criadaEm: '7',
+  erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.' },
+  mutacao: { mutationId: 'm7', entidade: 'empresa', agregadoId: 'e1', op: 'UPSERT', baseVersion: 1, dados: { razaoSocial: 'X' }, criadaEm: '' },
+};
+
+function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMIN') {
   const svc = {
     observar: () => of(itens),
     manterMinha: vi.fn().mockResolvedValue(undefined),
@@ -40,6 +58,7 @@ function montar(itens: Pendencia[], naoSincronizados = 0) {
       { provide: PendenciasService, useValue: svc },
       { provide: SyncService, useValue: { sincronizar, naoSincronizados: signal(naoSincronizados), sincronizando: signal(false) } },
       { provide: ConectividadeService, useValue: { online: signal(true) } },
+      { provide: AuthService, useValue: { usuario: signal({ id: 'u', nome: 'U', email: 'u@u', perfil, ativo: true }) } },
     ],
   });
   const fixture = TestBed.createComponent(PendenciasPage);
@@ -99,5 +118,40 @@ describe('PendenciasPage', () => {
     expect(navegar).toHaveBeenCalledWith('/clientes/c2');
     botao(el, 'Descartar').click();
     expect(svc.descartar).toHaveBeenCalledWith(duplicado);
+  });
+
+  it('item com código duplicado: título do item, orienta a editar o código e o admin abre o item', () => {
+    const { el, navegar } = montar([itemDuplicado]);
+    expect(el.textContent).toContain('Item do catálogo: PNL · Painel');
+    expect(el.textContent).toContain('Este código já é usado por outro item. Edite o código deste item.');
+    expect(el.textContent).not.toContain('Exclusão de cliente');
+    expect(botao(el, 'Usar cadastro existente')).toBeUndefined();
+    botao(el, 'Editar').click();
+    expect(navegar).toHaveBeenCalledWith('/catalogo/i1');
+  });
+
+  it('item: só o admin pode editar; descartar continua disponível', () => {
+    const { el, svc } = montar([itemDuplicado], 0, 'COMERCIAL');
+    expect(botao(el, 'Editar')).toBeUndefined();
+    botao(el, 'Descartar').click();
+    expect(svc.descartar).toHaveBeenCalledWith(itemDuplicado);
+  });
+
+  it('exclusão de item mostra o título certo com os dados do servidor', () => {
+    const { el } = montar([itemExcluido]);
+    expect(el.textContent).toContain('Exclusão de item do catálogo: GER · Gerador');
+  });
+
+  it('empresa: título "Dados da empresa" e sem Editar', () => {
+    const { el } = montar([empresaRejeitada]);
+    expect(el.textContent).toContain('Dados da empresa');
+    expect(el.textContent).not.toContain('Cliente');
+    expect(botao(el, 'Editar')).toBeUndefined();
+  });
+
+  it('cliente sem nome: título de cliente', () => {
+    const semNome: Pendencia = { ...duplicado, mutationId: 'm8', mutacao: { ...duplicado.mutacao, op: 'DELETE', dados: null } };
+    const { el } = montar([semNome]);
+    expect(el.textContent).toContain('Exclusão de cliente');
   });
 });

@@ -49,7 +49,7 @@ export class ClientesRepo {
       await this.db.pendencias
         .where('agregadoId')
         .equals(agregadoId)
-        .filter((p) => p.tipo === 'REJEITADO')
+        .filter((p) => p.tipo === 'REJEITADO' && p.entidade === 'cliente')
         .delete();
       await this.sync.registrar('cliente', agregadoId, 'UPSERT', normalizados, version);
     });
@@ -65,7 +65,7 @@ export class ClientesRepo {
       await this.db.pendencias
         .where('agregadoId')
         .equals(id)
-        .filter((p) => p.tipo === 'REJEITADO')
+        .filter((p) => p.tipo === 'REJEITADO' && p.entidade === 'cliente')
         .delete();
       await this.sync.registrar('cliente', id, 'DELETE', null, version);
     });

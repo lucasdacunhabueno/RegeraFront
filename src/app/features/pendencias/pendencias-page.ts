@@ -1,7 +1,8 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, inject } from '@angular/core';
+import { Component, computed, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
+import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { mensagemDeErro } from '../../core/http/erro-api';
 import { PendenciasService } from '../../core/sync/pendencias-service';
@@ -58,10 +59,12 @@ import { Toasts } from '../../shared/ui/toasts';
                 <button type="button" (click)="usarServidor(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Usar a do servidor</button>
               }
             } @else {
-              @if (p.erro?.codigo === 'DOCUMENTO_DUPLICADO' && p.erro?.idExistente) {
+              @if (p.entidade === 'cliente' && p.erro?.codigo === 'DOCUMENTO_DUPLICADO' && p.erro?.idExistente) {
                 <button type="button" (click)="usarExistente(p)" class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Usar cadastro existente</button>
               }
-              <button type="button" (click)="editar(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Editar</button>
+              @if (rotaEdicao(p); as rota) {
+                <button type="button" (click)="editar(rota)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Editar</button>
+              }
               <button type="button" (click)="descartar(p)" class="h-12 rounded-lg px-4 text-sm font-semibold text-red-600">Descartar</button>
             }
           </div>
@@ -75,14 +78,37 @@ export class PendenciasPage {
   private readonly sync = inject(SyncService);
   private readonly router = inject(Router);
   private readonly toasts = inject(Toasts);
+  private readonly auth = inject(AuthService);
+  protected readonly admin = computed(() => this.auth.usuario()?.perfil === 'ADMIN');
   protected readonly online = inject(ConectividadeService).online;
   protected readonly itens = toSignal(this.servico.observar(), { initialValue: [] as Pendencia[] });
   protected readonly naoSincronizados = this.sync.naoSincronizados;
   protected readonly sincronizando = this.sync.sincronizando;
 
   protected titulo(p: Pendencia): string {
-    const nome = (p.mutacao.dados as { nome?: string } | null)?.nome;
-    return nome ?? (p.mutacao.op === 'DELETE' ? 'Exclusão de cliente' : 'Cliente');
+    const exclusao = p.mutacao.op === 'DELETE';
+    switch (p.entidade) {
+      case 'cliente': {
+        const nome = (p.mutacao.dados as { nome?: string } | null)?.nome;
+        return nome ?? (exclusao ? 'Exclusão de cliente' : 'Cliente');
+      }
+      case 'item_catalogo': {
+        // exclusão não leva dados: usa o que o servidor devolveu, se houver
+        const d = (p.mutacao.dados ?? p.dadosServidor) as { codigo?: string; nome?: string } | null | undefined;
+        const rotulo = exclusao ? 'Exclusão de item do catálogo' : 'Item do catálogo';
+        const detalhe = [d?.codigo, d?.nome].filter((x) => !!x).join(' · ');
+        return detalhe ? `${rotulo}: ${detalhe}` : rotulo;
+      }
+      case 'empresa':
+        return 'Dados da empresa';
+    }
+  }
+
+  /** Para onde "Editar" leva; null = sem edição (ex.: catálogo para quem não é admin). */
+  protected rotaEdicao(p: Pendencia): string | null {
+    if (p.entidade === 'cliente') return `/clientes/${p.agregadoId}`;
+    if (p.entidade === 'item_catalogo' && this.admin()) return `/catalogo/${p.agregadoId}`;
+    return null;
   }
 
   protected excluidoNoServidor(p: Pendencia): boolean {
@@ -90,6 +116,9 @@ export class PendenciasPage {
   }
 
   protected mensagem(p: Pendencia): string | undefined {
+    if (p.entidade === 'item_catalogo' && p.erro?.codigo === 'CODIGO_DUPLICADO') {
+      return 'Este código já é usado por outro item. Edite o código deste item.';
+    }
     if (p.tipo !== 'CONFLITO') return p.erro?.mensagem;
     return this.excluidoNoServidor(p) ? 'Excluído por outra pessoa.' : 'Alterado por outra pessoa enquanto você editava.';
   }
@@ -102,8 +131,8 @@ export class PendenciasPage {
     void this.sync.sincronizar();
   }
 
-  protected editar(p: Pendencia): void {
-    void this.router.navigateByUrl(`/clientes/${p.agregadoId}`);
+  protected editar(rota: string): void {
+    void this.router.navigateByUrl(rota);
   }
 
   protected manterMinha(p: Pendencia): Promise<void> {

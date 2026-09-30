@@ -71,4 +71,28 @@ describe('CatalogoRepo', () => {
     expect(await db.pendencias.count()).toBe(0);
     expect((await db.outbox.toArray())[0]).toMatchObject({ op: 'DELETE', baseVersion: 2 });
   });
+
+  it('salvar e excluir só removem pendências de item do catálogo', async () => {
+    await db.itens.put(paraItemLocal('i1', 2, dados('A')));
+    await db.pendencias.put({
+      mutationId: 'mx', entidade: 'cliente', agregadoId: 'i1', tipo: 'REJEITADO', criadaEm: '',
+      mutacao: { mutationId: 'mx', entidade: 'cliente', agregadoId: 'i1', op: 'UPSERT', baseVersion: 2, dados: null, criadaEm: '' },
+    });
+    await repo.salvar(dados('A'), 'i1');
+    expect(await db.pendencias.count()).toBe(1);
+    await repo.excluir('i1');
+    expect(await db.pendencias.count()).toBe(1);
+  });
+
+  it('editar mantendo o mesmo código não acusa duplicado', async () => {
+    await db.itens.put(paraItemLocal('i1', 2, dados('PNL-1')));
+    await expect(repo.salvar(dados('pnl-1', 'Painel novo'), 'i1', 2)).resolves.toBe('i1');
+    expect(await db.itens.get('i1')).toMatchObject({ codigo: 'PNL-1', nome: 'Painel novo' });
+  });
+
+  it('excluir sem versão carregada usa a versão local', async () => {
+    await db.itens.put(paraItemLocal('i1', 7, dados('A')));
+    await repo.excluir('i1');
+    expect((await db.outbox.toArray())[0]).toMatchObject({ op: 'DELETE', baseVersion: 7 });
+  });
 });

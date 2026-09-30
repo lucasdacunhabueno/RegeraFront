@@ -115,6 +115,19 @@ describe('ClientesRepo', () => {
     expect(await db.pendencias.count()).toBe(0);
   });
 
+  it('salvar e excluir só removem pendências de cliente', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 2, dados()));
+    await db.pendencias.put({
+      mutationId: 'mx', entidade: 'item_catalogo', agregadoId: 'c1', tipo: 'REJEITADO',
+      mutacao: { mutationId: 'mx', entidade: 'item_catalogo', agregadoId: 'c1', op: 'UPSERT', baseVersion: 2, dados: null, criadaEm: '' },
+      erro: { codigo: 'VALIDACAO', mensagem: 'x' }, criadaEm: '',
+    });
+    await repo.salvar(dados(), 'c1');
+    expect(await db.pendencias.count()).toBe(1);
+    await repo.excluir('c1');
+    expect(await db.pendencias.count()).toBe(1);
+  });
+
   it('observa a lista e os ids não sincronizados', async () => {
     const listas: string[][] = [];
     const sub = repo.observarTodos().subscribe((l) => listas.push(l.map((c) => c.nome)));

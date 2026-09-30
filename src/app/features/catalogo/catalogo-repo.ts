@@ -42,7 +42,7 @@ export class CatalogoRepo {
       const atual = await this.db.itens.get(agregadoId);
       const version = versaoCarregada !== undefined ? versaoCarregada : (atual?.version ?? null);
       await this.db.itens.put(paraItemLocal(agregadoId, version, normalizados));
-      await this.db.pendencias.where('agregadoId').equals(agregadoId).filter((p) => p.tipo === 'REJEITADO').delete();
+      await this.db.pendencias.where('agregadoId').equals(agregadoId).filter((p) => p.tipo === 'REJEITADO' && p.entidade === 'item_catalogo').delete();
       await this.sync.registrar('item_catalogo', agregadoId, 'UPSERT', normalizados, version);
     });
     void this.sync.sincronizar();
@@ -54,7 +54,7 @@ export class CatalogoRepo {
       const atual = await this.db.itens.get(id);
       const version = versaoCarregada !== undefined ? versaoCarregada : (atual?.version ?? null);
       await this.db.itens.delete(id);
-      await this.db.pendencias.where('agregadoId').equals(id).filter((p) => p.tipo === 'REJEITADO').delete();
+      await this.db.pendencias.where('agregadoId').equals(id).filter((p) => p.tipo === 'REJEITADO' && p.entidade === 'item_catalogo').delete();
       await this.sync.registrar('item_catalogo', id, 'DELETE', null, version);
     });
     void this.sync.sincronizar();
