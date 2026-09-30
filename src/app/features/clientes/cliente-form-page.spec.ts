@@ -1,0 +1,146 @@
+import { signal } from '@angular/core';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { provideRouter, Router } from '@angular/router';
+import { vi } from 'vitest';
+import { ConectividadeService } from '../../core/conectividade/conectividade-service';
+import { ClienteDados, paraClienteLocal } from './cliente-models';
+import { ClienteFormPage } from './cliente-form-page';
+import { ClientesRepo, ErroCampo } from './clientes-repo';
+import { ConsultasExternas } from './consultas-externas';
+
+const existente: ClienteDados = {
+  tipo: 'PF', documento: '52998224725', nome: 'Maria', nomeFantasia: null, inscricaoEstadual: null,
+  inscricaoMunicipal: null, email: 'm@x.com', telefone: '11999998888', whatsapp: null, contatoNome: null,
+  observacoes: null,
+  enderecos: [{ tipo: 'PRINCIPAL', cep: '01001000', logradouro: 'Praça da Sé', numero: '1', complemento: null, bairro: 'Sé', cidade: 'São Paulo', uf: 'SP' }],
+};
+
+function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn> } = {}) {
+  const repo = {
+    buscar: vi.fn().mockResolvedValue(paraClienteLocal('id1', 3, existente)),
+    salvar: opcoes.salvar ?? vi.fn().mockResolvedValue('novo-id'),
+    excluir: vi.fn().mockResolvedValue(undefined),
+    temPendencia: vi.fn().mockResolvedValue(false),
+  };
+  const consultas = {
+    buscarCep: vi.fn().mockResolvedValue({ logradouro: 'Praça da Sé', bairro: 'Sé', cidade: 'São Paulo', uf: 'SP' }),
+    buscarCnpj: vi.fn().mockResolvedValue(null),
+  };
+  TestBed.configureTestingModule({
+    providers: [
+      provideRouter([]),
+      { provide: ClientesRepo, useValue: repo },
+      { provide: ConsultasExternas, useValue: consultas },
+      { provide: ConectividadeService, useValue: { online: signal(true) } },
+    ],
+  });
+  const fixture = TestBed.createComponent(ClienteFormPage);
+  if (opcoes.id) fixture.componentRef.setInput('id', opcoes.id);
+  fixture.detectChanges();
+  const navegar = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+  return { fixture, repo, consultas, navegar, el: fixture.nativeElement as HTMLElement };
+}
+
+function digitar(fixture: ComponentFixture<unknown>, seletor: string, valor: string) {
+  const el = (fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement | HTMLSelectElement>(seletor)!;
+  el.value = valor;
+  el.dispatchEvent(new Event(el.tagName === 'SELECT' ? 'change' : 'input'));
+  fixture.detectChanges();
+}
+
+const clicar = (el: HTMLElement, seletor: string) => el.querySelector<HTMLButtonElement>(seletor)!.click();
+
+describe('ClienteFormPage', () => {
+  afterEach(() => vi.restoreAllMocks());
+
+  it('novo PF: mascara o CPF e salva dados normalizados', async () => {
+    const { fixture, el, repo, navegar } = montar();
+    digitar(fixture, '#documento', '52998224725');
+    expect(el.querySelector<HTMLInputElement>('#documento')!.value).toBe('529.982.247-25');
+    digitar(fixture, '#nome', '  Maria  ');
+    digitar(fixture, '#telefone', '11999998888');
+    clicar(el, 'button[type=submit]');
+
+    await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/clientes'));
+    const [dados, id] = repo.salvar.mock.calls[0];
+    expect(id).toBeUndefined();
+    expect(dados).toMatchObject({ tipo: 'PF', documento: '52998224725', nome: 'Maria', telefone: '11999998888', nomeFantasia: null, enderecos: [] });
+  });
+
+  it('CPF inválido mostra erro e não salva', async () => {
+    const { fixture, el, repo } = montar();
+    digitar(fixture, '#documento', '52998224724');
+    digitar(fixture, '#nome', 'Maria');
+    clicar(el, 'button[type=submit]');
+    fixture.detectChanges();
+    expect(el.textContent).toContain('CPF inválido.');
+    expect(repo.salvar).not.toHaveBeenCalled();
+  });
+
+  it('PJ aceita CNPJ alfanumérico e mostra campos de empresa', async () => {
+    const { fixture, el, repo } = montar();
+    digitar(fixture, '#tipo', 'PJ');
+    expect(el.querySelector('label[for=nome]')?.textContent).toContain('Razão social');
+    digitar(fixture, '#documento', '12abc34501de35');
+    expect(el.querySelector<HTMLInputElement>('#documento')!.value).toBe('12.ABC.345/01DE-35');
+    digitar(fixture, '#nome', 'ACME Ltda');
+    digitar(fixture, '#nomeFantasia', 'ACME');
+    clicar(el, 'button[type=submit]');
+
+    await vi.waitFor(() => expect(repo.salvar).toHaveBeenCalled());
+    expect(repo.salvar.mock.calls[0][0]).toMatchObject({ tipo: 'PJ', documento: '12ABC34501DE35', nomeFantasia: 'ACME' });
+  });
+
+  it('edição carrega o cliente e salva com o mesmo id', async () => {
+    const { fixture, el, repo } = montar({ id: 'id1' });
+    await vi.waitFor(() => expect(el.querySelector<HTMLInputElement>('#nome')!.value).toBe('Maria'));
+    expect(el.querySelector<HTMLInputElement>('#documento')!.value).toBe('529.982.247-25');
+    expect(el.querySelector<HTMLInputElement>('#telefone')!.value).toBe('(11) 99999-8888');
+    expect(el.querySelectorAll('[data-testid=endereco]')).toHaveLength(1);
+
+    digitar(fixture, '#nome', 'Maria Souza');
+    clicar(el, 'button[type=submit]');
+
+    await vi.waitFor(() => expect(repo.salvar).toHaveBeenCalled());
+    const [dados, id] = repo.salvar.mock.calls[0];
+    expect(id).toBe('id1');
+    expect(dados.nome).toBe('Maria Souza');
+    expect(dados.enderecos[0]).toMatchObject({ cep: '01001000', uf: 'SP' });
+  });
+
+  it('documento repetido neste aparelho aparece no campo', async () => {
+    const salvar = vi.fn().mockRejectedValue(new ErroCampo('documento', 'Já existe um cliente com este CPF/CNPJ neste aparelho.'));
+    const { fixture, el } = montar({ salvar });
+    digitar(fixture, '#documento', '52998224725');
+    digitar(fixture, '#nome', 'Maria');
+    clicar(el, 'button[type=submit]');
+
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.textContent).toContain('Já existe um cliente com este CPF/CNPJ neste aparelho.');
+    });
+  });
+
+  it('busca CEP e preenche o endereço', async () => {
+    const { fixture, el, consultas } = montar();
+    clicar(el, '[data-testid=adicionar-endereco]');
+    fixture.detectChanges();
+    digitar(fixture, '[data-testid=endereco] input[formcontrolname=cep]', '01001000');
+    clicar(el, '[data-testid=buscar-cep]');
+
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLInputElement>('[data-testid=endereco] input[formcontrolname=cidade]')!.value).toBe('São Paulo');
+    });
+    expect(consultas.buscarCep).toHaveBeenCalledWith('01001-000');
+  });
+
+  it('excluir pede confirmação', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { el, repo, navegar } = montar({ id: 'id1' });
+    await vi.waitFor(() => expect(el.querySelector('[data-testid=excluir]')).not.toBeNull());
+    clicar(el, '[data-testid=excluir]');
+    await vi.waitFor(() => expect(repo.excluir).toHaveBeenCalledWith('id1'));
+    expect(navegar).toHaveBeenCalledWith('/clientes');
+  });
+});
