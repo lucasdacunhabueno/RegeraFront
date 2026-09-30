@@ -15,7 +15,9 @@ describe('ArquivosService', () => {
 
   beforeEach(() => {
     online.set(true);
-    (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = vi.fn(() => 'blob:fake');
+    let n = 0;
+    (URL as unknown as { createObjectURL: (b: Blob) => string }).createObjectURL = vi.fn(() => `blob:fake${n++ || ''}`);
+    (URL as unknown as { revokeObjectURL: (u: string) => void }).revokeObjectURL = vi.fn();
     TestBed.configureTestingModule({
       providers: [provideHttpClient(), provideHttpClientTesting(), { provide: ConectividadeService, useValue: { online } }],
     });
@@ -70,5 +72,60 @@ describe('ArquivosService', () => {
     online.set(false);
     expect(await svc.obterUrl('a5')).toBeNull();
     http.expectNone('/api/arquivos/a5');
+  });
+
+  it('enviar devolve o arquivo enviado mesmo se o cache local falhar', async () => {
+    vi.spyOn(db.arquivos, 'put').mockRejectedValue(new Error('cota cheia'));
+    const p = svc.enviar(new Blob([new Uint8Array([1])], { type: 'image/jpeg' }), 'foto.jpg');
+    (await vi.waitFor(() => http.expectOne('/api/arquivos'))).flush({ id: 'a6', nome: 'foto.jpg', mime: 'image/jpeg', tamanho: 1, sha256: 'x' });
+    expect((await p).id).toBe('a6');
+  });
+
+  it('obterUrl concorrente para o mesmo id faz um download e cria uma URL só', async () => {
+    const p1 = svc.obterUrl('a7');
+    const p2 = svc.obterUrl('a7');
+    (await vi.waitFor(() => http.expectOne('/api/arquivos/a7'))).flush(new Blob([new Uint8Array([1])], { type: 'image/png' }));
+    const [u1, u2] = await Promise.all([p1, p2]);
+    expect(u1).toBe(u2);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+    expect(await svc.obterUrl('a7')).toBe(u1);
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
+  });
+
+  it('limpar revoga as URLs criadas e esquece os ids', async () => {
+    await db.arquivos.put({ id: 'a8', mime: 'image/png', bytes: new Uint8Array([9]).buffer });
+    const url = await svc.obterUrl('a8');
+    svc.limpar();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(url);
+    await svc.obterUrl('a8');
+    expect(URL.createObjectURL).toHaveBeenCalledTimes(2);
+  });
+
+  it('limpar é chamado quando o banco local é apagado', async () => {
+    await db.arquivos.put({ id: 'a9', mime: 'image/png', bytes: new Uint8Array([9]).buffer });
+    const url = await svc.obterUrl('a9');
+    await db.limparTudo();
+    expect(URL.revokeObjectURL).toHaveBeenCalledWith(url);
+  });
+
+  it('garantirCache baixa e grava sem criar URL; se já existe, não baixa', async () => {
+    const p = svc.garantirCache('b1');
+    (await vi.waitFor(() => http.expectOne('/api/arquivos/b1'))).flush(new Blob([new Uint8Array([1, 2])], { type: 'image/png' }));
+    await p;
+    expect((await db.arquivos.get('b1'))?.bytes.byteLength).toBe(2);
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+
+    await svc.garantirCache('b1');
+    http.expectNone('/api/arquivos/b1');
+  });
+
+  it('garantirCache é silencioso em erro e offline', async () => {
+    const p = svc.garantirCache('b2');
+    (await vi.waitFor(() => http.expectOne('/api/arquivos/b2'))).flush(null, { status: 500, statusText: 'x' });
+    await expect(p).resolves.toBeUndefined();
+
+    online.set(false);
+    await expect(svc.garantirCache('b3')).resolves.toBeUndefined();
+    http.expectNone('/api/arquivos/b3');
   });
 });

@@ -26,6 +26,7 @@ export class RegeraDb extends Dexie {
   itens!: Table<ItemLocal, string>;
   empresa!: Table<EmpresaLocal, string>;
   arquivos!: Table<ArquivoLocal, string>;
+  private readonly aoLimparTudo = new Set<() => void>();
 
   constructor() {
     super('regera');
@@ -62,9 +63,15 @@ export class RegeraDb extends Dexie {
     await this.meta.put({ chave, valor });
   }
 
+  /** Registra quem guarda estado em memória derivado do banco (ex.: object URLs) e precisa esquecê-lo junto. */
+  aoLimpar(fn: () => void): void {
+    this.aoLimparTudo.add(fn);
+  }
+
   async limparTudo(): Promise<void> {
     await this.transaction('rw', this.tables, async () => {
       await Promise.all(this.tables.map((t) => t.clear()));
     });
+    this.aoLimparTudo.forEach((fn) => fn());
   }
 }
