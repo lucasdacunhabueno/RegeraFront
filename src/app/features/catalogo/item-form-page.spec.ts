@@ -160,6 +160,19 @@ describe('ItemFormPage', () => {
     expect(el.querySelector('[data-testid=excluir]')).toBeNull();
   });
 
+  it('falha ao ler o item: avisa, esconde Salvar e Excluir e não salva', async () => {
+    const { fixture, el, repo } = montar({ id: 'i1', buscar: Promise.reject(new Error('IndexedDB indisponível')) });
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.textContent).toContain('Não foi possível carregar o item.');
+    });
+    expect(el.querySelector('button[type=submit]')).toBeNull();
+    expect(el.querySelector('[data-testid=excluir]')).toBeNull();
+    el.querySelector('form')!.dispatchEvent(new Event('submit'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(repo.salvar).not.toHaveBeenCalled();
+  });
+
   it('edição: Salvar e Excluir ficam desabilitados até o item carregar', async () => {
     let resolver!: (v: unknown) => void;
     const { fixture, el, repo } = montar({ id: 'i1', buscar: new Promise((r) => (resolver = r)) });

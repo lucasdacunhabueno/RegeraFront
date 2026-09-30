@@ -124,6 +124,8 @@ const CORRIJA = 'Corrija os campos destacados.';
 
       @if (naoEncontrado()) {
         <p class="rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900" role="alert">Item não encontrado neste aparelho.</p>
+      } @else if (falhaCarga()) {
+        <p class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">Não foi possível carregar o item.</p>
       } @else {
         <button type="submit" [disabled]="carregando() || salvando() || enviandoFoto()"
                 class="h-12 w-full rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">Salvar</button>
@@ -156,6 +158,7 @@ export class ItemFormPage {
   protected readonly fotoArquivoId = signal<string | null>(null);
   protected readonly fotoUrl = signal<string | null>(null);
   protected readonly naoEncontrado = signal(false);
+  protected readonly falhaCarga = signal(false);
   /** Id cujo carregamento terminou; enquanto for outro, Salvar/Excluir ficam bloqueados. */
   private readonly carregadoId = signal<string | null>(null);
   protected readonly carregando = computed(() => {
@@ -247,7 +250,7 @@ export class ItemFormPage {
   }
 
   protected async salvar(): Promise<void> {
-    if (this.salvando() || this.carregando() || this.naoEncontrado()) return;
+    if (this.salvando() || this.carregando() || this.naoEncontrado() || this.falhaCarga()) return;
     this.erroGeral.set(null);
     const v = this.form.getRawValue();
     const erros: Partial<Record<CampoPreco, string>> = {};
@@ -314,8 +317,12 @@ export class ItemFormPage {
   }
 
   private async carregar(id: string): Promise<void> {
+    this.falhaCarga.set(false);
     try {
       await this.preencher(id);
+    } catch {
+      // formulário vazio salvaria um item em branco por cima do existente: bloqueia
+      if (this.id() === id) this.falhaCarga.set(true);
     } finally {
       if (this.id() === id) this.carregadoId.set(id);
     }
