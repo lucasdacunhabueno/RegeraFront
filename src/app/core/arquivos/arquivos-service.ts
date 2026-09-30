@@ -49,11 +49,14 @@ export class ArquivosService {
     }
     // acima de ~11 MB o Tomcat corta a conexão (sem 413) e o navegador veria só um erro de rede
     if (blob.size > TAMANHO_MAXIMO) throw new Error('Arquivo maior que 10 MB.');
+    const geracao = this.geracao;
     const corpo = new FormData();
     corpo.append('arquivo', blob, nome);
     const enviado = await firstValueFrom(this.http.post<ArquivoEnviado>('/api/arquivos', corpo).pipe(timeout(60_000)));
     try {
-      await this.db.arquivos.put({ id: enviado.id, mime: enviado.mime, bytes: await paraBytes(blob) });
+      const bytes = await paraBytes(blob);
+      // limpo (logout/troca de sessão) durante o upload: não gravar bytes da sessão anterior no banco novo
+      if (geracao === this.geracao) await this.db.arquivos.put({ id: enviado.id, mime: enviado.mime, bytes });
     } catch {
       // o arquivo já está no servidor; sem cache local ele é baixado quando for exibido
     }

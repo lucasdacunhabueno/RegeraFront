@@ -162,6 +162,15 @@ describe('ArquivosService', () => {
     expect(await db.arquivos.get('b5')).toBeUndefined();
   });
 
+  it('limpar() durante o upload não grava o cache local, mas devolve o resultado do servidor', async () => {
+    const p = svc.enviar(new Blob([new Uint8Array([1])], { type: 'image/jpeg' }), 'foto.jpg');
+    const req = await vi.waitFor(() => http.expectOne('/api/arquivos'));
+    svc.limpar();
+    req.flush({ id: 'c1', nome: 'foto.jpg', mime: 'image/jpeg', tamanho: 1, sha256: 'x' });
+    expect((await p).id).toBe('c1');
+    expect(await db.arquivos.get('c1')).toBeUndefined();
+  });
+
   it('sem sessão não baixa nada', async () => {
     autenticado.set(false);
     await svc.garantirCache('b6');
