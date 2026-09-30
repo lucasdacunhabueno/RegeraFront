@@ -248,7 +248,7 @@ describe('TemplateEditorPage', () => {
       expect(repo.salvar).toHaveBeenCalledWith(existente(), 't1', 3);
     });
 
-    it('ITENS sem colunas mostra o erro junto do bloco e não salva', async () => {
+    it('ITENS sem colunas: uma só mensagem (inline com o bloco aberto, no card com ele fechado) e não salva', async () => {
       const blocos = blocosExistentes();
       blocos[1] = { id: 'i1', tipo: 'ITENS', config: { colunas: [], agruparPorNatureza: false } };
       const { fixture, el, repo } = montar({ id: 't1', dados: existente(blocos) });
@@ -256,11 +256,21 @@ describe('TemplateEditorPage', () => {
       enviar(el);
       await estavel(fixture);
       expect(repo.salvar).not.toHaveBeenCalled();
-      expect(cartoes(el)[1].querySelector('[data-testid=erro-bloco]')?.textContent).toContain('Escolha pelo menos uma opção.');
-      expect(cartoes(el)[0].querySelector('[data-testid=erro-bloco]')).toBeNull();
       expect(el.querySelector('[data-testid=erro-geral]')?.textContent).toContain('Corrija os campos destacados.');
-      // o bloco com erro fica aberto
-      expect(cartoes(el)[1].querySelector('app-bloco-config')).toBeTruthy();
+      // o bloco com erro fica aberto e mostra só a mensagem inline do formulário
+      const itens = cartoes(el)[1];
+      expect(itens.querySelector('app-bloco-config')).toBeTruthy();
+      expect(itens.querySelector('[data-testid=erro-bloco]')).toBeNull();
+      expect(itens.textContent).toContain('Escolha pelo menos uma coluna.');
+      expect(itens.textContent).not.toContain('Escolha pelo menos uma opção.');
+      expect(itens.querySelectorAll('p.text-red-600').length).toBe(1);
+      expect(cartoes(el)[0].querySelector('[data-testid=erro-bloco]')).toBeNull();
+
+      // fechado, o card mostra o resumo do erro
+      itens.querySelector<HTMLButtonElement>('[data-testid=abrir-bloco]')!.click();
+      await estavel(fixture);
+      expect(cartoes(el)[1].querySelector('app-bloco-config')).toBeNull();
+      expect(cartoes(el)[1].querySelector('[data-testid=erro-bloco]')?.textContent).toContain('Escolha pelo menos uma opção.');
     });
 
     it('desmarcar Ativo desmarca e desabilita Padrão', async () => {
@@ -312,7 +322,11 @@ describe('TemplateEditorPage', () => {
       enviar(el);
       await estavel(fixture);
       expect(repo.salvar).not.toHaveBeenCalled();
-      expect(cartoes(el)[2].querySelector('[data-testid=erro-bloco]')?.textContent).toContain('Tipo de bloco desconhecido.');
+      // aberto: a mensagem vai para dentro do bloco-config, uma vez só
+      const card = cartoes(el)[2];
+      expect(card.querySelector('[data-testid=erro-bloco]')).toBeNull();
+      expect(card.querySelector('app-bloco-config')?.textContent).toContain('Tipo de bloco desconhecido.');
+      expect(card.textContent!.split('Tipo de bloco desconhecido.').length - 1).toBe(1);
     });
   });
 
@@ -348,22 +362,69 @@ describe('TemplateEditorPage', () => {
       expect(el.textContent).not.toContain('Gerando prévia…');
     });
 
-    it('em 390 px abre em nova aba; se o popup for bloqueado, mostra "Abrir prévia"', async () => {
+    const janelaFalsa = () => ({
+      location: { href: '' },
+      close: vi.fn(),
+      opener: {} as unknown,
+      document: { title: '', body: { textContent: '' } },
+    });
+
+    it('em 390 px abre a aba de forma síncrona no clique e só depois aponta para o blob', async () => {
       largura(390);
-      const abrir = vi.spyOn(window, 'open').mockReturnValueOnce({} as Window).mockReturnValueOnce(null);
-      const { fixture, el } = montar();
-      botaoTexto(el, 'Gerar prévia').click();
-      await vi.waitFor(() => expect(abrir).toHaveBeenCalledWith('blob:http://localhost/previa-1', '_blank'));
-      await estavel(fixture);
-      expect(el.querySelector('iframe')).toBeNull();
-      expect([...el.querySelectorAll('a')].some((a) => a.textContent?.trim() === 'Abrir prévia')).toBe(false);
+      const janela = janelaFalsa();
+      const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+      const { fixture, el, pdf } = montar();
+      let liberar!: (b: Blob) => void;
+      pdf.gerarBlob.mockReturnValue(new Promise<Blob>((r) => (liberar = r)));
 
       botaoTexto(el, 'Gerar prévia').click();
-      await vi.waitFor(() => expect(abrir).toHaveBeenCalledTimes(2));
+      // antes de qualquer await: ainda dentro do gesto do usuário (iOS/Safari)
+      expect(abrir).toHaveBeenCalledWith('', '_blank');
+      expect(pdf.gerarBlob).not.toHaveBeenCalled();
+      expect(janela.document.body.textContent).toBe('Gerando prévia…');
+      expect(janela.location.href).toBe('');
+
+      await vi.waitFor(() => expect(pdf.gerarBlob).toHaveBeenCalled());
+      liberar(new Blob(['%PDF'], { type: 'application/pdf' }));
+      await vi.waitFor(() => expect(janela.location.href).toBe('blob:http://localhost/previa-1'));
+      await estavel(fixture);
+      expect(abrir).toHaveBeenCalledTimes(1);
+      expect(el.querySelector('iframe')).toBeNull();
+      expect([...el.querySelectorAll('a')].some((a) => a.textContent?.trim() === 'Abrir prévia')).toBe(false);
+      expect(el.textContent).toContain('A prévia foi aberta em uma nova aba.');
+    });
+
+    it('em 390 px com popup bloqueado mostra o link "Abrir prévia"', async () => {
+      largura(390);
+      vi.spyOn(window, 'open').mockReturnValue(null);
+      const { fixture, el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalled());
       await estavel(fixture);
       const link = [...el.querySelectorAll('a')].find((a) => a.textContent?.trim() === 'Abrir prévia')!;
-      expect(link.getAttribute('href')).toBe('blob:http://localhost/previa-2');
+      expect(link.getAttribute('href')).toBe('blob:http://localhost/previa-1');
       expect(link.getAttribute('target')).toBe('_blank');
+    });
+
+    it('em 390 px, se a geração falhar, fecha a aba aberta e mostra o toast', async () => {
+      largura(390);
+      const janela = janelaFalsa();
+      vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+      const { el, pdf, toastErro } = montar();
+      pdf.gerarBlob.mockRejectedValue(new Error('x'));
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Não foi possível gerar a prévia.'));
+      expect(janela.close).toHaveBeenCalled();
+      expect(criar).not.toHaveBeenCalled();
+    });
+
+    it('em 1280 px não abre janela nenhuma', async () => {
+      largura(1280);
+      const abrir = vi.spyOn(window, 'open');
+      const { el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalled());
+      expect(abrir).not.toHaveBeenCalled();
     });
 
     it('revoga o URL anterior a cada nova prévia e no destroy', async () => {

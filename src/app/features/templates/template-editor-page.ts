@@ -153,13 +153,13 @@ type AcaoMover = 'subir' | 'descer';
                     <button type="button" aria-label="Remover bloco" title="Remover" (click)="remover(b, i)"
                             class="flex h-12 w-10 shrink-0 items-center justify-center rounded-lg text-red-600 hover:bg-red-50">✕</button>
                   </div>
-                  @if (errosPorBloco().get(b.id); as erro) {
-                    <p data-testid="erro-bloco" class="px-3 pb-2 text-sm text-red-600">{{ erro }}</p>
-                  }
                   @if (aberto() === b.id) {
+                    <!-- aberto: o erro aparece uma vez só, dentro do formulário do bloco -->
                     <div [id]="'config-' + b.id" class="border-t border-slate-200 p-3">
-                      <app-bloco-config [bloco]="b" (configChange)="atualizarConfig(b.id, $event)" />
+                      <app-bloco-config [bloco]="b" [erro]="errosPorBloco().get(b.id) ?? null" (configChange)="atualizarConfig(b.id, $event)" />
                     </div>
+                  } @else if (errosPorBloco().get(b.id); as erro) {
+                    <p data-testid="erro-bloco" class="px-3 pb-2 text-sm text-red-600">{{ erro }}</p>
                   }
                 </li>
               }
@@ -424,10 +424,16 @@ export class TemplateEditorPage {
     }
   }
 
-  /** PDF com dados fictícios e a empresa local; tudo no aparelho (funciona offline). */
+  /**
+   * PDF com dados fictícios e a empresa local; tudo no aparelho (funciona offline). No celular (P4a-R1), a aba é aberta
+   * aqui, de forma síncrona, ainda dentro do gesto do usuário — o iOS/Safari bloqueia `window.open` depois de um
+   * `await` — e só recebe o blob quando ele fica pronto.
+   */
   protected async gerarPrevia(): Promise<void> {
     if (this.gerando()) return;
     this.gerando.set(true);
+    const desktop = window.innerWidth >= LARGURA_DESKTOP;
+    const janela = desktop ? null : this.abrirJanelaDePrevia();
     try {
       const empresa = (await this.db.empresa.get(ID_EMPRESA)) ?? null;
       const logo = await this.pdf.logoDataUrl(empresa);
@@ -435,18 +441,35 @@ export class TemplateEditorPage {
       this.revogarPrevia();
       const url = URL.createObjectURL(blob);
       this.urlPrevia.set(url);
-      if (window.innerWidth >= LARGURA_DESKTOP) {
+      if (desktop) {
         this.modoPrevia.set('iframe');
+      } else if (janela) {
+        janela.location.href = url;
+        this.modoPrevia.set('aba');
       } else {
-        // P4a-R1: no celular, nova aba; se o navegador bloquear o popup, fica o link
-        const aba = window.open(url, '_blank');
-        this.modoPrevia.set(aba ? 'aba' : 'bloqueada');
+        // popup bloqueado: fica o link
+        this.modoPrevia.set('bloqueada');
       }
     } catch {
+      janela?.close();
       this.toasts.erro('Não foi possível gerar a prévia.');
     } finally {
       this.gerando.set(false);
     }
+  }
+
+  /** Aba em branco com "Gerando prévia…"; null se o navegador bloquear o popup. */
+  private abrirJanelaDePrevia(): Window | null {
+    const janela = window.open('', '_blank');
+    if (!janela) return null;
+    try {
+      janela.opener = null;
+      janela.document.title = 'Prévia do PDF';
+      janela.document.body.textContent = 'Gerando prévia…';
+    } catch {
+      // só cosmético: sem acesso ao documento da aba, ela fica em branco até o PDF chegar
+    }
+    return janela;
   }
 
   private revogarPrevia(): void {

@@ -79,6 +79,9 @@ const marcado = (e: Event) => (e.target as HTMLInputElement).checked;
   template: `
     @let id = bloco().id;
     <div class="space-y-3">
+      @if (erroExtra(); as erro) {
+        <p data-testid="erro-bloco-config" role="alert" class="text-sm text-red-600">{{ erro }}</p>
+      }
       @if (cabecalho(); as c) {
         <label class="flex min-h-12 items-center gap-3">
           <input type="checkbox" role="switch" name="mostrarLogo" class="size-5" [checked]="c.mostrarLogo"
@@ -149,6 +152,8 @@ const marcado = (e: Event) => (e.target as HTMLInputElement).checked;
 })
 export class BlocoConfig {
   readonly bloco = input.required<Bloco>();
+  /** Erro do `validarBlocos` para este bloco; mostrado aqui, a não ser que já haja a mensagem própria de lista vazia. */
+  readonly erro = input<string | null>(null);
   readonly configChange = output<Bloco['config']>();
 
   protected readonly colunas = COLUNAS_ITENS;
@@ -174,6 +179,12 @@ export class BlocoConfig {
   protected readonly assinatura = computed((): ConfigAssinatura | null => {
     const b = this.bloco();
     return b.tipo === 'ASSINATURA' ? b.config : null;
+  });
+
+  protected readonly erroExtra = computed(() => {
+    const erro = this.erro();
+    const listaVazia = this.itens()?.colunas.length === 0 || this.assinatura()?.assinantes.length === 0;
+    return erro && !listaVazia ? erro : null;
   });
 
   protected emitir(config: Bloco['config']): void {

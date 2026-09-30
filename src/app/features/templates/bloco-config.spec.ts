@@ -100,6 +100,20 @@ describe('BlocoConfig', () => {
     expect(el.querySelector('[role=alert]')?.textContent).toContain('Escolha pelo menos um assinante.');
   });
 
+  it('erro vindo da validação: inline, sem repetir a mensagem de lista vazia', async () => {
+    const vazio: Bloco = { id: 'i', tipo: 'ITENS', config: { colunas: [], agruparPorNatureza: false } };
+    const { fixture, el } = await montar(vazio);
+    fixture.componentRef.setInput('erro', 'Escolha pelo menos uma opção.');
+    fixture.detectChanges();
+    expect(el.textContent).toContain('Escolha pelo menos uma coluna.');
+    expect(el.textContent).not.toContain('Escolha pelo menos uma opção.');
+
+    fixture.componentRef.setInput('bloco', novoBloco('CABECALHO'));
+    fixture.componentRef.setInput('erro', 'Variável desconhecida.');
+    fixture.detectChanges();
+    expect(el.querySelector('[data-testid=erro-bloco-config]')?.textContent).toContain('Variável desconhecida.');
+  });
+
   it('QUEBRA_PAGINA: só o texto explicativo', async () => {
     const { el } = await montar(novoBloco('QUEBRA_PAGINA'));
     expect(el.querySelectorAll('input').length).toBe(0);
