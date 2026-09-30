@@ -1,0 +1,78 @@
+import { inject, Injectable } from '@angular/core';
+import { Observable } from 'rxjs';
+import { observar } from '../../core/db/observar';
+import { RegeraDb } from '../../core/db/regera-db';
+import { SyncService } from '../../core/sync/sync-service';
+import { normalizarDocumento } from '../../core/util/documentos';
+import { uuidv7 } from '../../core/util/uuid';
+import { ClienteDados, ClienteLocal, paraClienteLocal } from './cliente-models';
+
+export class ErroCampo extends Error {
+  constructor(
+    readonly campo: string,
+    mensagem: string,
+  ) {
+    super(mensagem);
+  }
+}
+
+/** Único ponto de leitura e escrita de clientes para a UI: tudo local, o sync leva ao servidor. */
+@Injectable({ providedIn: 'root' })
+export class ClientesRepo {
+  private readonly db = inject(RegeraDb);
+  private readonly sync = inject(SyncService);
+
+  observarTodos(): Observable<ClienteLocal[]> {
+    return observar(() => this.db.clientes.orderBy('nomeBusca').toArray());
+  }
+
+  observarNaoSincronizados(): Observable<Set<string>> {
+    return observar(async () => {
+      const ids = [
+        ...(await this.db.outbox.toArray()).map((m) => m.agregadoId),
+        ...(await this.db.pendencias.toArray()).map((p) => p.agregadoId),
+      ];
+      return new Set(ids);
+    });
+  }
+
+  buscar(id: string): Promise<ClienteLocal | undefined> {
+    return this.db.clientes.get(id);
+  }
+
+  async temPendencia(id: string): Promise<boolean> {
+    return (await this.db.pendencias.where('agregadoId').equals(id).count()) > 0;
+  }
+
+  async salvar(dados: ClienteDados, id?: string): Promise<string> {
+    const documento = normalizarDocumento(dados.documento);
+    const agregadoId = id ?? uuidv7();
+    const normalizados: ClienteDados = { ...dados, documento };
+    await this.db.transaction('rw', [this.db.clientes, this.db.outbox, this.db.pendencias], async () => {
+      const mesmoDocumento = await this.db.clientes.where('documento').equals(documento).first();
+      if (mesmoDocumento && mesmoDocumento.id !== agregadoId) {
+        throw new ErroCampo('documento', 'Já existe um cliente com este CPF/CNPJ neste aparelho.');
+      }
+      const atual = await this.db.clientes.get(agregadoId);
+      const version = atual?.version ?? null;
+      await this.db.clientes.put(paraClienteLocal(agregadoId, version, normalizados));
+      await this.db.pendencias
+        .where('agregadoId')
+        .equals(agregadoId)
+        .filter((p) => p.tipo === 'REJEITADO')
+        .delete();
+      await this.sync.registrar('cliente', agregadoId, 'UPSERT', normalizados, version);
+    });
+    void this.sync.sincronizar();
+    return agregadoId;
+  }
+
+  async excluir(id: string): Promise<void> {
+    await this.db.transaction('rw', [this.db.clientes, this.db.outbox], async () => {
+      const atual = await this.db.clientes.get(id);
+      await this.db.clientes.delete(id);
+      await this.sync.registrar('cliente', id, 'DELETE', null, atual?.version ?? null);
+    });
+    void this.sync.sincronizar();
+  }
+}

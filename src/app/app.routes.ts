@@ -19,7 +19,11 @@ export const routes: Routes = [
       },
       { path: 'kanban', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Kanban' } },
       { path: 'propostas', loadComponent: emBreve, data: { titulo: 'Propostas' } },
-      { path: 'clientes', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Clientes' } },
+      {
+        path: 'clientes',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        loadComponent: () => import('./features/clientes/clientes-page').then((m) => m.ClientesPage),
+      },
       { path: 'catalogo', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Catálogo' } },
       { path: 'empresa', canMatch: [perfilGuard('ADMIN')], loadComponent: emBreve, data: { titulo: 'Empresa' } },
       { path: 'pendencias', loadComponent: emBreve, data: { titulo: 'Pendências de sync' } },
