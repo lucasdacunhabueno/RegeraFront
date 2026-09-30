@@ -46,12 +46,16 @@ test('cliente criado sem internet sincroniza ao voltar e aparece em outro aparel
 
   await context.setOffline(false);
   await expect(item).not.toContainText('Não sincronizado', { timeout: 30_000 });
+  await expect(item).toBeVisible();
 
   const outro = await browser.newContext({ ...devices['Pixel 7'], baseURL, ignoreHTTPSErrors: true });
-  const pagina2 = await outro.newPage();
-  await entrar(pagina2);
-  await pagina2.goto('/clientes');
-  await pagina2.getByRole('searchbox', { name: 'Buscar clientes' }).fill(nome);
-  await expect(pagina2.getByText(nome)).toBeVisible({ timeout: 30_000 });
-  await outro.close();
+  try {
+    const pagina2 = await outro.newPage();
+    await entrar(pagina2);
+    await pagina2.goto('/clientes');
+    await pagina2.getByRole('searchbox', { name: 'Buscar clientes' }).fill(nome);
+    await expect(pagina2.getByText(nome)).toBeVisible({ timeout: 30_000 });
+  } finally {
+    await outro.close();
+  }
 });
