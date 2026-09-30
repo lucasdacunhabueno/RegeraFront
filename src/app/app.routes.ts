@@ -36,7 +36,10 @@ export const routes: Routes = [
       },
       { path: 'catalogo', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Catálogo' } },
       { path: 'empresa', canMatch: [perfilGuard('ADMIN')], loadComponent: emBreve, data: { titulo: 'Empresa' } },
-      { path: 'pendencias', loadComponent: emBreve, data: { titulo: 'Pendências de sync' } },
+      {
+        path: 'pendencias',
+        loadComponent: () => import('./features/pendencias/pendencias-page').then((m) => m.PendenciasPage),
+      },
       {
         path: 'usuarios',
         canMatch: [perfilGuard('ADMIN')],
