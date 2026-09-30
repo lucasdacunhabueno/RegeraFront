@@ -1,11 +1,19 @@
 import { Injectable } from '@angular/core';
 import Dexie, { type Table } from 'dexie';
 import type { ClienteLocal } from '../../features/clientes/cliente-models';
+import type { ItemLocal } from '../../features/catalogo/item-models';
+import type { EmpresaLocal } from '../../features/empresa/empresa-models';
 import type { MutacaoLocal, Pendencia, UsuarioResumo } from '../sync/sync-models';
 
 export interface MetaRegistro {
   chave: string;
   valor: unknown;
+}
+
+export interface ArquivoLocal {
+  id: string;
+  mime: string;
+  bytes: ArrayBuffer;
 }
 
 @Injectable({ providedIn: 'root' })
@@ -15,6 +23,9 @@ export class RegeraDb extends Dexie {
   outbox!: Table<MutacaoLocal, number>;
   pendencias!: Table<Pendencia, string>;
   usuarios!: Table<UsuarioResumo, string>;
+  itens!: Table<ItemLocal, string>;
+  empresa!: Table<EmpresaLocal, string>;
+  arquivos!: Table<ArquivoLocal, string>;
 
   constructor() {
     super('regera');
@@ -26,6 +37,21 @@ export class RegeraDb extends Dexie {
       pendencias: 'mutationId, agregadoId',
       usuarios: 'id',
     });
+    this.version(3)
+      .stores({
+        meta: 'chave',
+        clientes: 'id, documento, nomeBusca',
+        outbox: '++seq, agregadoId',
+        pendencias: 'mutationId, agregadoId',
+        usuarios: 'id',
+        itens: 'id, codigo, nomeBusca',
+        empresa: 'id',
+        arquivos: 'id',
+      })
+      .upgrade(async (tx) => {
+        // fronts P2 pularam item_catalogo/empresa como entidade desconhecida e avançaram o cursor: puxa tudo de novo
+        await tx.table('meta').bulkDelete(['cursor', 'cursorDono']);
+      });
   }
 
   async lerMeta<T>(chave: string): Promise<T | undefined> {

@@ -208,9 +208,9 @@ export class SyncService {
     if (cursorGravado !== undefined && (await this.db.lerMeta<string | null>(CHAVE_CURSOR_DONO)) !== dono) {
       // cursor de outra sessão (ex.: escrito por um sync que sobreviveu ao logout): recomeça do zero
       cursor = 0;
-      await this.db.transaction('rw', [this.db.clientes, this.db.usuarios], async () => {
-        await this.db.clientes.clear();
-        await this.db.usuarios.clear();
+      const tabelas = [...Object.values(ADAPTADORES).map((a) => a.tabela(this.db)), this.db.usuarios];
+      await this.db.transaction('rw', tabelas, async () => {
+        await Promise.all(tabelas.map((t) => t.clear()));
       });
     }
     for (;;) {

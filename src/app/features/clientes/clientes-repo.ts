@@ -5,16 +5,11 @@ import { RegeraDb } from '../../core/db/regera-db';
 import { SyncService } from '../../core/sync/sync-service';
 import { normalizarDocumento } from '../../core/util/documentos';
 import { uuidv7 } from '../../core/util/uuid';
+import { observarNaoSincronizados } from '../../core/sync/nao-sincronizados';
+import { ErroCampo } from '../../core/util/erro-campo';
 import { ClienteDados, ClienteLocal, paraClienteLocal } from './cliente-models';
 
-export class ErroCampo extends Error {
-  constructor(
-    readonly campo: string,
-    mensagem: string,
-  ) {
-    super(mensagem);
-  }
-}
+export { ErroCampo } from '../../core/util/erro-campo';
 
 /** Único ponto de leitura e escrita de clientes para a UI: tudo local, o sync leva ao servidor. */
 @Injectable({ providedIn: 'root' })
@@ -27,13 +22,7 @@ export class ClientesRepo {
   }
 
   observarNaoSincronizados(): Observable<Set<string>> {
-    return observar(async () => {
-      const ids = [
-        ...(await this.db.outbox.toArray()).map((m) => m.agregadoId),
-        ...(await this.db.pendencias.toArray()).map((p) => p.agregadoId),
-      ];
-      return new Set(ids);
-    });
+    return observarNaoSincronizados(this.db);
   }
 
   buscar(id: string): Promise<ClienteLocal | undefined> {
