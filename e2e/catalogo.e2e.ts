@@ -45,6 +45,38 @@ test('admin cria item do catálogo sem internet e ele sincroniza ao voltar', asy
   await expect(item).toBeVisible();
 });
 
+// PNG 8x8 RGBA: metade azul opaca, metade transparente (o JPEG do upload precisa sair com fundo branco)
+const PNG_TRANSPARENTE =
+  'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFElEQVR4nGOQ9bvxHxkzoIORoQAAU1FIQaOqvhEAAAAASUVORK5CYII=';
+
+test('admin cria item com foto online e a lista mostra a imagem', async ({ page }) => {
+  await entrar(page);
+  await page.goto('/catalogo');
+  await expect(page.getByRole('heading', { name: 'Catálogo' })).toBeVisible();
+  await page.getByRole('link', { name: 'Novo item' }).click();
+  await expect(page.getByRole('heading', { name: 'Novo item' })).toBeVisible();
+
+  const codigo = `FOTO-${Date.now()}`;
+  await page.locator('#foto').setInputFiles({
+    name: 'item.png',
+    mimeType: 'image/png',
+    buffer: Buffer.from(PNG_TRANSPARENTE, 'base64'),
+  });
+  // upload concluído: a pré-visualização aparece e o campo volta a aceitar arquivo
+  await expect(page.getByAltText('Foto do item')).toHaveAttribute('src', /^blob:/, { timeout: 30_000 });
+  await expect(page.locator('#foto')).toBeEnabled();
+
+  await page.locator('#codigo').fill(codigo);
+  await page.locator('#nome').fill(`Item ${codigo}`);
+  await page.locator('#precoVenda').fill('99,90');
+  await page.getByRole('button', { name: 'Salvar' }).click();
+
+  await expect(page).toHaveURL(/\/catalogo$/);
+  const item = page.getByRole('listitem').filter({ hasText: codigo });
+  await expect(item).toBeVisible();
+  await expect(item.locator('img')).toHaveAttribute('src', /^blob:/);
+});
+
 test('tela da empresa abre para o admin', async ({ page }) => {
   await entrar(page);
   await page.goto('/empresa');
