@@ -15,8 +15,8 @@ const base: ItemCatalogoDados = {
   precoVenda: 1250.5, locavel: false, precoLocacaoMensal: null, fotoArquivoId: null, ativo: true,
 };
 
-function montar(perfil: Perfil) {
-  const itens = [
+function montar(perfil: Perfil, lista?: ReturnType<typeof paraItemLocal>[]) {
+  const itens = lista ?? [
     paraItemLocal('1', 0, base),
     paraItemLocal('2', null, { ...base, codigo: 'GER', nome: 'Gerador', locavel: true, precoLocacaoMensal: 300 }),
     paraItemLocal('3', 0, { ...base, codigo: 'INST', nome: 'Instalação', natureza: 'SERVICO' }),
@@ -45,6 +45,18 @@ describe('CatalogoPage', () => {
     expect(el.textContent).toMatch(/Locação:\s*R\$\s300,00\/mês/);
     expect(el.textContent).not.toContain('Antigo');
     expect(el.querySelectorAll('li')[1].textContent).toContain('Não sincronizado');
+  });
+
+  it('item sem nenhum preço (perfil que não vê preços) aparece sem "R$" nem "Locação"', () => {
+    const semPreco = paraItemLocal('9', 0, {
+      natureza: 'PRODUTO', codigo: 'TEC', nome: 'Sem preço', descricao: null, unidade: 'un',
+      locavel: true, fotoArquivoId: null, ativo: true,
+    });
+    const el = montar('TECNICO', [semPreco]).nativeElement as HTMLElement;
+    const linha = el.querySelector('li')!;
+    expect(linha.textContent).toContain('Sem preço');
+    expect(linha.textContent).not.toContain('R$');
+    expect(linha.textContent).not.toContain('Locação');
   });
 
   it('comercial não vê botão de novo item nem links de edição', () => {
