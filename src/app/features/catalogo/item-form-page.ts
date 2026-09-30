@@ -1,5 +1,6 @@
-import { Component, computed, effect, inject, input, signal } from '@angular/core';
-import { toSignal } from '@angular/core/rxjs-interop';
+import { HttpErrorResponse } from '@angular/common/http';
+import { Component, computed, effect, ElementRef, inject, input, signal, viewChild } from '@angular/core';
+import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { AbstractControl, NonNullableFormBuilder, ReactiveFormsModule, ValidationErrors, ValidatorFn, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { ArquivosService } from '../../core/arquivos/arquivos-service';
@@ -16,6 +17,8 @@ const MAX_PRECO = 999_999_999_999.99;
 const naoVazio: ValidatorFn = (c: AbstractControl): ValidationErrors | null =>
   typeof c.value === 'string' && c.value.trim() === '' ? { required: true } : null;
 type CampoPreco = 'precoCusto' | 'precoVenda' | 'precoLocacaoMensal';
+const CAMPOS_PRECO: CampoPreco[] = ['precoCusto', 'precoVenda', 'precoLocacaoMensal'];
+const CORRIJA = 'Corrija os campos destacados.';
 
 @Component({
   selector: 'app-item-form-page',
@@ -50,7 +53,7 @@ type CampoPreco = 'precoCusto' | 'precoVenda' | 'precoLocacaoMensal';
 
         <div class="space-y-1">
           <label for="codigo" class="text-sm font-medium">Código</label>
-          <input id="codigo" formControlName="codigo" maxlength="40" (input)="maiusculas()" autocomplete="off"
+          <input id="codigo" formControlName="codigo" maxlength="40" (input)="maiusculas($event)" autocomplete="off"
                  class="h-12 w-full rounded-lg border border-slate-300 px-3 uppercase" />
           @if (erroCodigo()) { <p class="text-sm text-red-600">{{ erroCodigo() }}</p> }
           @else if (form.controls.codigo.touched && form.controls.codigo.invalid) { <p class="text-sm text-red-600">Informe o código.</p> }
@@ -111,7 +114,7 @@ type CampoPreco = 'precoCusto' | 'precoVenda' | 'precoLocacaoMensal';
           <img [src]="fotoUrl()" alt="Foto do item" class="h-40 w-full rounded-lg object-cover" />
           <button type="button" (click)="removerFoto()" class="text-sm text-red-600">Remover foto</button>
         }
-        <input id="foto" type="file" accept="image/*" [disabled]="!online() || enviandoFoto()" (change)="escolherFoto($event)"
+        <input #inputFoto id="foto" type="file" accept="image/*" [disabled]="!online() || enviandoFoto()" (change)="escolherFoto($event)"
                aria-label="Escolher foto" class="block w-full text-sm" />
         @if (!online()) { <p class="text-sm text-amber-700">A foto precisa de internet.</p> }
         @if (enviandoFoto()) { <p class="text-sm text-slate-500">Enviando foto…</p> }
@@ -119,11 +122,15 @@ type CampoPreco = 'precoCusto' | 'precoVenda' | 'precoLocacaoMensal';
 
       @if (erroGeral()) { <p class="text-sm text-red-600" role="alert">{{ erroGeral() }}</p> }
 
-      <button type="submit" [disabled]="salvando() || enviandoFoto()"
-              class="h-12 w-full rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">Salvar</button>
-      @if (id()) {
-        <button type="button" data-testid="excluir" (click)="excluir()" [disabled]="excluindo()"
-                class="h-12 w-full rounded-lg border border-red-300 font-semibold text-red-600 disabled:opacity-60">Excluir item</button>
+      @if (naoEncontrado()) {
+        <p class="rounded-lg bg-amber-100 px-3 py-2 text-sm text-amber-900" role="alert">Item não encontrado neste aparelho.</p>
+      } @else {
+        <button type="submit" [disabled]="carregando() || salvando() || enviandoFoto()"
+                class="h-12 w-full rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">Salvar</button>
+        @if (id()) {
+          <button type="button" data-testid="excluir" (click)="excluir()" [disabled]="carregando() || excluindo()"
+                  class="h-12 w-full rounded-lg border border-red-300 font-semibold text-red-600 disabled:opacity-60">Excluir item</button>
+        }
       }
     </form>
   `,
@@ -148,6 +155,14 @@ export class ItemFormPage {
   protected readonly erros = signal<Partial<Record<CampoPreco, string>>>({});
   protected readonly fotoArquivoId = signal<string | null>(null);
   protected readonly fotoUrl = signal<string | null>(null);
+  protected readonly naoEncontrado = signal(false);
+  /** Id cujo carregamento terminou; enquanto for outro, Salvar/Excluir ficam bloqueados. */
+  private readonly carregadoId = signal<string | null>(null);
+  protected readonly carregando = computed(() => {
+    const id = this.id();
+    return !!id && this.carregadoId() !== id;
+  });
+  private readonly inputFoto = viewChild<ElementRef<HTMLInputElement>>('inputFoto');
   private versaoCarregada: number | null | undefined;
 
   protected readonly form = this.fb.group({
@@ -178,16 +193,36 @@ export class ItemFormPage {
       const id = this.id();
       if (id) void this.carregar(id);
     });
+    for (const campo of CAMPOS_PRECO) {
+      this.form.controls[campo].valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
+        if (!this.erros()[campo]) return;
+        const resto = { ...this.erros() };
+        delete resto[campo];
+        this.erros.set(resto);
+      });
+    }
+    // o aviso geral some quando não sobra nenhum campo com erro
+    this.form.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
+      if (this.erroGeral() === CORRIJA && this.form.valid && Object.keys(this.erros()).length === 0) this.erroGeral.set(null);
+    });
   }
 
-  protected maiusculas(): void {
+  protected maiusculas(evento: Event): void {
+    const el = evento.target as HTMLInputElement;
     const c = this.form.controls.codigo;
-    c.setValue(c.value.toUpperCase(), { emitEvent: false });
+    const maiusculo = c.value.toUpperCase();
+    if (maiusculo !== c.value) {
+      // reescrever o valor manda o cursor para o fim: devolve a seleção de antes
+      const { selectionStart, selectionEnd } = el;
+      c.setValue(maiusculo, { emitEvent: false });
+      if (selectionStart !== null && selectionEnd !== null) el.setSelectionRange(selectionStart, selectionEnd);
+    }
     this.erroCodigo.set(null);
   }
 
   protected async escolherFoto(evento: Event): Promise<void> {
-    const arquivo = (evento.target as HTMLInputElement).files?.[0];
+    const input = evento.target as HTMLInputElement;
+    const arquivo = input.files?.[0];
     if (!arquivo) return;
     this.enviandoFoto.set(true);
     try {
@@ -196,18 +231,23 @@ export class ItemFormPage {
       this.fotoArquivoId.set(enviado.id);
       this.fotoUrl.set(await this.arquivos.obterUrl(enviado.id));
     } catch (e) {
-      this.toasts.erro(e instanceof Error && !('status' in e) ? e.message : mensagemDeErro(e));
+      this.toasts.erro(e instanceof HttpErrorResponse ? mensagemDeErro(e) : e instanceof Error ? e.message : mensagemDeErro(e));
     } finally {
       this.enviandoFoto.set(false);
+      // permite escolher o mesmo arquivo de novo
+      input.value = '';
     }
   }
 
   protected removerFoto(): void {
     this.fotoArquivoId.set(null);
     this.fotoUrl.set(null);
+    const input = this.inputFoto()?.nativeElement;
+    if (input) input.value = '';
   }
 
   protected async salvar(): Promise<void> {
+    if (this.salvando() || this.carregando() || this.naoEncontrado()) return;
     this.erroGeral.set(null);
     const v = this.form.getRawValue();
     const erros: Partial<Record<CampoPreco, string>> = {};
@@ -229,7 +269,7 @@ export class ItemFormPage {
     this.erros.set(erros);
     if (this.form.invalid || Object.keys(erros).length > 0) {
       this.form.markAllAsTouched();
-      this.erroGeral.set('Corrija os campos destacados.');
+      this.erroGeral.set(CORRIJA);
       return;
     }
     const dados: ItemCatalogoDados = {
@@ -274,8 +314,17 @@ export class ItemFormPage {
   }
 
   private async carregar(id: string): Promise<void> {
+    try {
+      await this.preencher(id);
+    } finally {
+      if (this.id() === id) this.carregadoId.set(id);
+    }
+  }
+
+  private async preencher(id: string): Promise<void> {
     const i = await this.repo.buscar(id);
     this.temPendencia.set(await this.repo.temPendencia(id));
+    this.naoEncontrado.set(!i);
     if (!i) return;
     this.versaoCarregada = i.version;
     this.form.patchValue({
@@ -291,6 +340,12 @@ export class ItemFormPage {
       ativo: i.ativo,
     });
     this.fotoArquivoId.set(i.fotoArquivoId);
-    if (i.fotoArquivoId) this.fotoUrl.set(await this.arquivos.obterUrl(i.fotoArquivoId));
+    // a foto pode depender da rede: não segura o formulário por ela
+    const foto = i.fotoArquivoId;
+    if (foto) {
+      void this.arquivos.obterUrl(foto).then((u) => {
+        if (this.fotoArquivoId() === foto) this.fotoUrl.set(u);
+      });
+    }
   }
 }
