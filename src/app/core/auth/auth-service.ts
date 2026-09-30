@@ -21,6 +21,11 @@ export class AuthService {
     return this.accessToken;
   }
 
+  /** Usuário da última sessão guardada neste aparelho (funciona offline). */
+  sessaoLocal(): Promise<UsuarioSessao | undefined> {
+    return this.db.lerMeta<UsuarioSessao>(CHAVE_SESSAO);
+  }
+
   /** Restaura a sessão local (funciona offline) e tenta renovar o token em segundo plano. */
   async iniciar(): Promise<void> {
     const sessao = await this.db.lerMeta<UsuarioSessao>(CHAVE_SESSAO);

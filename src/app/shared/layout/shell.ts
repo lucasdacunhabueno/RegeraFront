@@ -1,9 +1,11 @@
 import { Component, computed, inject } from '@angular/core';
 import { RouterLink, RouterLinkActive, RouterOutlet } from '@angular/router';
-import { LucideDynamicIcon, LucideWifi, LucideWifiOff } from '@lucide/angular';
+import { LucideDynamicIcon, LucideRefreshCw, LucideWifi, LucideWifiOff } from '@lucide/angular';
 import { AtualizacaoApp } from '../../core/atualizacao/atualizacao-app';
 import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
+import { SyncAgendador } from '../../core/sync/sync-agendador';
+import { SyncService } from '../../core/sync/sync-service';
 import { itensPara } from './navegacao';
 
 @Component({
@@ -32,6 +34,20 @@ import { itensPara } from './navegacao';
         <header class="sticky top-0 z-10 flex h-14 items-center border-b border-slate-200 bg-white px-4">
           <span class="font-semibold text-blue-700 lg:hidden">Regera</span>
           <div class="ml-auto flex items-center gap-3 text-sm">
+            <a
+              routerLink="/pendencias"
+              data-testid="sync-status"
+              class="flex items-center gap-1 text-slate-500"
+              [attr.title]="tituloSync()"
+              [attr.aria-label]="tituloSync()"
+            >
+              <svg [lucideIcon]="iconeSync" [size]="16" [class.animate-spin]="sincronizando()"></svg>
+              @if (problemas() > 0) {
+                <span class="rounded-full bg-red-600 px-1.5 text-xs font-semibold text-white">{{ problemas() }}</span>
+              } @else if (naoSincronizados() > 0) {
+                <span class="rounded-full bg-amber-500 px-1.5 text-xs font-semibold text-white">{{ naoSincronizados() }}</span>
+              }
+            </a>
             <span
               data-testid="status-conexao"
               class="flex items-center gap-1"
@@ -87,8 +103,22 @@ export class Shell {
   });
   protected readonly iconeOnline = LucideWifi;
   protected readonly iconeOffline = LucideWifiOff;
+  private readonly sync = inject(SyncService);
+  protected readonly sincronizando = this.sync.sincronizando;
+  protected readonly naoSincronizados = this.sync.naoSincronizados;
+  protected readonly problemas = this.sync.problemas;
+  protected readonly iconeSync = LucideRefreshCw;
+  protected readonly tituloSync = computed(() => {
+    const quando = this.sync.ultimoSync();
+    const base = quando
+      ? `Último sync: ${new Date(quando).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })}`
+      : 'Ainda não sincronizado';
+    const n = this.problemas() + this.naoSincronizados();
+    return n > 0 ? `${base} · ${n} pendente(s)` : base;
+  });
 
   constructor() {
     inject(AtualizacaoApp).iniciar();
+    inject(SyncAgendador).iniciar();
   }
 }
