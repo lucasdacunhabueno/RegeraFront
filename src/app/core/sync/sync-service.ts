@@ -101,18 +101,21 @@ export class SyncService {
 
   private async enviar(): Promise<void> {
     for (let rodada = 0; rodada < MAX_RODADAS_PUSH; rodada++) {
-      const bloqueados = new Set((await this.db.pendencias.toArray()).map((p) => p.agregadoId));
-      const vistos = new Set<string>();
-      const lote: MutacaoLocal[] = [];
-      for (const m of await this.db.outbox.orderBy('seq').toArray()) {
-        if (bloqueados.has(m.agregadoId) || vistos.has(m.agregadoId)) continue;
-        vistos.add(m.agregadoId);
-        lote.push(m);
-        if (lote.length === LOTE) break;
-      }
+      const lote = await this.db.transaction('rw', [this.db.outbox, this.db.pendencias], async () => {
+        const bloqueados = new Set((await this.db.pendencias.toArray()).map((p) => p.agregadoId));
+        const vistos = new Set<string>();
+        const escolhidas: MutacaoLocal[] = [];
+        for (const m of await this.db.outbox.orderBy('seq').toArray()) {
+          if (bloqueados.has(m.agregadoId) || vistos.has(m.agregadoId)) continue;
+          vistos.add(m.agregadoId);
+          escolhidas.push(m);
+          if (escolhidas.length === LOTE) break;
+        }
+        await this.marcarEnviando(escolhidas, true);
+        return escolhidas;
+      });
       if (lote.length === 0) return;
 
-      await this.marcarEnviando(lote, true);
       const resp = await firstValueFrom(
         this.http.post<RespostaPush>('/api/sync/push', {
           mutacoes: lote.map((m) => ({
@@ -132,7 +135,10 @@ export class SyncService {
         if (!m) continue;
         if (r.status === 'REJEITADO' && r.erro && CODIGOS_TRANSITORIOS.has(r.erro.codigo)) {
           // não foi gravado no servidor: volta a ser elegível e não se tenta de novo nesta sincronização
-          await this.marcarEnviando([m], false);
+          await this.db.transaction('rw', this.db.outbox, async () => {
+            const atual = await this.db.outbox.get(m.seq!);
+            if (atual?.mutationId === m.mutationId) await this.db.outbox.update(m.seq!, { enviando: false });
+          });
           transitorio = true;
           continue;
         }
@@ -150,9 +156,16 @@ export class SyncService {
     const adaptador = ADAPTADORES[m.entidade];
     const tabela = adaptador.tabela(this.db);
     await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, tabela], async () => {
-      await this.db.outbox.delete(m.seq!);
+      const atual = await this.db.outbox.get(m.seq!);
+      const intacta = atual?.mutationId === m.mutationId;
+      if (intacta) await this.db.outbox.delete(m.seq!);
       if (r.status === 'OK') {
         const proxima = await this.db.outbox.where('agregadoId').equals(m.agregadoId).first();
+        if (!intacta) {
+          // alguém alterou a mutação durante o envio: não apagar nem sobrescrever o local
+          if (atual) await this.db.outbox.update(atual.seq!, { baseVersion: r.version ?? null });
+          return;
+        }
         if (proxima) {
           // houve edição durante o envio: ela vai por cima da versão que o servidor acabou de gravar
           await this.db.outbox.update(proxima.seq!, { baseVersion: r.version ?? null });
@@ -165,6 +178,7 @@ export class SyncService {
         }
         return;
       }
+      if (!intacta) return;
       await this.db.pendencias.put({
         mutationId: m.mutationId,
         entidade: m.entidade,
@@ -190,26 +204,28 @@ export class SyncService {
         await this.db.usuarios.clear();
         await this.db.usuarios.bulkPut(resp.usuarios);
       });
+      const avancou = resp.cursor > cursor;
       cursor = resp.cursor;
       await this.db.gravarMeta(CHAVE_CURSOR, cursor);
-      if (!resp.temMais) return;
+      if (!resp.temMais || !avancou) return;
     }
   }
 
   private async aplicarMudancas(mudancas: Mudanca[]): Promise<void> {
-    const bloqueados = new Set([
-      ...(await this.db.outbox.toArray()).map((m) => m.agregadoId),
-      ...(await this.db.pendencias.toArray()).map((p) => p.agregadoId),
-    ]);
     for (const mu of mudancas) {
       const adaptador = ADAPTADORES[mu.entidade];
-      if (!adaptador || bloqueados.has(mu.id)) continue;
+      if (!adaptador) continue;
       const tabela = adaptador.tabela(this.db);
-      if (mu.deleted) {
-        await tabela.delete(mu.id);
-      } else {
-        await tabela.put(adaptador.paraLocal(mu.id, mu.version, mu.dados));
-      }
+      await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, tabela], async () => {
+        const naFila = await this.db.outbox.where('agregadoId').equals(mu.id).count();
+        const pendente = await this.db.pendencias.where('agregadoId').equals(mu.id).count();
+        if (naFila > 0 || pendente > 0) return;
+        if (mu.deleted) {
+          await tabela.delete(mu.id);
+        } else {
+          await tabela.put(adaptador.paraLocal(mu.id, mu.version, mu.dados));
+        }
+      });
     }
   }
 }

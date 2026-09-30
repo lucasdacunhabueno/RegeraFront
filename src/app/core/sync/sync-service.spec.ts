@@ -210,6 +210,50 @@ describe('SyncService', () => {
     expect(await db.outbox.count()).toBe(0);
   });
 
+  it('guarda: mutação alterada durante o envio não é apagada nem sobrescreve o local', async () => {
+    await db.clientes.put(paraClienteLocal('c1', null, dados('Local')));
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+    const seq = (await db.outbox.toArray())[0].seq!;
+
+    const p = sync.sincronizar();
+    const push = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+    const mut = push.request.body.mutacoes[0];
+    await db.outbox.update(seq, { mutationId: 'outro', dados: dados('Nova'), enviando: false });
+    push.flush({ resultados: [{ mutationId: mut.mutationId, status: 'OK', version: 0, dados: dados('Servidor') }] });
+    // a mutação alterada segue elegível e é enviada na rodada seguinte
+    const push2 = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+    expect(push2.request.body.mutacoes[0]).toMatchObject({ mutationId: 'outro', baseVersion: 0, dados: { nome: 'Nova' } });
+    push2.error(new ProgressEvent('error'), { status: 0 });
+    await p;
+
+    const fila = await db.outbox.toArray();
+    expect(fila).toHaveLength(1);
+    expect((fila[0].dados as ClienteDados).nome).toBe('Nova');
+    expect((await db.clientes.get('c1'))?.nome).toBe('Local');
+  });
+
+  it('pull não sobrescreve registro cuja mutação entrou na outbox durante o pull', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 0, dados('Local')));
+    const p = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'));
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('Editado'), 0);
+    pull.flush({
+      cursor: 3, temMais: false, usuarios: [],
+      mudancas: [{ entidade: 'cliente', id: 'c1', version: 5, deleted: false, dados: dados('Do servidor') }],
+    });
+    await p;
+    expect((await db.clientes.get('c1'))?.nome).toBe('Local');
+    expect(await db.outbox.count()).toBe(1);
+  });
+
+  it('cursor que não avança com temMais encerra o pull após uma requisição', async () => {
+    const p = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull')))
+      .flush({ cursor: 0, temMais: true, mudancas: [], usuarios: [] });
+    await p;
+    http.expectNone((r) => r.url === '/api/sync/pull');
+  });
+
   it('offline não chama a API', async () => {
     online.set(false);
     await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
