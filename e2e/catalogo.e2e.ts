@@ -1,4 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
+import { aguardarSincronizacaoInicial } from './apoio';
 
 const EMAIL = process.env['E2E_ADMIN_EMAIL'] ?? 'admin@regera.local';
 const SENHA = process.env['E2E_ADMIN_SENHA'] ?? 'admin-local-123';
@@ -18,6 +19,7 @@ test('admin cria item do catálogo sem internet e ele sincroniza ao voltar', asy
   });
   await page.reload();
   await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+  await aguardarSincronizacaoInicial(page);
   await page.goto('/catalogo');
   await expect(page.getByRole('heading', { name: 'Catálogo' })).toBeVisible();
 

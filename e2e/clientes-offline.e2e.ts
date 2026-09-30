@@ -1,4 +1,5 @@
 import { devices, expect, Page, test } from '@playwright/test';
+import { aguardarSincronizacaoInicial } from './apoio';
 
 const EMAIL = process.env['E2E_ADMIN_EMAIL'] ?? 'admin@regera.local';
 const SENHA = process.env['E2E_ADMIN_SENHA'] ?? 'admin-local-123';
@@ -30,6 +31,7 @@ test('cliente criado sem internet sincroniza ao voltar e aparece em outro aparel
   });
   await page.reload();
   await page.waitForFunction(() => !!navigator.serviceWorker.controller);
+  await aguardarSincronizacaoInicial(page);
   await page.goto('/clientes');
   await expect(page.getByRole('heading', { name: 'Clientes' })).toBeVisible();
 
