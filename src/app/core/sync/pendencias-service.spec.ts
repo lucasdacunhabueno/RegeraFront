@@ -153,4 +153,63 @@ describe('PendenciasService', () => {
     expect(await db.pendencias.count()).toBe(0);
     expect(await db.outbox.count()).toBe(0);
   });
+
+  it('descartar edição com falha de rede mantém pendência e registro local', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 1, dados('Minha')));
+    const p = pendencia({ tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } });
+    await db.pendencias.put(p);
+    await db.outbox.add({ ...p.mutacao, mutationId: 'm2' });
+
+    const promessa = svc.descartar(p);
+    const rejeitou = expect(promessa).rejects.toBeDefined();
+    (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/c1'))).error(new ProgressEvent('error'), { status: 0 });
+    await rejeitou;
+
+    expect(await db.pendencias.count()).toBe(1);
+    expect(await db.outbox.count()).toBe(1);
+    expect((await db.clientes.get('c1'))?.nome).toBe('Minha');
+  });
+
+  it('usar cadastro existente com 404 rejeita e preserva o duplicado e a pendência', async () => {
+    await db.clientes.put(paraClienteLocal('c1', null, dados('Duplicado')));
+    const p = pendencia({ tipo: 'REJEITADO', erro: { codigo: 'DOCUMENTO_DUPLICADO', mensagem: 'x', idExistente: 'c9' } });
+    p.mutacao.baseVersion = null;
+    await db.pendencias.put(p);
+
+    const promessa = svc.usarExistente(p);
+    const rejeitou = expect(promessa).rejects.toThrow('O cadastro existente não foi encontrado no servidor.');
+    (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/c9')))
+      .flush({ codigo: 'NAO_ENCONTRADO' }, { status: 404, statusText: 'Not Found' });
+    await rejeitou;
+
+    expect(await db.clientes.get('c1')).toBeDefined();
+    expect(await db.pendencias.count()).toBe(1);
+  });
+
+  it('usar a do servidor com erro 500 rejeita e mantém a pendência', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 1, dados('Minha')));
+    const p = pendencia({ tipo: 'CONFLITO', versionServidor: 4, dadosServidor: dados('Servidor') });
+    await db.pendencias.put(p);
+
+    const promessa = svc.usarServidor(p);
+    const rejeitou = expect(promessa).rejects.toBeDefined();
+    (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/c1')))
+      .flush({}, { status: 500, statusText: 'Erro' });
+    await rejeitou;
+
+    expect(await db.pendencias.count()).toBe(1);
+    expect((await db.clientes.get('c1'))?.nome).toBe('Minha');
+  });
+
+  it('manter a minha com o registro local excluído enfileira DELETE sobre a versão do servidor', async () => {
+    const p = pendencia({ tipo: 'CONFLITO', versionServidor: 4, dadosServidor: dados('Servidor') });
+    await db.pendencias.put(p);
+
+    await svc.manterMinha(p);
+
+    const fila = await db.outbox.toArray();
+    expect(fila).toHaveLength(1);
+    expect(fila[0]).toMatchObject({ op: 'DELETE', baseVersion: 4 });
+    expect(await db.pendencias.count()).toBe(0);
+  });
 });

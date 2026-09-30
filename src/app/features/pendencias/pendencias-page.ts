@@ -1,3 +1,4 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { Component, inject } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
@@ -104,7 +105,7 @@ export class PendenciasPage {
     try {
       await acao();
     } catch (e) {
-      this.toasts.erro(mensagemDeErro(e));
+      this.toasts.erro(e instanceof Error && !(e instanceof HttpErrorResponse) ? e.message : mensagemDeErro(e));
     }
   }
 }

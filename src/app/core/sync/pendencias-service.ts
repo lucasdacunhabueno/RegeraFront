@@ -36,42 +36,40 @@ export class PendenciasService {
 
   /** Busca o estado ATUAL do servidor (dadosServidor pode estar velho); sem rede, usa o que a pendência guardou. */
   async usarServidor(p: Pendencia): Promise<void> {
-    const adaptador = ADAPTADORES[p.entidade];
-    const tabela = adaptador.tabela(this.db);
+    let atual: Mudanca | null | undefined;
     try {
-      await this.trazerDoServidor(p, p.agregadoId);
+      atual = await this.buscarNoServidor(p, p.agregadoId);
     } catch (e) {
       if (!(e instanceof HttpErrorResponse && e.status === 0)) throw e;
-      await this.db.transaction('rw', [tabela], async () => {
-        if (p.dadosServidor == null) {
-          await tabela.delete(p.agregadoId);
-        } else {
-          await tabela.put(adaptador.paraLocal(p.agregadoId, p.versionServidor ?? null, p.dadosServidor));
-        }
-      });
+      atual = p.dadosServidor == null ? null : { dados: p.dadosServidor, version: p.versionServidor ?? null, deleted: false } as unknown as Mudanca;
     }
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox], () => this.limparAgregado(p));
+    await this.aplicarEClear(p, p.agregadoId, atual);
   }
 
   async descartar(p: Pendencia): Promise<void> {
-    const tabela = ADAPTADORES[p.entidade].tabela(this.db);
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox], () => this.limparAgregado(p));
     if (p.mutacao.baseVersion === null) {
-      await tabela.delete(p.agregadoId);
+      const tabela = ADAPTADORES[p.entidade].tabela(this.db);
+      await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
+        await this.limparAgregado(p);
+        await tabela.delete(p.agregadoId);
+      });
       return;
     }
-    await this.trazerDoServidor(p, p.agregadoId);
+    await this.aplicarEClear(p, p.agregadoId, await this.buscarNoServidor(p, p.agregadoId));
   }
 
   /** DOCUMENTO_DUPLICADO: fica com o cadastro que já existe no servidor e some com o duplicado local. */
   async usarExistente(p: Pendencia): Promise<string> {
     const idExistente = p.erro?.idExistente;
     if (!idExistente) throw new Error('Pendência sem idExistente');
-    await this.trazerDoServidor(p, idExistente);
-    const tabela = ADAPTADORES[p.entidade].tabela(this.db);
+    const existente = await this.buscarNoServidor(p, idExistente);
+    if (!existente || existente.deleted) throw new Error('O cadastro existente não foi encontrado no servidor.');
+    const adaptador = ADAPTADORES[p.entidade];
+    const tabela = adaptador.tabela(this.db);
     await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
       await this.limparAgregado(p);
       await tabela.delete(p.agregadoId);
+      await tabela.put(adaptador.paraLocal(idExistente, existente.version, existente.dados));
     });
     return idExistente;
   }
@@ -81,21 +79,26 @@ export class PendenciasService {
     await this.db.outbox.where('agregadoId').equals(p.agregadoId).delete();
   }
 
-  private async trazerDoServidor(p: Pendencia, id: string): Promise<void> {
+  /** Aplica o estado do servidor (null/deleted = apagar) e limpa o agregado, tudo numa transação. */
+  private async aplicarEClear(p: Pendencia, id: string, m: Mudanca | null): Promise<void> {
     const adaptador = ADAPTADORES[p.entidade];
     const tabela = adaptador.tabela(this.db);
-    try {
-      const m = await firstValueFrom(this.http.get<Mudanca>(`/api/sync/agregado/${p.entidade}/${id}`));
-      if (m.deleted) {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
+      await this.limparAgregado(p);
+      if (!m || m.deleted) {
         await tabela.delete(id);
       } else {
         await tabela.put(adaptador.paraLocal(id, m.version, m.dados));
       }
+    });
+  }
+
+  /** null = 404. Não escreve nada. */
+  private async buscarNoServidor(p: Pendencia, id: string): Promise<Mudanca | null> {
+    try {
+      return await firstValueFrom(this.http.get<Mudanca>(`/api/sync/agregado/${p.entidade}/${id}`));
     } catch (e) {
-      if (e instanceof HttpErrorResponse && e.status === 404) {
-        await tabela.delete(id);
-        return;
-      }
+      if (e instanceof HttpErrorResponse && e.status === 404) return null;
       throw e;
     }
   }
