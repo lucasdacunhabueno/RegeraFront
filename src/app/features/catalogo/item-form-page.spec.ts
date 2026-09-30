@@ -82,6 +82,18 @@ describe('ItemFormPage', () => {
     expect(repo.salvar).not.toHaveBeenCalled();
   });
 
+  it('código e nome só com espaços mostram erro e não salvam', () => {
+    const { fixture, el, repo } = montar();
+    digitar(fixture, '#codigo', '   ');
+    digitar(fixture, '#nome', '   ');
+    digitar(fixture, '#precoVenda', '1');
+    enviar(el);
+    fixture.detectChanges();
+    expect(el.textContent).toContain('Informe o código.');
+    expect(el.textContent).toContain('Informe o nome.');
+    expect(repo.salvar).not.toHaveBeenCalled();
+  });
+
   it('locável exige preço de locação', () => {
     const { fixture, el, repo } = montar();
     digitar(fixture, '#codigo', 'GER');

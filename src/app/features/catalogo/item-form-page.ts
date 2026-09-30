@@ -1,6 +1,6 @@
 import { Component, computed, effect, inject, input, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { NonNullableFormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
+import { AbstractControl, NonNullableFormBuilder, ReactiveFormsModule, ValidationErrors, ValidatorFn, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { ArquivosService } from '../../core/arquivos/arquivos-service';
 import { ImagemService } from '../../core/arquivos/imagem-service';
@@ -13,6 +13,8 @@ import { CatalogoRepo } from './catalogo-repo';
 import { ItemCatalogoDados, NaturezaItem, UNIDADES } from './item-models';
 
 const MAX_PRECO = 999_999_999_999.99;
+const naoVazio: ValidatorFn = (c: AbstractControl): ValidationErrors | null =>
+  typeof c.value === 'string' && c.value.trim() === '' ? { required: true } : null;
 type CampoPreco = 'precoCusto' | 'precoVenda' | 'precoLocacaoMensal';
 
 @Component({
@@ -51,6 +53,7 @@ type CampoPreco = 'precoCusto' | 'precoVenda' | 'precoLocacaoMensal';
           <input id="codigo" formControlName="codigo" maxlength="40" (input)="maiusculas()" autocomplete="off"
                  class="h-12 w-full rounded-lg border border-slate-300 px-3 uppercase" />
           @if (erroCodigo()) { <p class="text-sm text-red-600">{{ erroCodigo() }}</p> }
+          @else if (form.controls.codigo.touched && form.controls.codigo.invalid) { <p class="text-sm text-red-600">Informe o código.</p> }
         </div>
 
         <div class="space-y-1">
@@ -149,8 +152,8 @@ export class ItemFormPage {
 
   protected readonly form = this.fb.group({
     natureza: this.fb.control<NaturezaItem>('PRODUTO'),
-    codigo: ['', [Validators.required, Validators.maxLength(40)]],
-    nome: ['', [Validators.required, Validators.maxLength(160)]],
+    codigo: ['', [Validators.required, naoVazio, Validators.maxLength(40)]],
+    nome: ['', [Validators.required, naoVazio, Validators.maxLength(160)]],
     descricao: ['', Validators.maxLength(2000)],
     unidade: ['un'],
     precoCusto: [''],
