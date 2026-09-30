@@ -3,7 +3,11 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
+import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
+import { ID_EMPRESA, paraEmpresaLocal } from '../../features/empresa/empresa-models';
+import { Toasts } from '../../shared/ui/toasts';
+import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
@@ -14,20 +18,26 @@ const dados = (nome: string): ClienteDados => ({
   inscricaoMunicipal: null, email: null, telefone: null, whatsapp: null, contatoNome: null,
   observacoes: null, enderecos: [],
 });
+const item = (codigo: string): ItemCatalogoDados => ({
+  natureza: 'PRODUTO', codigo, nome: codigo, descricao: null, unidade: 'un', precoVenda: 1,
+  locavel: false, fotoArquivoId: null, ativo: true,
+});
 
 describe('SyncService', () => {
   let sync: SyncService;
   let db: RegeraDb;
   let http: HttpTestingController;
   const online = signal(true);
+  let perfil = 'ADMIN';
 
   beforeEach(() => {
     online.set(true);
+    perfil = 'ADMIN';
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: AuthService, useValue: { autenticado: () => true, sessaoExpirada: () => false, usuario: () => ({ id: 'u1' }) } },
+        { provide: AuthService, useValue: { autenticado: () => true, sessaoExpirada: () => false, usuario: () => ({ id: 'u1', perfil }) } },
         { provide: ConectividadeService, useValue: { online } },
       ],
     });
@@ -265,15 +275,81 @@ describe('SyncService', () => {
     expect(await db.outbox.count()).toBe(1);
     expect(await db.pendencias.count()).toBe(1);
     expect(await db.lerMeta('cursor')).toBe(7);
-    expect(await db.lerMeta('cursorDono')).toBe('u1');
+    expect(await db.lerMeta('cursorDono')).toBe('u1:ADMIN');
   });
 
-  it('cursor do mesmo usuário continua de onde parou', async () => {
+  it('cursor do mesmo usuário e perfil continua de onde parou', async () => {
     await db.gravarMeta('cursor', 50);
-    await db.gravarMeta('cursorDono', 'u1');
+    await db.gravarMeta('cursorDono', 'u1:ADMIN');
     const promessa = sync.sincronizar();
     await pullVazio(50);
     await promessa;
+  });
+
+  it('mesmo usuário com outro perfil recomeça do zero e limpa itens e empresa antes do pull', async () => {
+    await db.gravarMeta('cursor', 50);
+    await db.gravarMeta('cursorDono', 'u1:ADMIN');
+    await db.itens.put(paraItemLocal('i1', 1, item('PNL')));
+    await db.empresa.put(paraEmpresaLocal(ID_EMPRESA, 1, { razaoSocial: 'Velha' }));
+    const limpar = vi.spyOn(TestBed.inject(ArquivosService), 'limpar');
+    perfil = 'COMERCIAL';
+
+    const promessa = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull' && r.params.get('cursor') === '0'));
+    expect(await db.itens.count()).toBe(0);
+    expect(await db.empresa.count()).toBe(0);
+    expect(limpar).toHaveBeenCalled();
+    pull.flush({ cursor: 8, temMais: false, mudancas: [], usuarios: [] });
+    await promessa;
+    expect(await db.lerMeta('cursorDono')).toBe('u1:COMERCIAL');
+  });
+
+  it('cursorDono no formato antigo (só o id) força um pull completo', async () => {
+    await db.gravarMeta('cursor', 50);
+    await db.gravarMeta('cursorDono', 'u1');
+    await db.itens.put(paraItemLocal('i1', 1, item('PNL')));
+    const promessa = sync.sincronizar();
+    await pullVazio(0);
+    await promessa;
+    expect(await db.itens.count()).toBe(0);
+    expect(await db.lerMeta('cursorDono')).toBe('u1:ADMIN');
+  });
+
+  it('pull com mudanças garante em cache o logo da empresa e as fotos dos itens ativos, sem esperar', async () => {
+    const garantir = vi.spyOn(TestBed.inject(ArquivosService), 'garantirCache').mockReturnValue(new Promise<void>(() => undefined));
+    const promessa = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+      cursor: 4, temMais: false, usuarios: [],
+      mudancas: [
+        { entidade: 'empresa', id: ID_EMPRESA, version: 1, deleted: false, dados: { razaoSocial: 'Regera', logoArquivoId: 'logo-1' } },
+        { entidade: 'item_catalogo', id: 'i1', version: 0, deleted: false, dados: { ...item('A'), fotoArquivoId: 'foto-a' } },
+        { entidade: 'item_catalogo', id: 'i2', version: 0, deleted: false, dados: { ...item('B'), fotoArquivoId: 'foto-b', ativo: false } },
+      ],
+    });
+    await promessa; // não fica preso esperando os downloads
+    await vi.waitFor(() => expect(garantir).toHaveBeenCalledWith('logo-1'));
+    await vi.waitFor(() => expect(garantir).toHaveBeenCalledWith('foto-a'));
+    expect(garantir).not.toHaveBeenCalledWith('foto-b');
+  });
+
+  it('pull sem mudanças não busca arquivos; falha no prefetch não vira erro do sync', async () => {
+    await db.empresa.put(paraEmpresaLocal(ID_EMPRESA, 1, { razaoSocial: 'Regera', logoArquivoId: 'logo-1' }));
+    const garantir = vi.spyOn(TestBed.inject(ArquivosService), 'garantirCache').mockRejectedValue(new Error('x'));
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    const p1 = sync.sincronizar();
+    await pullVazio();
+    await p1;
+    expect(garantir).not.toHaveBeenCalled();
+
+    const p2 = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+      cursor: 1, temMais: false, usuarios: [],
+      mudancas: [{ entidade: 'cliente', id: 'c1', version: 0, deleted: false, dados: dados('X') }],
+    });
+    await p2;
+    await vi.waitFor(() => expect(garantir).toHaveBeenCalledWith('logo-1'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(erro).not.toHaveBeenCalled();
   });
 
   it('aguardarOciosa espera a sincronização em curso terminar', async () => {
