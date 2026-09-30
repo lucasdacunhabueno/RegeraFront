@@ -35,6 +35,16 @@ export const routes: Routes = [
         loadComponent: () => import('./features/clientes/clientes-page').then((m) => m.ClientesPage),
       },
       {
+        path: 'catalogo/novo',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/catalogo/item-form-page').then((m) => m.ItemFormPage),
+      },
+      {
+        path: 'catalogo/:id',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/catalogo/item-form-page').then((m) => m.ItemFormPage),
+      },
+      {
         path: 'catalogo',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
         loadComponent: () => import('./features/catalogo/catalogo-page').then((m) => m.CatalogoPage),
