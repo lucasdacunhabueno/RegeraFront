@@ -43,6 +43,17 @@ const empresaRejeitada: Pendencia = {
   mutacao: { mutationId: 'm7', entidade: 'empresa', agregadoId: 'e1', op: 'UPSERT', baseVersion: 1, dados: { razaoSocial: 'X' }, criadaEm: '' },
 };
 
+const templateRejeitado: Pendencia = {
+  mutationId: 'm9', entidade: 'template_proposta', agregadoId: 't1', tipo: 'REJEITADO', criadaEm: '9',
+  erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { 'blocos[0].config': 'Opção não permitida para este bloco.' } },
+  mutacao: { mutationId: 'm9', entidade: 'template_proposta', agregadoId: 't1', op: 'UPSERT', baseVersion: 1, dados: { nome: 'Serviço padrão' }, criadaEm: '' },
+};
+const templateExcluido: Pendencia = {
+  mutationId: 'm10', entidade: 'template_proposta', agregadoId: 't2', tipo: 'REJEITADO', criadaEm: '10',
+  erro: { codigo: 'ACESSO_NEGADO', mensagem: 'Sem permissão.' },
+  mutacao: { mutationId: 'm10', entidade: 'template_proposta', agregadoId: 't2', op: 'DELETE', baseVersion: 1, dados: null, criadaEm: '' },
+};
+
 function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMIN') {
   const svc = {
     observar: () => of(itens),
@@ -147,6 +158,26 @@ describe('PendenciasPage', () => {
     expect(el.textContent).toContain('Dados da empresa');
     expect(el.textContent).not.toContain('Cliente');
     expect(botao(el, 'Editar')).toBeUndefined();
+  });
+
+  it('template: título com o nome e o admin abre /templates/id', () => {
+    const { el, navegar } = montar([templateRejeitado]);
+    expect(el.textContent).toContain('Template de proposta: Serviço padrão');
+    expect(el.textContent).toContain('blocos[0].config: Opção não permitida para este bloco.');
+    botao(el, 'Editar').click();
+    expect(navegar).toHaveBeenCalledWith('/templates/t1');
+  });
+
+  it('template: só o admin pode editar', () => {
+    const { el } = montar([templateRejeitado], 0, 'COMERCIAL');
+    expect(botao(el, 'Editar')).toBeUndefined();
+    expect(botao(el, 'Descartar')).toBeDefined();
+  });
+
+  it('exclusão de template sem dados: título "Exclusão de template"', () => {
+    const { el } = montar([templateExcluido]);
+    expect(el.textContent).toContain('Exclusão de template');
+    expect(el.textContent).not.toContain('Template de proposta');
   });
 
   it('cliente sem nome: título de cliente', () => {

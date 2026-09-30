@@ -1,0 +1,2820 @@
+{
+ "_nota": "Casos compartilhados do BlocosValidator (servidor) e de validarBlocos (front). Os dois arquivos precisam ficar IDÊNTICOS: RegeraServer/src/test/resources/casos-blocos.json e RegeraFront/src/app/features/templates/casos-blocos.json. Ao mudar, atualize SHA_CASOS nos dois testes. Um texto exatamente \"<<c*n>>\" vale o caractere c repetido n vezes. \"erros\" é o mapa exato (chave -> mensagem), na ordem.",
+ "casos": [
+  {
+   "grupo": "valido",
+   "caso": "V1 um bloco de cada tipo, com tudo o que é permitido",
+   "blocos": [
+    {
+     "id": "cab",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": true,
+      "titulo": "Proposta {{proposta.numero}} para {{ cliente.nome }}"
+     }
+    },
+    {
+     "id": "txt",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "heading",
+         "attrs": {
+          "level": 2,
+          "textAlign": null
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "Apresentação"
+          }
+         ]
+        },
+        {
+         "type": "paragraph",
+         "attrs": {
+          "textAlign": "center"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "Olá, "
+          },
+          {
+           "type": "variavel",
+           "attrs": {
+            "nome": "cliente.nome"
+           }
+          },
+          {
+           "type": "hardBreak"
+          },
+          {
+           "type": "text",
+           "text": "negrito",
+           "marks": [
+            {
+             "type": "bold"
+            }
+           ]
+          },
+          {
+           "type": "text",
+           "text": " itálico sublinhado",
+           "marks": [
+            {
+             "type": "italic"
+            },
+            {
+             "type": "underline"
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "type": "paragraph"
+        },
+        {
+         "type": "bulletList",
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "paragraph",
+             "content": [
+              {
+               "type": "text",
+               "text": "um"
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        },
+        {
+         "type": "orderedList",
+         "attrs": {
+          "start": 1
+         },
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "paragraph",
+             "content": [
+              {
+               "type": "text",
+               "text": "dois"
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "id": "itens",
+     "tipo": "ITENS",
+     "config": {
+      "colunas": [
+       "codigo",
+       "descricao",
+       "quantidade",
+       "unidade",
+       "precoUnitario",
+       "desconto",
+       "meses",
+       "subtotal"
+      ],
+      "agruparPorNatureza": true
+     }
+    },
+    {
+     "id": "tot",
+     "tipo": "TOTAIS",
+     "config": {
+      "mostrarDescontos": false
+     }
+    },
+    {
+     "id": "ass",
+     "tipo": "ASSINATURA",
+     "config": {
+      "assinantes": [
+       "EMPRESA",
+       "CLIENTE"
+      ]
+     }
+    },
+    {
+     "id": "qp",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V2 profundidade 12",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "bulletList",
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "bulletList",
+             "content": [
+              {
+               "type": "listItem",
+               "content": [
+                {
+                 "type": "bulletList",
+                 "content": [
+                  {
+                   "type": "listItem",
+                   "content": [
+                    {
+                     "type": "bulletList",
+                     "content": [
+                      {
+                       "type": "listItem",
+                       "content": [
+                        {
+                         "type": "bulletList",
+                         "content": [
+                          {
+                           "type": "listItem",
+                           "content": [
+                            {
+                             "type": "paragraph"
+                            }
+                           ]
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V3 50 blocos",
+   "blocos": [
+    {
+     "id": "q0",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q1",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q2",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q3",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q4",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q5",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q6",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q7",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q8",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q9",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q10",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q11",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q12",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q13",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q14",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q15",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q16",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q17",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q18",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q19",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q20",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q21",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q22",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q23",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q24",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q25",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q26",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q27",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q28",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q29",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q30",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q31",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q32",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q33",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q34",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q35",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q36",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q37",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q38",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q39",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q40",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q41",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q42",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q43",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q44",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q45",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q46",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q47",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q48",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q49",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V4 lista vazia",
+   "blocos": [],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V5 orderedList com start null",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "orderedList",
+         "attrs": {
+          "start": null
+         },
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "paragraph",
+             "content": [
+              {
+               "type": "text",
+               "text": "x"
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V6 text com texto vazio",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": ""
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V7 marcas em hardBreak e variavel",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "hardBreak",
+           "marks": [
+            {
+             "type": "bold"
+            }
+           ]
+          },
+          {
+           "type": "variavel",
+           "attrs": {
+            "nome": "empresa.nome"
+           },
+           "marks": [
+            {
+             "type": "italic"
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V8 paragraph com textAlign null",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "attrs": {
+          "textAlign": null
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "x"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V9 título com tab dentro do token",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{\tcliente.nome\t}}"
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V10 título sem tokens e com chave simples",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "Proposta {n} de {cliente}"
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V11 título vazio",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": ""
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "valido",
+   "caso": "V12 título com chave extra em volta de token válido",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{{cliente.nome}}}"
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "ordem",
+   "caso": "guarda só a primeira mensagem por chave, na ordem",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "IMAGEM",
+     "config": {}
+    },
+    {
+     "id": "a",
+     "tipo": "TOTAIS",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos[0].tipo": "Tipo de bloco desconhecido.",
+    "blocos[1].id": "Identificador de bloco repetido.",
+    "blocos[1].config.mostrarDescontos": "Informe sim ou não."
+   }
+  },
+  {
+   "grupo": "titulo",
+   "caso": "título \"{{cliente.cpf}}\"",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{cliente.cpf}}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável desconhecida."
+   }
+  },
+  {
+   "grupo": "titulo",
+   "caso": "título \"{{cliente.nme}}\"",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{cliente.nme}}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável desconhecida."
+   }
+  },
+  {
+   "grupo": "titulo",
+   "caso": "título \"{{cliente.nome}} e {{ }}\"",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{cliente.nome}} e {{ }}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável inválida."
+   }
+  },
+  {
+   "grupo": "titulo",
+   "caso": "título \"Proposta {{cliente.nome\"",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "Proposta {{cliente.nome"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável inválida."
+   }
+  },
+  {
+   "grupo": "titulo",
+   "caso": "título \"{{Cliente.Nome}}\"",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{Cliente.Nome}}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável inválida."
+   }
+  },
+  {
+   "grupo": "titulo",
+   "caso": "título \"{{cliente nome}}\"",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{cliente nome}}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável inválida."
+   }
+  },
+  {
+   "grupo": "titulo",
+   "caso": "título \"fim }}\"",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "fim }}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável inválida."
+   }
+  },
+  {
+   "grupo": "titulo",
+   "caso": "título \"{{\\ncliente.nome}}\"",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{\ncliente.nome}}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável inválida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "1 raiz não é array",
+   "blocos": {
+    "id": "a",
+    "tipo": "QUEBRA_PAGINA",
+    "config": {}
+   },
+   "erros": {
+    "blocos": "Os blocos precisam ser uma lista."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "2 51 blocos",
+   "blocos": [
+    {
+     "id": "q0",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q1",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q2",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q3",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q4",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q5",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q6",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q7",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q8",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q9",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q10",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q11",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q12",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q13",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q14",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q15",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q16",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q17",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q18",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q19",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q20",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q21",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q22",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q23",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q24",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q25",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q26",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q27",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q28",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q29",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q30",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q31",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q32",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q33",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q34",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q35",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q36",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q37",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q38",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q39",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q40",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q41",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q42",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q43",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q44",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q45",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q46",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q47",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q48",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q49",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "q50",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos": "No máximo 50 blocos."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "3 JSON total acima de 256 KB",
+   "blocos": [
+    {
+     "id": "t0",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "<<a*100000>>"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "id": "t1",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "<<a*100000>>"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    },
+    {
+     "id": "t2",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "<<a*100000>>"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos": "Template grande demais."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "4 bloco não é objeto",
+   "blocos": [
+    1
+   ],
+   "erros": {
+    "blocos[0]": "Bloco inválido."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "5 chave extra no bloco",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {},
+     "x": 1
+    }
+   ],
+   "erros": {
+    "blocos[0]": "Bloco inválido."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "6 id repetido",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "a",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos[1].id": "Identificador de bloco repetido."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "7 id vazio",
+   "blocos": [
+    {
+     "id": "",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos[0].id": "Identificador do bloco inválido."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "8 id com 41 caracteres",
+   "blocos": [
+    {
+     "id": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos[0].id": "Identificador do bloco inválido."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "9 id numérico",
+   "blocos": [
+    {
+     "id": 1,
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos[0].id": "Identificador do bloco inválido."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "10 tipo desconhecido IMAGEM",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "IMAGEM",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos[0].tipo": "Tipo de bloco desconhecido."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "11 config ausente",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "QUEBRA_PAGINA"
+    }
+   ],
+   "erros": {
+    "blocos[0].config": "Opções do bloco inválidas."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "12 chave extra em config (cor)",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TOTAIS",
+     "config": {
+      "mostrarDescontos": true,
+      "cor": "#f00"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config": "Opção não permitida para este bloco."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "13 opção booleana com texto",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TOTAIS",
+     "config": {
+      "mostrarDescontos": "sim"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.mostrarDescontos": "Informe sim ou não."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "14 título {{cliente.cpf}}",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "Proposta {{cliente.cpf}}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável desconhecida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "15 título de 201 caracteres",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "ttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttttt"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Máximo de 200 caracteres."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "16 sem título",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Informe o título."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "17 colunas []",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "ITENS",
+     "config": {
+      "colunas": [],
+      "agruparPorNatureza": false
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.colunas": "Escolha pelo menos uma opção."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "18 coluna preco",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "ITENS",
+     "config": {
+      "colunas": [
+       "preco"
+      ],
+      "agruparPorNatureza": false
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.colunas": "Coluna inválida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "19 colunas repetidas",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "ITENS",
+     "config": {
+      "colunas": [
+       "codigo",
+       "codigo"
+      ],
+      "agruparPorNatureza": false
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.colunas": "Opção repetida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "20 TESTEMUNHA",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "ASSINATURA",
+     "config": {
+      "assinantes": [
+       "TESTEMUNHA"
+      ]
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.assinantes": "Assinante inválido."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "21 assinantes []",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "ASSINATURA",
+     "config": {
+      "assinantes": []
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.assinantes": "Escolha pelo menos uma opção."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "22 assinantes repetidos",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "ASSINATURA",
+     "config": {
+      "assinantes": [
+       "CLIENTE",
+       "CLIENTE"
+      ]
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.assinantes": "Opção repetida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "23 QUEBRA_PAGINA com config {x:1}",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {
+      "x": 1
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config": "Opção não permitida para este bloco."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "24 nó image",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "image",
+         "attrs": {
+          "src": "http://x/y.png"
+         }
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "25 marca link",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "site",
+           "marks": [
+            {
+             "type": "link",
+             "attrs": {
+              "href": "http://x"
+             }
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "26 heading level 1",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "heading",
+         "attrs": {
+          "level": 1
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "T"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "27 textAlign middle",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "attrs": {
+          "textAlign": "middle"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "x"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "28 variável senha",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "variavel",
+           "attrs": {
+            "nome": "senha"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "29 profundidade 13",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "bulletList",
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "bulletList",
+             "content": [
+              {
+               "type": "listItem",
+               "content": [
+                {
+                 "type": "bulletList",
+                 "content": [
+                  {
+                   "type": "listItem",
+                   "content": [
+                    {
+                     "type": "bulletList",
+                     "content": [
+                      {
+                       "type": "listItem",
+                       "content": [
+                        {
+                         "type": "bulletList",
+                         "content": [
+                          {
+                           "type": "listItem",
+                           "content": [
+                            {
+                             "type": "paragraph",
+                             "content": [
+                              {
+                               "type": "text",
+                               "text": "fundo"
+                              }
+                             ]
+                            }
+                           ]
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "30 TEXTO acima de 100 KB",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "<<a*120000>>"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Texto grande demais."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "31 raiz não é doc",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "paragraph",
+       "content": []
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "32 marca com attrs",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "x",
+           "marks": [
+            {
+             "type": "bold",
+             "attrs": {}
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "33 attr color",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "attrs": {
+          "color": "red"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "x"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "34 chave extra no nó",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "style": "x",
+         "content": [
+          {
+           "type": "text",
+           "text": "x"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "35 text sem texto",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "36 orderedList start 0",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "orderedList",
+         "attrs": {
+          "start": 0
+         },
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "paragraph",
+             "content": [
+              {
+               "type": "text",
+               "text": "x"
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "37 orderedList {start:1,type:null} (P4a-R3)",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "orderedList",
+         "attrs": {
+          "start": 1,
+          "type": null
+         },
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "paragraph",
+             "content": [
+              {
+               "type": "text",
+               "text": "x"
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "38 listItem no doc",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "listItem",
+         "content": [
+          {
+           "type": "paragraph"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "39 text no doc",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "text",
+         "text": "solto"
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "invalido",
+   "caso": "40 paragraph em paragraph",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "paragraph"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E1 raiz null",
+   "blocos": null,
+   "erros": {
+    "blocos": "Os blocos precisam ser uma lista."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E2 bloco null",
+   "blocos": [
+    null
+   ],
+   "erros": {
+    "blocos[0]": "Bloco inválido."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E3 id null",
+   "blocos": [
+    {
+     "id": null,
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos[0].id": "Identificador do bloco inválido."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E4 config null",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "QUEBRA_PAGINA",
+     "config": null
+    }
+   ],
+   "erros": {
+    "blocos[0].config": "Opções do bloco inválidas."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E5 attrs null no parágrafo",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "attrs": null,
+         "content": [
+          {
+           "type": "text",
+           "text": "x"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E6 content null no parágrafo",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": null
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E7 marks null no text",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "x",
+           "marks": null
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E8 text null",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": null
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E9 content do doc null",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": null
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E10 conteudo array",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": []
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Informe o texto."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E11 id mede UTF-16 (21 emojis = 42 unidades)",
+   "blocos": [
+    {
+     "id": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    },
+    {
+     "id": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀",
+     "tipo": "QUEBRA_PAGINA",
+     "config": {}
+    }
+   ],
+   "erros": {
+    "blocos[1].id": "Identificador do bloco inválido."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E12 título com 200 caracteres e token passa",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{cliente.nome}}xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E13 título com 201 unidades UTF-16 (emoji conta 2)",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀😀x"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Máximo de 200 caracteres."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E14 nó sem type no doc",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "content": []
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E15 heading sem attrs",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "heading",
+         "content": [
+          {
+           "type": "text",
+           "text": "x"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E16 variavel sem attrs",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "variavel"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E17 level em texto",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "heading",
+         "attrs": {
+          "level": "2"
+         },
+         "content": [
+          {
+           "type": "text",
+           "text": "x"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E18 start em texto",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "orderedList",
+         "attrs": {
+          "start": "1"
+         },
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "paragraph",
+             "content": [
+              {
+               "type": "text",
+               "text": "x"
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E19 content vazio em text",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "x",
+           "content": []
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E20 marks em paragraph",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "marks": [],
+         "content": [
+          {
+           "type": "text",
+           "text": "x"
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E21 bulletList vazia na profundidade 12 passa",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "bulletList",
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "bulletList",
+             "content": [
+              {
+               "type": "listItem",
+               "content": [
+                {
+                 "type": "bulletList",
+                 "content": [
+                  {
+                   "type": "listItem",
+                   "content": [
+                    {
+                     "type": "bulletList",
+                     "content": [
+                      {
+                       "type": "listItem",
+                       "content": [
+                        {
+                         "type": "bulletList",
+                         "content": [
+                          {
+                           "type": "listItem",
+                           "content": [
+                            {
+                             "type": "bulletList",
+                             "content": []
+                            }
+                           ]
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {}
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E22 listItem na profundidade 13",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "bulletList",
+         "content": [
+          {
+           "type": "listItem",
+           "content": [
+            {
+             "type": "bulletList",
+             "content": [
+              {
+               "type": "listItem",
+               "content": [
+                {
+                 "type": "bulletList",
+                 "content": [
+                  {
+                   "type": "listItem",
+                   "content": [
+                    {
+                     "type": "bulletList",
+                     "content": [
+                      {
+                       "type": "listItem",
+                       "content": [
+                        {
+                         "type": "bulletList",
+                         "content": [
+                          {
+                           "type": "listItem",
+                           "content": [
+                            {
+                             "type": "bulletList",
+                             "content": [
+                              {
+                               "type": "listItem"
+                              }
+                             ]
+                            }
+                           ]
+                          }
+                         ]
+                        }
+                       ]
+                      }
+                     ]
+                    }
+                   ]
+                  }
+                 ]
+                }
+               ]
+              }
+             ]
+            }
+           ]
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E23 título com espaço não-ASCII no token (só espaço/tab)",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": true,
+      "mostrarDadosEmpresa": false,
+      "titulo": "{{ cliente.nome}}"
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.titulo": "Variável inválida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E24 marks não é array",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "TEXTO",
+     "config": {
+      "conteudo": {
+       "type": "doc",
+       "content": [
+        {
+         "type": "paragraph",
+         "content": [
+          {
+           "type": "text",
+           "text": "x",
+           "marks": {
+            "type": "bold"
+           }
+          }
+         ]
+        }
+       ]
+      }
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.conteudo": "Conteúdo com formatação não permitida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E25 colunas com número",
+   "blocos": [
+    {
+     "id": "a",
+     "tipo": "ITENS",
+     "config": {
+      "colunas": [
+       1
+      ],
+      "agruparPorNatureza": false
+     }
+    }
+   ],
+   "erros": {
+    "blocos[0].config.colunas": "Coluna inválida."
+   }
+  },
+  {
+   "grupo": "espelho",
+   "caso": "E26 vários erros no mesmo bloco, na ordem do validador",
+   "blocos": [
+    {
+     "id": "",
+     "tipo": "CABECALHO",
+     "config": {
+      "mostrarLogo": 1,
+      "titulo": 2,
+      "x": 0
+     },
+     "y": 0
+    }
+   ],
+   "erros": {
+    "blocos[0]": "Bloco inválido.",
+    "blocos[0].id": "Identificador do bloco inválido.",
+    "blocos[0].config": "Opção não permitida para este bloco.",
+    "blocos[0].config.mostrarLogo": "Informe sim ou não.",
+    "blocos[0].config.mostrarDadosEmpresa": "Informe sim ou não.",
+    "blocos[0].config.titulo": "Informe o título."
+   }
+  }
+ ]
+}

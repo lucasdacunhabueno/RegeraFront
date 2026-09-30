@@ -101,6 +101,11 @@ export class PendenciasPage {
       }
       case 'empresa':
         return 'Dados da empresa';
+      case 'template_proposta': {
+        const nome = ((p.mutacao.dados ?? p.dadosServidor) as { nome?: string } | null | undefined)?.nome;
+        const rotulo = exclusao ? 'Exclusão de template' : 'Template de proposta';
+        return nome ? `${rotulo}: ${nome}` : rotulo;
+      }
     }
   }
 
@@ -108,6 +113,7 @@ export class PendenciasPage {
   protected rotaEdicao(p: Pendencia): string | null {
     if (p.entidade === 'cliente') return `/clientes/${p.agregadoId}`;
     if (p.entidade === 'item_catalogo' && this.admin()) return `/catalogo/${p.agregadoId}`;
+    if (p.entidade === 'template_proposta' && this.admin()) return `/templates/${p.agregadoId}`;
     return null;
   }
 
