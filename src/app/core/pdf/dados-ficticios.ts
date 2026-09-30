@@ -13,9 +13,13 @@ const EMPRESA_FICTICIA: EmpresaPdf = {
   corPrimaria: '#1d4ed8',
 };
 
+/** quantidade × preço × (meses, se houver), antes do desconto do item. */
+function brutoCentavos(i: Pick<ItemPdf, 'quantidade' | 'precoUnitarioCentavos' | 'meses'>): number {
+  return Math.round(i.quantidade * i.precoUnitarioCentavos * (i.meses ?? 1));
+}
+
 function item(p: Omit<ItemPdf, 'subtotalCentavos'>): ItemPdf {
-  const bruto = Math.round(p.quantidade * p.precoUnitarioCentavos);
-  return { ...p, subtotalCentavos: bruto - Math.round((bruto * p.descontoPercentual) / 100) };
+  return { ...p, subtotalCentavos: Math.round(brutoCentavos(p) * (1 - p.descontoPercentual / 100)) };
 }
 
 /** Dois produtos e um serviço; o inversor tem 10% de desconto. */
@@ -34,8 +38,12 @@ const ITENS: readonly ItemPdf[] = [
  */
 export function entradaFicticia(blocos: Bloco[], empresa: EmpresaLocal | null, logoDataUrl: string | null): EntradaPdf {
   const itens = ITENS.map((i) => ({ ...i }));
-  const totalItens = itens.reduce((s, i) => s + Math.round(i.quantidade * i.precoUnitarioCentavos), 0);
-  const total = itens.reduce((s, i) => s + i.subtotalCentavos, 0);
+  // §7.3: total_itens = Σ subtotal; total = total_itens × (1 − geral%), aqui sem desconto geral;
+  // total_descontos = Σ(bruto − subtotal) + (total_itens − total)
+  const bruto = itens.reduce((s, i) => s + brutoCentavos(i), 0);
+  const totalItens = itens.reduce((s, i) => s + i.subtotalCentavos, 0);
+  const total = totalItens;
+  const totalDescontos = bruto - totalItens + (totalItens - total);
   return {
     empresa: empresa
       ? {
@@ -68,7 +76,7 @@ export function entradaFicticia(blocos: Bloco[], empresa: EmpresaLocal | null, l
       prazoExecucao: '30 dias',
       observacoes: 'Valores de exemplo.',
       totalItensCentavos: totalItens,
-      totalDescontosCentavos: totalItens - total,
+      totalDescontosCentavos: totalDescontos,
       totalCentavos: total,
       responsavelNome: 'João Souza',
       responsavelEmail: 'joao@suaempresa.com.br',

@@ -223,12 +223,17 @@ function itens(e: EntradaPdf, config: ConfigItens): Content | null {
   if (lista.length === 0) {
     body.push(linhaCheia({ text: 'Nenhum item.' }, n));
   } else if (config.agruparPorNatureza === true) {
-    const secoes: [ItemPdf['natureza'], string][] = [['PRODUTO', 'Produtos'], ['SERVICO', 'Serviços']];
-    for (const [natureza, rotulo] of secoes) {
-      const doGrupo = lista.filter((i) => i.natureza === natureza);
-      if (doGrupo.length === 0) continue;
+    // natureza fora de PRODUTO/SERVICO (dado de um front mais novo) vai para "Outros": item nunca some do PDF
+    const secoes: [string, (i: ItemPdf) => boolean][] = [
+      ['Produtos', (i) => i.natureza === 'PRODUTO'],
+      ['Serviços', (i) => i.natureza === 'SERVICO'],
+      ['Outros', (i) => i.natureza !== 'PRODUTO' && i.natureza !== 'SERVICO'],
+    ];
+    for (const [rotulo, doGrupo] of secoes) {
+      const doGrupoItens = lista.filter(doGrupo);
+      if (doGrupoItens.length === 0) continue;
       body.push(linhaCheia({ text: rotulo, bold: true }, n));
-      doGrupo.forEach((i) => body.push(linha(i)));
+      doGrupoItens.forEach((i) => body.push(linha(i)));
     }
   } else {
     lista.forEach((i) => body.push(linha(i)));
@@ -243,9 +248,12 @@ function itens(e: EntradaPdf, config: ConfigItens): Content | null {
 
 function totais(e: EntradaPdf, config: ConfigTotais): Content {
   const p = e.proposta;
-  const body: TableCell[][] = [[{ text: 'Total dos itens' }, { text: moedaCentavos(p.totalItensCentavos), alignment: 'right' }]];
-  if (config.mostrarDescontos === true && p.totalDescontosCentavos > 0) {
-    body.push([{ text: 'Descontos' }, { text: moedaCentavos(-p.totalDescontosCentavos), alignment: 'right' }]);
+  const body: TableCell[][] = [];
+  if (config.mostrarDescontos === true) {
+    // P4a-R6: Subtotal = bruto (total + descontos), para que Subtotal − Descontos = Total feche na tela
+    const descontos = p.totalDescontosCentavos > 0 ? p.totalDescontosCentavos : 0;
+    body.push([{ text: 'Subtotal' }, { text: moedaCentavos(p.totalCentavos + descontos), alignment: 'right' }]);
+    if (descontos > 0) body.push([{ text: 'Descontos' }, { text: moedaCentavos(-descontos), alignment: 'right' }]);
   }
   body.push([{ text: 'Total', bold: true }, { text: moedaCentavos(p.totalCentavos), alignment: 'right', bold: true }]);
   return {

@@ -14,10 +14,13 @@ export function moedaCentavos(centavos: number): string {
   return `${n < 0 ? '-' : ''}R$ ${reais},${cents}`;
 }
 
-/** `aaaa-mm-dd` (ou ISO com hora) → `dd/mm/aaaa`; ausente ou inválida → ''. */
+/** `aaaa-mm-dd` (ou ISO com hora) → `dd/mm/aaaa`; ausente ou inválida (mês fora de 1–12, dia fora de 1–31) → ''. */
 export function dataBr(iso: string | null | undefined): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(iso ?? '');
-  return m ? `${m[3]}/${m[2]}/${m[1]}` : '';
+  if (!m) return '';
+  const mes = Number(m[2]);
+  const dia = Number(m[3]);
+  return mes >= 1 && mes <= 12 && dia >= 1 && dia <= 31 ? `${m[3]}/${m[2]}/${m[1]}` : '';
 }
 
 /** Número decimal pt-BR com até 4 casas, sem zeros à direita: 1.5 → `1,5`; 1234.5 → `1.234,5`. */

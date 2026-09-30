@@ -9,8 +9,8 @@ interface PdfMake {
   createPdf(dd: TDocumentDefinitions): { getBlob(): Promise<Blob> };
 }
 
-/** O pdfmake só lê PNG e JPEG. */
-const LOGO_SUPORTADA = /^data:image\/(png|jpeg);base64,/;
+/** O pdfmake só lê PNG e JPEG (`image/jpg` é um mime não padrão, mas comum, para JPEG). */
+const LOGO_SUPORTADA = /^data:image\/(png|jpe?g);base64,/i;
 
 /** Gera o PDF no aparelho. O pdfmake (~1 MB com as fontes) é carregado sob demanda, num chunk lazy, e fica em cache. */
 @Injectable({ providedIn: 'root' })

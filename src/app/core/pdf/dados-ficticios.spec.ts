@@ -10,12 +10,15 @@ describe('entradaFicticia', () => {
     expect(e.itens.filter((i) => i.natureza === 'PRODUTO')).toHaveLength(2);
     expect(e.itens.filter((i) => i.natureza === 'SERVICO')).toHaveLength(1);
     expect(e.itens.filter((i) => i.descontoPercentual > 0)).toHaveLength(1);
-    const bruto = e.itens.reduce((s, i) => s + Math.round(i.quantidade * i.precoUnitarioCentavos), 0);
-    const liquido = e.itens.reduce((s, i) => s + i.subtotalCentavos, 0);
-    expect(e.proposta.totalItensCentavos).toBe(bruto);
-    expect(e.proposta.totalDescontosCentavos).toBe(bruto - liquido);
-    expect(e.proposta.totalDescontosCentavos).toBeGreaterThan(0);
-    expect(e.proposta.totalCentavos).toBe(liquido);
+    // §7.3: total_itens = Σ subtotal; sem desconto geral, total = total_itens;
+    // total_descontos = Σ(bruto − subtotal) + (total_itens − total)
+    const bruto = e.itens.reduce((s, i) => s + Math.round(i.quantidade * i.precoUnitarioCentavos * (i.meses ?? 1)), 0);
+    const somaSubtotais = e.itens.reduce((s, i) => s + i.subtotalCentavos, 0);
+    expect(e.proposta.totalItensCentavos).toBe(somaSubtotais);
+    expect(e.proposta.totalCentavos).toBe(somaSubtotais);
+    expect(e.proposta.totalDescontosCentavos).toBe(bruto - somaSubtotais + (e.proposta.totalItensCentavos - e.proposta.totalCentavos));
+    expect(e.proposta.totalDescontosCentavos).toBe(52000);
+    expect(e.proposta.totalCentavos + e.proposta.totalDescontosCentavos).toBe(bruto);
     expect(e.cliente?.nome).toBeTruthy();
     expect(e.empresa.razaoSocial).toBeTruthy();
   });

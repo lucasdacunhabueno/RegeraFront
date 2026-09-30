@@ -34,12 +34,13 @@ function entrada(over: Partial<EntradaPdf> = {}): EntradaPdf {
     proposta: {
       codigoExibido: '000123', referenciaProvisoria: 'PROV-ABC123', revisao: 2, tipo: 'MANUTENCAO', dataEmissao: '2026-10-01',
       validadeAte: '2026-10-16', condicoesPagamento: '30 dias', prazoExecucao: '10 dias úteis', observacoes: 'Obs.',
-      totalItensCentavos: 300000, totalDescontosCentavos: 10000, totalCentavos: 290000, responsavelNome: 'João',
+      // §7.3: Σ subtotal 290000; desconto geral 10% → total 261000; descontos = 15000 (item) + 29000 (geral)
+      totalItensCentavos: 290000, totalDescontosCentavos: 44000, totalCentavos: 261000, responsavelNome: 'João',
       responsavelEmail: 'joao@regera.test',
     },
     itens: [
       item({ codigo: 'P1', nome: 'Painel', descricao: 'Painel 550 W', natureza: 'PRODUTO', quantidade: 1.5, precoUnitarioCentavos: 100000, descontoPercentual: 10, subtotalCentavos: 135000 }),
-      item({ codigo: 'S1', nome: 'Instalação', natureza: 'SERVICO', unidade: 'SV', meses: 12, precoUnitarioCentavos: 155000, subtotalCentavos: 155000 }),
+      item({ codigo: 'S1', nome: 'Instalação', natureza: 'SERVICO', unidade: 'SV', precoUnitarioCentavos: 155000, subtotalCentavos: 155000 }),
     ],
     blocos: BLOCOS,
     logoDataUrl: LOGO,
@@ -51,6 +52,11 @@ function entrada(over: Partial<EntradaPdf> = {}): EntradaPdf {
 const conteudo = (dd: TDocumentDefinitions): Content[] => dd.content as Content[];
 const rodape = (dd: TDocumentDefinitions, atual: number, total: number) =>
   (dd.footer as DynamicContent)(atual, total, { width: 595, height: 842, orientation: 'portrait' });
+interface Totais { columns: [unknown, { table: { body: { text: string }[][] } }] }
+const linhasTotais = (e: EntradaPdf) => (conteudo(gerarDocumento(e))[0] as unknown as Totais).columns[1].table.body;
+const soTotais = (mostrarDescontos: boolean) => entrada({ blocos: [{ id: 't', tipo: 'TOTAIS', config: { mostrarDescontos } }] });
+/** '-R$ 1.234,56' → -123456 */
+const centavos = (s: string): number => Number(s.replace(/[^\d-]/g, ''));
 interface Tabela { table: { body: unknown[][]; widths: unknown[]; headerRows: number }; layout: string }
 
 describe('gerarDocumento', () => {
@@ -128,7 +134,7 @@ describe('gerarDocumento', () => {
     const e = entrada({
       blocos: [{ id: 't', tipo: 'TEXTO', config: { conteudo: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'variavel', attrs: { nome: 'proposta.total' } }] }] } } }],
     });
-    expect(conteudo(gerarDocumento(e))[0]).toMatchObject({ stack: [{ text: [{ text: 'R$ 2.900,00' }] }] });
+    expect(conteudo(gerarDocumento(e))[0]).toMatchObject({ stack: [{ text: [{ text: 'R$ 2.610,00' }] }] });
   });
 
   it('ITENS: cabeçalho com rótulos, larguras e células formatadas', () => {
@@ -151,7 +157,13 @@ describe('gerarDocumento', () => {
       { text: 'R$ 1.350,00', alignment: 'right' },
     ]);
     expect(l2[1]).toEqual({ stack: [{ text: 'Instalação', bold: true }] });
-    expect(l2[6]).toEqual({ text: '12', alignment: 'right' });
+    expect(l2[6]).toEqual({ text: '—', alignment: 'right' });
+  });
+
+  it('ITENS: meses com valor aparece como número', () => {
+    const e = entrada({ blocos: [{ id: 'i', tipo: 'ITENS', config: { colunas: ['meses'], agruparPorNatureza: false } }] });
+    e.itens = [item({ codigo: 'L1', nome: 'Locação', natureza: 'SERVICO', meses: 12, subtotalCentavos: 120000 })];
+    expect((conteudo(gerarDocumento(e))[0] as unknown as Tabela).table.body[1][0]).toEqual({ text: '12', alignment: 'right' });
   });
 
   it('ITENS: colunas na ordem do config; descrição com largura *', () => {
@@ -179,6 +191,14 @@ describe('gerarDocumento', () => {
     expect(c2[1][0]).toMatchObject({ text: 'Serviços' });
   });
 
+  it('ITENS agrupado: natureza desconhecida vai para "Outros", nunca some', () => {
+    const blocos: Bloco[] = [{ id: 'i', tipo: 'ITENS', config: { colunas: ['codigo'], agruparPorNatureza: true } }];
+    const e = entrada({ blocos });
+    e.itens = [...e.itens, item({ codigo: 'X1', nome: 'Kit', natureza: 'KIT' as unknown as ItemPdf['natureza'] })];
+    const corpo = (conteudo(gerarDocumento(e))[0] as unknown as Tabela).table.body;
+    expect(corpo.map((l) => (l[0] as { text: string }).text)).toEqual(['Código', 'Produtos', 'P1', 'Serviços', 'S1', 'Outros', 'X1']);
+  });
+
   it('ITENS sem itens mostra "Nenhum item."', () => {
     const tabela = conteudo(gerarDocumento(entrada({ itens: [] })))[2] as unknown as Tabela;
     expect(tabela.table.body).toHaveLength(2);
@@ -186,25 +206,29 @@ describe('gerarDocumento', () => {
     expect(tabela.table.body[1]).toHaveLength(8);
   });
 
-  it('TOTAIS: itens, descontos e total em negrito, alinhado à direita', () => {
-    const tot = conteudo(gerarDocumento(entrada()))[3] as { columns: [unknown, { table: { body: unknown[][] } }] };
+  it('TOTAIS com descontos: Subtotal, Descontos e Total em negrito, alinhado à direita, e os valores fecham', () => {
+    const tot = conteudo(gerarDocumento(entrada()))[3] as unknown as Totais;
     expect(tot.columns[1]).toMatchObject({ width: 'auto' });
-    expect(tot.columns[1].table.body).toEqual([
-      [{ text: 'Total dos itens' }, { text: 'R$ 3.000,00', alignment: 'right' }],
-      [{ text: 'Descontos' }, { text: '-R$ 100,00', alignment: 'right' }],
+    const corpo = tot.columns[1].table.body;
+    expect(corpo).toEqual([
+      [{ text: 'Subtotal' }, { text: 'R$ 3.050,00', alignment: 'right' }],
+      [{ text: 'Descontos' }, { text: '-R$ 440,00', alignment: 'right' }],
+      [{ text: 'Total', bold: true }, { text: 'R$ 2.610,00', alignment: 'right', bold: true }],
+    ]);
+    expect(centavos(corpo[0][1].text) + centavos(corpo[1][1].text)).toBe(centavos(corpo[2][1].text));
+  });
+
+  it('TOTAIS com mostrarDescontos e desconto zero: Subtotal e Total', () => {
+    const e = soTotais(true);
+    e.proposta = { ...e.proposta, totalDescontosCentavos: 0, totalCentavos: 290000 };
+    expect(linhasTotais(e)).toEqual([
+      [{ text: 'Subtotal' }, { text: 'R$ 2.900,00', alignment: 'right' }],
       [{ text: 'Total', bold: true }, { text: 'R$ 2.900,00', alignment: 'right', bold: true }],
     ]);
   });
 
-  it('TOTAIS: sem a linha de descontos se desligado ou se o desconto for zero', () => {
-    const desligado = entrada({ blocos: [{ id: 't', tipo: 'TOTAIS', config: { mostrarDescontos: false } }] });
-    const corpo1 = (conteudo(gerarDocumento(desligado))[0] as { columns: [unknown, { table: { body: unknown[][] } }] }).columns[1].table.body;
-    expect(corpo1).toHaveLength(2);
-
-    const zero = entrada({ blocos: [{ id: 't', tipo: 'TOTAIS', config: { mostrarDescontos: true } }] });
-    zero.proposta = { ...zero.proposta, totalDescontosCentavos: 0 };
-    const corpo2 = (conteudo(gerarDocumento(zero))[0] as { columns: [unknown, { table: { body: unknown[][] } }] }).columns[1].table.body;
-    expect(corpo2).toHaveLength(2);
+  it('TOTAIS sem mostrarDescontos: só o Total', () => {
+    expect(linhasTotais(soTotais(false))).toEqual([[{ text: 'Total', bold: true }, { text: 'R$ 2.610,00', alignment: 'right', bold: true }]]);
   });
 
   it('ASSINATURA: uma coluna por assinante com linha, nome e rótulo', () => {
@@ -293,7 +317,7 @@ describe('gerarDocumento', () => {
     expect(valorVariavel(e, 'proposta.tipo')).toBe('Manutenção');
     expect(valorVariavel(e, 'proposta.data')).toBe('01/10/2026');
     expect(valorVariavel(e, 'proposta.validade')).toBe('16/10/2026');
-    expect(valorVariavel(e, 'proposta.total')).toBe('R$ 2.900,00');
+    expect(valorVariavel(e, 'proposta.total')).toBe('R$ 2.610,00');
     expect(valorVariavel(e, 'proposta.condicoes_pagamento')).toBe('30 dias');
     expect(valorVariavel(e, 'proposta.prazo_execucao')).toBe('10 dias úteis');
     expect(valorVariavel(e, 'proposta.observacoes')).toBe('Obs.');

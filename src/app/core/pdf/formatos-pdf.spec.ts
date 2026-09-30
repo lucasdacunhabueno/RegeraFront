@@ -21,6 +21,11 @@ describe('formatos-pdf', () => {
     expect(dataBr(null)).toBe('');
     expect(dataBr(undefined)).toBe('');
     expect(dataBr('ontem')).toBe('');
+    expect(dataBr('2026-13-01')).toBe('');
+    expect(dataBr('2026-00-10')).toBe('');
+    expect(dataBr('2026-10-32')).toBe('');
+    expect(dataBr('2026-10-00')).toBe('');
+    expect(dataBr('2026-01-31')).toBe('31/01/2026');
   });
 
   it('quantidadeBr usa vírgula, milhar com ponto e sem zeros à direita', () => {
