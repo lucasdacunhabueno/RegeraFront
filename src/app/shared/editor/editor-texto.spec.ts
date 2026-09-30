@@ -82,11 +82,29 @@ describe('EditorTexto', () => {
       doc(
         { type: 'heading', attrs: { textAlign: 'center', level: 2 }, content: [{ type: 'text', text: 'Título' }] },
         { type: 'orderedList', attrs: { start: 1 }, content: [{ type: 'listItem', content: [paragrafo('item')] }] },
-        { type: 'paragraph' }, // TrailingNode do StarterKit: sempre dá para escrever depois da lista
       ),
     );
     expect(valida(ultimo())).toEqual({});
     expect(botao('Lista numerada').getAttribute('aria-pressed')).toBe('true');
+  });
+
+  it('doc terminando em lista ou título não ganha parágrafo vazio no fim (P4a-R8, trailingNode desligado)', async () => {
+    const lista: TiptapNo = { type: 'bulletList', content: [{ type: 'listItem', content: [paragrafo('item')] }] };
+    const titulo: TiptapNo = { type: 'heading', attrs: { level: 3 }, content: [{ type: 'text', text: 'Fim' }] };
+    const { fixture, editor, ultimo } = await montar(doc(paragrafo('a'), lista));
+
+    editor.commands.selectAll();
+    editor.commands.toggleItalic();
+    await fixture.whenStable();
+    expect(ultimo().content?.map((n) => n.type)).toEqual(['paragraph', 'bulletList']);
+
+    fixture.componentRef.setInput('conteudo', doc(paragrafo('a'), titulo));
+    await fixture.whenStable();
+    editor.commands.selectAll();
+    editor.commands.toggleBold();
+    await fixture.whenStable();
+    expect(ultimo().content?.map((n) => n.type)).toEqual(['paragraph', 'heading']);
+    expect(editor.getJSON().content?.at(-1)?.type).toBe('heading');
   });
 
   it('insere a variável pelo menu: nó variavel com attrs.nome, chip com o rótulo e texto {{nome}}', async () => {

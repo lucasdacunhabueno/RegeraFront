@@ -62,4 +62,23 @@ describe('TituloVariaveis', () => {
     await outro.fixture.whenStable();
     expect(outro.emitidos).toEqual(['Para {{cliente.nome}}']);
   });
+
+  it('mostra a contagem n/200 e o erro inline quando passa de 200', async () => {
+    const { fixture, input } = await montar('Proposta');
+    const el = fixture.nativeElement as HTMLElement;
+    const contagem = () => el.querySelector('[data-testid=contagem-titulo]')?.textContent?.trim();
+    const erro = () => el.querySelector('[role=alert]');
+
+    expect(contagem()).toBe('8/200');
+    expect(erro()).toBeNull();
+    expect(input.getAttribute('aria-invalid')).toBe('false');
+
+    fixture.componentRef.setInput('valor', 'x'.repeat(190) + '{{proposta.numero}}');
+    await fixture.whenStable();
+
+    expect(contagem()).toBe('209/200');
+    expect(erro()?.textContent?.trim()).toBe('Máximo de 200 caracteres.');
+    expect(input.getAttribute('aria-invalid')).toBe('true');
+    expect(input.getAttribute('aria-describedby')).toContain(erro()!.id);
+  });
 });

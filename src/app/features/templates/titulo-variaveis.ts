@@ -1,4 +1,4 @@
-import { Component, ElementRef, input, model, viewChild } from '@angular/core';
+import { Component, computed, ElementRef, input, model, viewChild } from '@angular/core';
 import { VARIAVEIS } from './template-models';
 
 /**
@@ -16,7 +16,11 @@ import { VARIAVEIS } from './template-models';
         (input)="valor.set(campo.value)"
         maxlength="200"
         autocomplete="off"
-        class="h-12 min-w-0 flex-1 rounded-lg border border-slate-300 px-3"
+        [attr.aria-invalid]="excedeu() ? 'true' : 'false'"
+        [attr.aria-describedby]="excedeu() ? idCampo() + '-contagem ' + idCampo() + '-erro' : idCampo() + '-contagem'"
+        class="h-12 min-w-0 flex-1 rounded-lg border px-3"
+        [class.border-slate-300]="!excedeu()"
+        [class.border-red-600]="excedeu()"
       />
       <select
         aria-label="Inserir variável"
@@ -29,6 +33,14 @@ import { VARIAVEIS } from './template-models';
         }
       </select>
     </div>
+    <div class="mt-1 flex justify-between gap-2 text-sm">
+      @if (excedeu()) {
+        <p [id]="idCampo() + '-erro'" role="alert" class="text-red-600">Máximo de {{ max }} caracteres.</p>
+      }
+      <span [id]="idCampo() + '-contagem'" data-testid="contagem-titulo" class="ml-auto text-slate-500" [class.text-red-600]="excedeu()">
+        {{ valor().length }}/{{ max }}
+      </span>
+    </div>
   `,
 })
 export class TituloVariaveis {
@@ -37,6 +49,9 @@ export class TituloVariaveis {
   readonly idCampo = input('titulo');
 
   protected readonly variaveis = VARIAVEIS;
+  /** Mesmo limite do `validarBlocos` (MAX_TITULO); o token inserido pode passar dele, e aí o erro aparece aqui. */
+  protected readonly max = 200;
+  protected readonly excedeu = computed(() => this.valor().length > this.max);
   private readonly campo = viewChild.required<ElementRef<HTMLInputElement>>('campo');
 
   protected inserir(evento: Event): void {

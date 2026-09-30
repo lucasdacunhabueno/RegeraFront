@@ -195,6 +195,8 @@ export class EditorTexto implements OnDestroy {
           strike: false,
           link: false,
           heading: { levels: [2, 3] },
+          // P4a-R8: sem parágrafo vazio automático no fim (sairia como espaço em branco no PDF)
+          trailingNode: false,
         }),
         TextAlign.configure({ types: ['heading', 'paragraph'], alignments: ['left', 'center', 'right', 'justify'] }),
         VariavelNode,
