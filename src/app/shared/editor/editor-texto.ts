@@ -79,7 +79,7 @@ export function normalizarHtmlColado(html: string): string {
 /** Quantos emits recentes são lembrados para ignorar o eco atrasado deles. */
 const MAX_EMITIDOS = 20;
 
-const iguais =(a: readonly boolean[], b: readonly boolean[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+const iguais = (a: readonly boolean[], b: readonly boolean[]) => a.length === b.length && a.every((v, i) => v === b[i]);
 
 /**
  * Editor de texto rico restrito (§9.1) sobre o Tiptap 3 (sem binding Angular: `Editor` do `@tiptap/core` num elemento
@@ -107,7 +107,7 @@ const iguais =(a: readonly boolean[], b: readonly boolean[]) => a.length === b.l
     <div class="rounded-lg border border-slate-300 bg-white focus-within:border-blue-600">
       @if (!somenteLeitura()) {
         <div class="flex flex-wrap items-center gap-1 border-b border-slate-200 p-1">
-          <div #barra role="toolbar" aria-label="Formatação do texto" tabindex="-1" (keydown)="navegar($event)" class="flex flex-wrap items-center gap-1">
+          <div #barra role="toolbar" aria-label="Formatação do texto" class="flex flex-wrap items-center gap-1">
             @for (b of botoes; track b.rotulo; let i = $index) {
               <button
                 type="button"
@@ -116,6 +116,7 @@ const iguais =(a: readonly boolean[], b: readonly boolean[]) => a.length === b.l
                 [title]="b.rotulo"
                 [tabIndex]="i === foco() ? 0 : -1"
                 (focus)="foco.set(i)"
+                (keydown)="navegar($event)"
                 (mousedown)="$event.preventDefault()"
                 (click)="acionar(b)"
                 class="flex h-12 w-12 items-center justify-center rounded-lg text-slate-700 hover:bg-slate-100 lg:h-9 lg:w-9"
@@ -134,6 +135,11 @@ const iguais =(a: readonly boolean[], b: readonly boolean[]) => a.length === b.l
   `,
 })
 export class EditorTexto implements OnDestroy {
+  /**
+   * Doc a mostrar. O pai deve ecoar de forma síncrona o que recebe em `conteudoChange`. Um valor igual a um dos emits
+   * recentes é tratado como eco e ignorado enquanto o editor tem foco: voltar para um valor emitido há pouco só vale
+   * depois do blur.
+   */
   readonly conteudo = input<TiptapDoc | null>(null);
   readonly somenteLeitura = input(false);
   /** Nome acessível da área de texto. */

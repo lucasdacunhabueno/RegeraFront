@@ -113,4 +113,41 @@ describe('SeletorVariavel', () => {
 
     expect(a.lista()!.id).not.toBe(b.lista()!.id);
   });
+
+  describe('posição da lista (sempre dentro da tela)', () => {
+    const larguraOriginal = window.innerWidth;
+    afterEach(() => Object.defineProperty(window, 'innerWidth', { configurable: true, value: larguraOriginal }));
+
+    async function abrirCom(larguraTela: number, host: { left: number; right: number }) {
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: larguraTela });
+      const m = await montar();
+      const el = m.fixture.nativeElement as HTMLElement;
+      el.getBoundingClientRect = () => new DOMRect(host.left, 0, host.right - host.left, 48);
+      await m.abrir();
+      const lista = m.lista()!;
+      const esquerda = host.left + parseFloat(lista.style.left);
+      return { esquerda, largura: parseFloat(lista.style.width) };
+    }
+
+    it('com espaço à esquerda, alinha a lista pela direita do botão', async () => {
+      const { esquerda, largura } = await abrirCom(1024, { left: 850, right: 1000 });
+
+      expect(largura).toBe(256);
+      expect(esquerda + largura).toBe(1000);
+    });
+
+    it('em tela estreita, com o botão perto da borda esquerda, a lista não passa da borda esquerda', async () => {
+      const { esquerda, largura } = await abrirCom(360, { left: 16, right: 150 });
+
+      expect(esquerda).toBeGreaterThanOrEqual(16);
+      expect(esquerda + largura).toBeLessThanOrEqual(360 - 16);
+    });
+
+    it('em tela muito estreita a largura encolhe e a lista fica entre as margens', async () => {
+      const { esquerda, largura } = await abrirCom(280, { left: 100, right: 250 });
+
+      expect(largura).toBe(280 - 32);
+      expect(esquerda).toBe(16);
+    });
+  });
 });

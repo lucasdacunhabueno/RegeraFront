@@ -2,6 +2,9 @@ import { afterNextRender, Component, ElementRef, Injector, inject, output, signa
 import { VARIAVEIS } from '../../features/templates/template-models';
 
 let sequencia = 0;
+/** Largura da lista e margem mínima até a borda da tela, em px. */
+const LARGURA = 256;
+const MARGEM = 16;
 
 /**
  * Botão "Inserir variável" que abre uma lista (listbox) das variáveis (§9.2). Diferente de um `<select>` nativo, mover
@@ -37,7 +40,9 @@ let sequencia = 0;
         (focusout)="saiu($event)"
         (mousedown)="$event.preventDefault()"
         (click)="cliqueNaLista($event)"
-        class="absolute right-0 z-20 mt-1 max-h-72 w-64 max-w-[calc(100vw-2rem)] overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg focus:outline-none"
+        [style.left.px]="posicao().left"
+        [style.width.px]="posicao().width"
+        class="absolute z-20 mt-1 max-h-72 max-w-[calc(100vw-2rem)] overflow-auto rounded-lg border border-slate-200 bg-white py-1 shadow-lg focus:outline-none"
       >
         @for (v of variaveis; track v.nome; let i = $index) {
           <li
@@ -64,8 +69,11 @@ export class SeletorVariavel {
   protected readonly variaveis = VARIAVEIS;
   protected readonly aberto = signal(false);
   protected readonly ativa = signal(0);
+  /** `left` (relativo ao botão) e largura da lista, calculados ao abrir. */
+  protected readonly posicao = signal({ left: 0, width: LARGURA });
 
   private readonly injector = inject(Injector);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly botao = viewChild.required<ElementRef<HTMLButtonElement>>('botao');
   private readonly lista = viewChild<ElementRef<HTMLElement>>('lista');
 
@@ -141,8 +149,21 @@ export class SeletorVariavel {
 
   private abrir(ativa = 0): void {
     this.ativa.set(ativa);
+    this.posicao.set(this.calcularPosicao());
     this.aberto.set(true);
     afterNextRender(() => this.lista()?.nativeElement.focus(), { injector: this.injector });
+  }
+
+  /**
+   * Alinha a lista pela direita do botão; se assim ela passaria de uma borda da tela (celular, botão perto da borda
+   * esquerda), desloca para ficar entre as margens. Em tela mais estreita que a lista, a largura encolhe.
+   */
+  private calcularPosicao(): { left: number; width: number } {
+    const tela = window.innerWidth;
+    const r = this.host.nativeElement.getBoundingClientRect();
+    const width = Math.max(0, Math.min(LARGURA, tela - 2 * MARGEM));
+    const esquerda = Math.max(MARGEM, Math.min(r.right - width, tela - MARGEM - width));
+    return { left: esquerda - r.left, width };
   }
 
   private fechar(devolverFoco: boolean): void {
