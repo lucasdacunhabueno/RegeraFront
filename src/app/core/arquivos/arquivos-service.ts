@@ -25,6 +25,16 @@ async function paraBytes(blob: Blob): Promise<ArrayBuffer> {
   });
 }
 
+/** Base64 em blocos: `String.fromCharCode(...bytes)` inteiro estoura o limite de argumentos em arquivos grandes. */
+function base64(bytes: ArrayBuffer): string {
+  const u8 = new Uint8Array(bytes);
+  let binario = '';
+  for (let i = 0; i < u8.length; i += 0x8000) {
+    binario += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+  }
+  return btoa(binario);
+}
+
 /** Upload (só online) e exibição de arquivos com cache local dos bytes, para mostrar offline. */
 @Injectable({ providedIn: 'root' })
 export class ArquivosService {
@@ -75,6 +85,21 @@ export class ArquivosService {
       emAndamento = p;
     }
     return emAndamento;
+  }
+
+  /**
+   * `data:<mime>;base64,...` dos bytes do cache local (ou baixados, com internet e sessão), para o pdfmake, que não
+   * carrega URLs. Null se não houver bytes ou se limpar() aconteceu no meio (bytes de outra sessão). Nunca falha.
+   */
+  async obterDataUrl(id: string): Promise<string | null> {
+    const geracao = this.geracao;
+    try {
+      const cache = await this.lerOuBaixar(id);
+      if (!cache || geracao !== this.geracao) return null;
+      return `data:${cache.mime};base64,${base64(cache.bytes)}`;
+    } catch {
+      return null;
+    }
   }
 
   /** Garante os bytes no cache local (para exibir/gerar PDF offline) sem criar object URL. Nunca falha. */
