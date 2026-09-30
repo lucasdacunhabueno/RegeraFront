@@ -1,0 +1,215 @@
+import { HttpClient, HttpErrorResponse } from '@angular/common/http';
+import { inject, Injectable, signal } from '@angular/core';
+import { firstValueFrom } from 'rxjs';
+import { Toasts } from '../../shared/ui/toasts';
+import { AuthService } from '../auth/auth-service';
+import { ConectividadeService } from '../conectividade/conectividade-service';
+import { observar } from '../db/observar';
+import { RegeraDb } from '../db/regera-db';
+import { mensagemDeErro } from '../http/erro-api';
+import { ADAPTADORES } from './adaptadores';
+import { Entidade, Mudanca, MutacaoLocal, Operacao, RespostaPull, RespostaPush, ResultadoMutacao } from './sync-models';
+
+const CHAVE_CURSOR = 'cursor';
+const CHAVE_ULTIMO_SYNC = 'ultimoSync';
+const LOTE = 100;
+const LIMITE_PULL = 500;
+const MAX_RODADAS_PUSH = 50;
+/** Rejeições que o servidor não grava: é seguro reenviar a mesma mutação depois. */
+const CODIGOS_TRANSITORIOS = new Set(['ERRO_INTERNO', 'INTEGRIDADE']);
+
+@Injectable({ providedIn: 'root' })
+export class SyncService {
+  private readonly http = inject(HttpClient);
+  private readonly db = inject(RegeraDb);
+  private readonly auth = inject(AuthService);
+  private readonly conectividade = inject(ConectividadeService);
+  private readonly toasts = inject(Toasts);
+  private emAndamento: Promise<void> | null = null;
+
+  readonly sincronizando = signal(false);
+  readonly ultimoSync = signal<string | null>(null);
+  /** Mutações na outbox. */
+  readonly naoSincronizados = signal(0);
+  /** Conflitos e rejeições esperando decisão do usuário. */
+  readonly problemas = signal(0);
+
+  constructor() {
+    observar(() => this.db.outbox.count()).subscribe((n) => this.naoSincronizados.set(n));
+    observar(() => this.db.pendencias.count()).subscribe((n) => this.problemas.set(n));
+    void this.db.lerMeta<string>(CHAVE_ULTIMO_SYNC).then((v) => this.ultimoSync.set(v ?? null));
+  }
+
+  /** Enfileira uma mutação, coalescendo com a pendente (não enviada) do mesmo agregado. */
+  async registrar(
+    entidade: Entidade,
+    agregadoId: string,
+    op: Operacao,
+    dados: unknown | null,
+    baseVersion: number | null,
+  ): Promise<void> {
+    await this.db.transaction('rw', this.db.outbox, async () => {
+      const doAgregado = await this.db.outbox.where('agregadoId').equals(agregadoId).toArray();
+      const naoEnviada = doAgregado.find((m) => !m.enviando);
+      const emVoo = doAgregado.some((m) => m.enviando);
+      if (!naoEnviada) {
+        await this.db.outbox.add({
+          mutationId: crypto.randomUUID(),
+          entidade,
+          agregadoId,
+          op,
+          baseVersion,
+          dados,
+          criadaEm: new Date().toISOString(),
+        });
+        return;
+      }
+      if (op === 'DELETE' && naoEnviada.baseVersion === null && !emVoo) {
+        // criado offline e excluído antes de chegar ao servidor: nada a enviar
+        await this.db.outbox.delete(naoEnviada.seq!);
+        return;
+      }
+      await this.db.outbox.update(naoEnviada.seq!, { op, dados, mutationId: crypto.randomUUID() });
+    });
+  }
+
+  sincronizar(): Promise<void> {
+    this.emAndamento ??= this.executar().finally(() => (this.emAndamento = null));
+    return this.emAndamento;
+  }
+
+  async contarNaoSincronizados(): Promise<number> {
+    return (await this.db.outbox.count()) + (await this.db.pendencias.count());
+  }
+
+  private async executar(): Promise<void> {
+    if (!this.conectividade.online() || !this.auth.autenticado() || this.auth.sessaoExpirada()) return;
+    this.sincronizando.set(true);
+    try {
+      await this.enviar();
+      await this.receber();
+      const agora = new Date().toISOString();
+      this.ultimoSync.set(agora);
+      await this.db.gravarMeta(CHAVE_ULTIMO_SYNC, agora);
+    } catch (erro) {
+      const semRede = erro instanceof HttpErrorResponse && (erro.status === 0 || erro.status === 401);
+      if (!semRede) this.toasts.erro(`Falha ao sincronizar: ${mensagemDeErro(erro)}`);
+    } finally {
+      this.sincronizando.set(false);
+    }
+  }
+
+  private async enviar(): Promise<void> {
+    for (let rodada = 0; rodada < MAX_RODADAS_PUSH; rodada++) {
+      const bloqueados = new Set((await this.db.pendencias.toArray()).map((p) => p.agregadoId));
+      const vistos = new Set<string>();
+      const lote: MutacaoLocal[] = [];
+      for (const m of await this.db.outbox.orderBy('seq').toArray()) {
+        if (bloqueados.has(m.agregadoId) || vistos.has(m.agregadoId)) continue;
+        vistos.add(m.agregadoId);
+        lote.push(m);
+        if (lote.length === LOTE) break;
+      }
+      if (lote.length === 0) return;
+
+      await this.marcarEnviando(lote, true);
+      const resp = await firstValueFrom(
+        this.http.post<RespostaPush>('/api/sync/push', {
+          mutacoes: lote.map((m) => ({
+            mutationId: m.mutationId,
+            entidade: m.entidade,
+            id: m.agregadoId,
+            op: m.op,
+            baseVersion: m.baseVersion,
+            dados: m.dados,
+          })),
+        }),
+      );
+      const porId = new Map(lote.map((m) => [m.mutationId, m]));
+      let transitorio = false;
+      for (const r of resp.resultados) {
+        const m = porId.get(r.mutationId);
+        if (!m) continue;
+        if (r.status === 'REJEITADO' && r.erro && CODIGOS_TRANSITORIOS.has(r.erro.codigo)) {
+          // não foi gravado no servidor: volta a ser elegível e não se tenta de novo nesta sincronização
+          await this.marcarEnviando([m], false);
+          transitorio = true;
+          continue;
+        }
+        await this.aplicarResultado(m, r);
+      }
+      if (transitorio) return;
+    }
+  }
+
+  private async marcarEnviando(lote: MutacaoLocal[], enviando: boolean): Promise<void> {
+    await this.db.outbox.bulkUpdate(lote.map((m) => ({ key: m.seq!, changes: { enviando } })));
+  }
+
+  private async aplicarResultado(m: MutacaoLocal, r: ResultadoMutacao): Promise<void> {
+    const adaptador = ADAPTADORES[m.entidade];
+    const tabela = adaptador.tabela(this.db);
+    await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, tabela], async () => {
+      await this.db.outbox.delete(m.seq!);
+      if (r.status === 'OK') {
+        const proxima = await this.db.outbox.where('agregadoId').equals(m.agregadoId).first();
+        if (proxima) {
+          // houve edição durante o envio: ela vai por cima da versão que o servidor acabou de gravar
+          await this.db.outbox.update(proxima.seq!, { baseVersion: r.version ?? null });
+          return;
+        }
+        if (m.op === 'DELETE' || r.dados == null) {
+          await tabela.delete(m.agregadoId);
+        } else {
+          await tabela.put(adaptador.paraLocal(m.agregadoId, r.version ?? null, r.dados));
+        }
+        return;
+      }
+      await this.db.pendencias.put({
+        mutationId: m.mutationId,
+        entidade: m.entidade,
+        agregadoId: m.agregadoId,
+        tipo: r.status,
+        mutacao: { ...m, enviando: false },
+        dadosServidor: r.dadosServidor,
+        versionServidor: r.versionServidor,
+        erro: r.erro,
+        criadaEm: new Date().toISOString(),
+      });
+    });
+  }
+
+  private async receber(): Promise<void> {
+    let cursor = (await this.db.lerMeta<number>(CHAVE_CURSOR)) ?? 0;
+    for (;;) {
+      const resp = await firstValueFrom(
+        this.http.get<RespostaPull>('/api/sync/pull', { params: { cursor, limite: LIMITE_PULL } }),
+      );
+      await this.aplicarMudancas(resp.mudancas);
+      await this.db.transaction('rw', this.db.usuarios, async () => {
+        await this.db.usuarios.clear();
+        await this.db.usuarios.bulkPut(resp.usuarios);
+      });
+      cursor = resp.cursor;
+      await this.db.gravarMeta(CHAVE_CURSOR, cursor);
+      if (!resp.temMais) return;
+    }
+  }
+
+  private async aplicarMudancas(mudancas: Mudanca[]): Promise<void> {
+    const bloqueados = new Set([
+      ...(await this.db.outbox.toArray()).map((m) => m.agregadoId),
+      ...(await this.db.pendencias.toArray()).map((p) => p.agregadoId),
+    ]);
+    for (const mu of mudancas) {
+      const adaptador = ADAPTADORES[mu.entidade];
+      if (!adaptador || bloqueados.has(mu.id)) continue;
+      const tabela = adaptador.tabela(this.db);
+      if (mu.deleted) {
+        await tabela.delete(mu.id);
+      } else {
+        await tabela.put(adaptador.paraLocal(mu.id, mu.version, mu.dados));
+      }
+    }
+  }
+}

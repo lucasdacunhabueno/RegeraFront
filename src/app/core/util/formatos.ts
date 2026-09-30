@@ -43,5 +43,5 @@ export function formatarCep(v: string | null | undefined): string {
 }
 
 export function normalizarBusca(v: string | null | undefined): string {
-  return (v ?? '').normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trim();
+  return (v ?? '').normalize('NFD').replace(/[\u0300-\u036f]/g, '').toLowerCase().trim();
 }
