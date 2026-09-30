@@ -50,6 +50,21 @@ export const routes: Routes = [
         loadComponent: () => import('./features/catalogo/catalogo-page').then((m) => m.CatalogoPage),
       },
       {
+        path: 'templates/novo',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/templates/template-editor-page').then((m) => m.TemplateEditorPage),
+      },
+      {
+        path: 'templates/:id',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/templates/template-editor-page').then((m) => m.TemplateEditorPage),
+      },
+      {
+        path: 'templates',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/templates/templates-page').then((m) => m.TemplatesPage),
+      },
+      {
         path: 'empresa',
         canMatch: [perfilGuard('ADMIN')],
         loadComponent: () => import('./features/empresa/empresa-page').then((m) => m.EmpresaPage),
