@@ -74,6 +74,12 @@ describe('ArquivosService', () => {
     http.expectNone('/api/arquivos/a5');
   });
 
+  it('enviar recusa arquivo acima de 10 MB sem chamar a API', async () => {
+    const grande = new Blob([new Uint8Array(10 * 1024 * 1024 + 1)], { type: 'image/png' });
+    await expect(svc.enviar(grande, 'grande.png')).rejects.toThrow('Arquivo maior que 10 MB.');
+    http.expectNone('/api/arquivos');
+  });
+
   it('enviar devolve o arquivo enviado mesmo se o cache local falhar', async () => {
     vi.spyOn(db.arquivos, 'put').mockRejectedValue(new Error('cota cheia'));
     const p = svc.enviar(new Blob([new Uint8Array([1])], { type: 'image/jpeg' }), 'foto.jpg');

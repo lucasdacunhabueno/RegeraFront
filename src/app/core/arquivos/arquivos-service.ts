@@ -4,6 +4,8 @@ import { firstValueFrom, timeout } from 'rxjs';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { ArquivoLocal, RegeraDb } from '../db/regera-db';
 
+const TAMANHO_MAXIMO = 10 * 1024 * 1024;
+
 export interface ArquivoEnviado {
   id: string;
   nome: string;
@@ -43,6 +45,8 @@ export class ArquivosService {
     if (!this.conectividade.online()) {
       throw new Error('Sem internet: envie a imagem quando a conexão voltar.');
     }
+    // acima de ~11 MB o Tomcat corta a conexão (sem 413) e o navegador veria só um erro de rede
+    if (blob.size > TAMANHO_MAXIMO) throw new Error('Arquivo maior que 10 MB.');
     const corpo = new FormData();
     corpo.append('arquivo', blob, nome);
     const enviado = await firstValueFrom(this.http.post<ArquivoEnviado>('/api/arquivos', corpo).pipe(timeout(60_000)));
