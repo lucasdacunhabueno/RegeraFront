@@ -144,7 +144,8 @@ describe('OsRepo', () => {
   const online = signal(false);
   const pdf = { logoDataUrl: vi.fn() };
   const arquivos = {
-    obterDataUrl: vi.fn(), obterBlob: vi.fn(), limpar: vi.fn(), geracaoAtual: () => 0, garantirCache: vi.fn(async () => undefined),
+    obterDataUrl: vi.fn(), limpar: vi.fn(), geracaoAtual: () => 0, garantirCache: vi.fn(async () => undefined),
+    baixarSemCache: vi.fn<(id: string) => Promise<Blob>>(),
   };
   let nFoto = 0;
   const preparar = vi.fn<(arquivo: Blob) => Promise<FotoPreparada>>();
@@ -159,7 +160,7 @@ describe('OsRepo', () => {
     nFoto = 0;
     pdf.logoDataUrl.mockReset().mockResolvedValue('data:image/png;base64,TE9HTw==');
     arquivos.obterDataUrl.mockReset().mockResolvedValue(null);
-    arquivos.obterBlob.mockReset().mockResolvedValue(null);
+    arquivos.baixarSemCache.mockReset().mockRejectedValue(new Error('Sem internet: o arquivo não está neste aparelho.'));
     reduzir.mockReset().mockResolvedValue(new Uint8Array([0xff, 0xd8, 0x99]).buffer as ArrayBuffer);
     preparar.mockReset().mockImplementation(async () => {
       const n = ++nFoto;
@@ -814,7 +815,11 @@ describe('OsRepo', () => {
       ] });
       const cheia = new Blob([new Uint8Array(2_000_000)], { type: 'image/jpeg' });
       const ilegivel = new Blob([new Uint8Array(1)], { type: 'image/jpeg' });
-      arquivos.obterBlob.mockImplementation(async (id: string) => (id === 'a-fs1' ? cheia : id === 'a-fs3' ? ilegivel : null));
+      arquivos.baixarSemCache.mockImplementation(async (id: string) => {
+        if (id === 'a-fs1') return cheia;
+        if (id === 'a-fs3') return ilegivel;
+        throw new Error('404');
+      });
       reduzir.mockImplementation(async (b: Blob) => {
         if (b === ilegivel) throw new Error('decodificador');
         return new Uint8Array([0xff, 0xd8, 0x99]).buffer as ArrayBuffer;
@@ -830,6 +835,7 @@ describe('OsRepo', () => {
         ['Depois', 'data:image/jpeg;base64,/9gR'],
       ]);
       expect(reduzir).toHaveBeenCalledWith(cheia);
+      // M2P2-R14: nada do servidor passa pelo cache `arquivos` (a foto cheia não fica no aparelho)
       expect(arquivos.obterDataUrl).not.toHaveBeenCalled();
       expect(e.assinatura).toMatchObject({ nome: 'Maria', papel: 'Síndica', assinadaEm: AGORA.toISOString(), imagem: 'data:image/png;base64,iVBORwECAw==' });
       expect(e.recusaAssinatura).toBeNull();
@@ -837,6 +843,55 @@ describe('OsRepo', () => {
       expect(JSON.stringify(doc.snapshot)).not.toContain('base64');
       // fila: foto, assinatura, concluir, PDF
       expect((await fila()).map((m) => m.op)).toEqual(['UPLOAD', 'UPLOAD', 'UPSERT', 'UPLOAD']);
+    });
+
+    it('M2P2-R14: a foto e a assinatura só do servidor vêm sem cache; fica só a miniatura, e a reemissão offline a usa', async () => {
+      const PNG_SERVIDOR = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 9]).buffer as ArrayBuffer;
+      const anexos = [
+        anexoServidor({ legenda: 'Do servidor' }),
+        anexoServidor({ id: 'ss1', tipo: 'ASSINATURA', arquivoId: 'a-ss1', legenda: null, assinanteNome: 'Maria', tiradaEm: '2026-10-01T11:30:00Z' }),
+      ];
+      const naOs = { anexos, assinaturaAnexoId: 'ss1', assinanteNome: 'Maria', assinadaEm: '2026-10-01T11:30:00Z' };
+      usuario.set(ADMIN);
+      await noAparelho('EM_ANDAMENTO', naOs);
+      const cheia = new Blob([new Uint8Array(2_000_000)], { type: 'image/jpeg' });
+      arquivos.baixarSemCache.mockImplementation(async (id: string) => {
+        if (id === 'a-fs1') return cheia;
+        if (id === 'a-ss1') return new Blob([PNG_SERVIDOR], { type: 'image/png' });
+        throw new Error('404');
+      });
+      await repo.concluir('o1', 'Feito', gerarPdf);
+      const online = gerarPdf.mock.calls[0][0];
+      expect(online.fotos.map((f) => f.imagem)).toEqual(['data:image/jpeg;base64,/9iZ']);
+      expect(online.assinatura).toMatchObject({ anexoId: 'ss1', nome: 'Maria', imagem: 'data:image/png;base64,iVBORwk=' });
+      expect(arquivos.obterDataUrl).not.toHaveBeenCalled();
+      expect(await db.arquivos.count()).toBe(0);
+      // ficam a miniatura da foto (reduzida, nunca a cheia) e o PNG da assinatura, como anexos enviados, sem bytes
+      expect(await lerAnexo('fs1')).toMatchObject({ osId: 'o1', tipo: 'FOTO', enviado: true, arquivoId: 'a-fs1', legenda: 'Do servidor', bytes: null });
+      expect(new Uint8Array((await lerAnexo('fs1'))!.miniatura!)).toEqual(new Uint8Array([0xff, 0xd8, 0x99]));
+      expect(await lerAnexo('ss1')).toMatchObject({ tipo: 'ASSINATURA', enviado: true, assinanteNome: 'Maria', bytes: null });
+      expect(new Uint8Array((await lerAnexo('ss1'))!.miniatura!)).toEqual(new Uint8Array(PNG_SERVIDOR));
+
+      // a mesma OS de volta em andamento, agora offline: o PDF sai com as imagens guardadas, sem pedir nada
+      await db.outbox.clear();
+      await noAparelho('EM_ANDAMENTO', naOs);
+      arquivos.baixarSemCache.mockClear();
+      gerarPdf.mockClear();
+      await repo.concluir('o1', 'Feito de novo', gerarPdf);
+      const offline = gerarPdf.mock.calls[0][0];
+      expect(offline.fotos.map((f) => f.imagem)).toEqual(['data:image/jpeg;base64,/9iZ']);
+      expect(offline.assinatura?.imagem).toBe('data:image/png;base64,iVBORwk=');
+      expect(arquivos.baixarSemCache).not.toHaveBeenCalled();
+    });
+
+    it('M2P2-R14: a miniatura do servidor não é gravada se a OS saiu do aparelho durante o download', async () => {
+      await noAparelho('EM_ANDAMENTO', { anexos: [anexoServidor()], assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+      arquivos.baixarSemCache.mockImplementation(async () => {
+        await db.os.delete('o1');
+        return new Blob([new Uint8Array(10)], { type: 'image/jpeg' });
+      });
+      await erroDe(repo.concluir('o1', 'Feito', gerarPdf));
+      expect(await db.anexosOs.count()).toBe(0);
     });
 
     it('P4b-R21: a OS mudou durante a geração (o número chegou): gera de novo; na 3ª mudança, OS_ALTERADA', async () => {

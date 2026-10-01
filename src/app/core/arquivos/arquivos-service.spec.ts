@@ -221,26 +221,6 @@ describe('ArquivosService', () => {
     expect(await p).toBeNull();
   });
 
-  it('obterBlob: do cache (com o mime), baixado online e gravado no cache; sem bytes ou com erro, null', async () => {
-    await db.arquivos.put({ id: 'e1', mime: 'image/jpeg', bytes: new Uint8Array([255, 216, 1]).buffer });
-    const doCache = await svc.obterBlob('e1');
-    expect(doCache?.type).toBe('image/jpeg');
-    expect(new Uint8Array(await doCache!.arrayBuffer())).toEqual(new Uint8Array([255, 216, 1]));
-    http.expectNone('/api/arquivos/e1');
-
-    const p = svc.obterBlob('e2');
-    (await vi.waitFor(() => http.expectOne('/api/arquivos/e2'))).flush(new Blob([new Uint8Array([7])], { type: 'image/png' }));
-    expect((await p)?.size).toBe(1);
-    expect((await db.arquivos.get('e2'))?.bytes.byteLength).toBe(1);
-
-    const p2 = svc.obterBlob('e3');
-    (await vi.waitFor(() => http.expectOne('/api/arquivos/e3'))).flush(null, { status: 404, statusText: 'x' });
-    expect(await p2).toBeNull();
-    online.set(false);
-    expect(await svc.obterBlob('e4')).toBeNull();
-    http.expectNone('/api/arquivos/e4');
-  });
-
   it('sem sessão não baixa nada', async () => {
     autenticado.set(false);
     await svc.garantirCache('b6');

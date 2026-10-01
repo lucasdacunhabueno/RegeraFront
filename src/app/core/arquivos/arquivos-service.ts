@@ -117,22 +117,6 @@ export class ArquivosService {
     }
   }
 
-  /**
-   * Os bytes como Blob (com o mime), do cache local ou baixados com internet e sessão (e então gravados no cache), sem
-   * object URL: para reduzir uma imagem no aparelho (a foto da OS no PDF, M2P2-R10). Null nos mesmos casos do
-   * `obterDataUrl`. Nunca falha.
-   */
-  async obterBlob(id: string): Promise<Blob | null> {
-    const geracao = this.geracao;
-    try {
-      const cache = await this.lerOuBaixar(id);
-      if (!cache || geracao !== this.geracao) return null;
-      return new Blob([cache.bytes], { type: cache.mime });
-    } catch {
-      return null;
-    }
-  }
-
   /** Garante os bytes no cache local (para exibir/gerar PDF offline) sem criar object URL. Nunca falha. */
   async garantirCache(id: string): Promise<void> {
     try {
@@ -144,7 +128,9 @@ export class ArquivosService {
 
   /**
    * Baixa o arquivo direto do servidor (o mesmo `GET /api/arquivos/{id}` autenticado), sem ler nem gravar o cache
-   * local e sem object URL: para o PDF da proposta, que tem valores e é `no-store` também no Dexie (P4b-R6). Sem
+   * local e sem object URL: para o PDF da proposta, que tem valores e é `no-store` também no Dexie (P4b-R6), e para as
+   * fotos e assinaturas da OS (M2P2-R14: o arquivo cheio do servidor não fica no aparelho; as telas da OS também não
+   * usam `obterUrl`/`obterDataUrl` para elas, que gravam no cache sem prazo). Sem
    * internet ou sem sessão falha sem pedir nada (sem sessão o pedido voltaria 401 e marcaria a sessão expirada);
    * erro do servidor propaga.
    */

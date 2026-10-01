@@ -1420,18 +1420,18 @@ export class OsRepo {
 
   /**
    * As fotos para o PDF, por momento da captura: as do servidor e as do aparelho. A imagem é a miniatura (o PDF fica
-   * pequeno, e é o que o aparelho guarda depois do upload); sem ela, os bytes; só do servidor, a imagem do cache de
-   * arquivos (ou baixada, com internet) reduzida ao tamanho da miniatura (M2P2-R10), nunca em tamanho cheio.
+   * pequeno, e é o que o aparelho guarda depois do upload); sem ela, os bytes; só do servidor, a imagem baixada sem
+   * cache e reduzida ao tamanho da miniatura (M2P2-R10, R14: `imagemDoServidor`), nunca em tamanho cheio.
    */
   private async fotosDoPdf(os: OsLocal, locais: readonly AnexoOsLocal[]): Promise<FotoPdfOs[]> {
     const doAparelho = new Map(locais.filter((a) => a.tipo === 'FOTO').map((a) => [a.id, a]));
-    const doServidor = os.anexos.filter((a) => a.tipo === 'FOTO' && !doAparelho.has(a.id));
     const fotos: { quando: number; foto: FotoPdfOs }[] = [];
     const instante = (t: string | null) => (t ? Date.parse(t) : Number.POSITIVE_INFINITY);
-    for (const a of doServidor) {
+    for (const a of os.anexos.filter((x) => x.tipo === 'FOTO' && !doAparelho.has(x.id))) {
+      const bytes = await this.imagemDoServidor(os.id, a);
       fotos.push({
         quando: instante(a.tiradaEm ?? a.criadoEm),
-        foto: { id: a.id, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm, imagem: await this.miniaturaDoServidor(a.arquivoId) },
+        foto: { id: a.id, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm, imagem: bytes ? paraDataUrl(bytes, MIME.FOTO) : null },
       });
     }
     for (const a of doAparelho.values()) {
@@ -1446,22 +1446,45 @@ export class OsRepo {
       .map((x) => x.foto);
   }
 
-  /** A foto do servidor reduzida à miniatura (M2P2-R10); null sem a imagem no aparelho ou se ela não abre. */
-  private async miniaturaDoServidor(arquivoId: string): Promise<string | null> {
-    const imagem = await this.arquivos.obterBlob(arquivoId);
-    if (!imagem) return null;
+  /**
+   * M2P2-R14: a imagem de um anexo que só o servidor tem, para o PDF: a FOTO reduzida à miniatura (M2P2-R10) ou o PNG
+   * da ASSINATURA. Baixada com `baixarSemCache` (só online), nunca pelo cache `arquivos`: o arquivo cheio do servidor
+   * não fica no aparelho (Q18, disco). O que vai para o PDF fica como a miniatura de uma linha `enviado` de `anexosOs`,
+   * sem bytes, que sai com a OS (tombstone, troca de dono, descartes); assim a reemissão offline ainda tem a imagem, e
+   * a galeria a mostra. Só grava se a OS ainda está no aparelho com o anexo. null offline, sem sessão, com erro do
+   * servidor ou se a foto não abre (o PDF sai só com a legenda).
+   */
+  private async imagemDoServidor(osId: string, a: AnexoOsServidor): Promise<ArrayBuffer | null> {
+    let imagem: Blob;
     try {
-      return paraDataUrl(await this.reduzir(imagem), MIME.FOTO);
+      imagem = await this.arquivos.baixarSemCache(a.arquivoId);
+    } catch {
+      return null; // sem internet, sem sessão ou o servidor recusou: o PDF sai sem a imagem
+    }
+    let miniatura: ArrayBuffer;
+    try {
+      miniatura = a.tipo === 'FOTO' ? await this.reduzir(imagem) : await paraBytes(imagem);
     } catch (e) {
-      // o PDF sai sem a imagem (só a legenda); a causa fica para o suporte de campo
+      // a foto não abre: o PDF sai só com a legenda, e a causa fica para o suporte de campo
       console.warn(e);
       return null;
     }
+    await this.db.transaction('rw', [this.db.os, this.db.anexosOs], async () => {
+      const os = await this.db.os.get(osId);
+      if (!os?.anexos.some((x) => x.id === a.id) || (await this.db.anexosOs.get(a.id))) return;
+      await this.db.anexosOs.add({
+        id: a.id, osId, tipo: a.tipo, sha256: a.sha256, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm,
+        assinanteNome: a.assinanteNome, assinantePapel: a.assinantePapel, revisaoOs: a.revisaoOs, codigoExibido: a.codigoExibido,
+        miniatura, enviado: true, arquivoId: a.arquivoId,
+      });
+    });
+    return miniatura;
   }
 
   /**
    * A assinatura do PDF: a última colhida neste aparelho e ainda não enviada (sai antes do concluir na fila); senão, a
-   * aceita pelo servidor, com a imagem do aparelho ou do cache de arquivos. Sem nenhuma, null (vale a recusa).
+   * aceita pelo servidor, com a imagem do aparelho ou baixada sem cache (`imagemDoServidor`). Sem nenhuma, null (vale
+   * a recusa).
    */
   private async assinaturaDoPdf(os: OsLocal, locais: readonly AnexoOsLocal[]): Promise<AssinaturaPdfOs | null> {
     // a miniatura da assinatura é o próprio PNG (`assinar`)
@@ -1480,9 +1503,10 @@ export class OsRepo {
     if (os.assinaturaAnexoId === null) return null;
     const local = locais.find((a) => a.id === os.assinaturaAnexoId);
     const doServidor: AnexoOsServidor | undefined = os.anexos.find((a) => a.id === os.assinaturaAnexoId);
+    const doDownload = !local && doServidor ? await this.imagemDoServidor(os.id, doServidor) : null;
     return {
       anexoId: os.assinaturaAnexoId,
-      imagem: (await imagem(local)) ?? (doServidor ? await this.arquivos.obterDataUrl(doServidor.arquivoId) : null),
+      imagem: (await imagem(local)) ?? (doDownload ? paraDataUrl(doDownload, MIME.ASSINATURA) : null),
       nome: os.assinanteNome,
       papel: os.assinantePapel,
       assinadaEm: os.assinadaEm,
