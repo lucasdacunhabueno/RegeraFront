@@ -346,6 +346,12 @@ describe('PropostasPage', () => {
       expect(el.querySelector('a[href="/propostas/nova"]')).toBeNull();
     });
 
+    it('M6: o card não mostra "Responsável" (como o detalhe restrito)', () => {
+      const { el } = montar({ usuario: TECNICO });
+      expect(codigos(el)).toHaveLength(4);
+      expect(el.textContent).not.toContain('Responsável');
+    });
+
     it('nem com as encerradas à mostra aparece valor', async () => {
       const { fixture, el } = montar({ usuario: TECNICO });
       botao(el, 'Mostrar encerradas')!.click();

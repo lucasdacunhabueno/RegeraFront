@@ -10,7 +10,9 @@ const FOCAVEIS = 'button:not([disabled]), textarea:not([disabled]), input:not([d
  * contados como o `String.strip()` do Java, igual ao `PropostasRepo`) ou só confirmação (`pedirMotivo` false: ex.
  * "Excluir rascunho", como `alertdialog`). Acessível: `aria-modal`, título e texto ligados, o foco entra no campo (ou
  * em Cancelar, na confirmação), fica preso no diálogo (Tab/Shift+Tab) e volta para quem o abriu ao fechar; Esc, o
- * Cancelar e o toque fora cancelam sem mudar nada. Quem usa mostra com `@if` e fecha nos dois eventos.
+ * Cancelar e o toque fora cancelam sem mudar nada. M10: com um motivo digitado, o toque fora (fácil de dar sem querer
+ * acima da folha do celular) e o Esc não cancelam — o texto ficaria perdido; só o Cancelar, que é a escolha explícita.
+ * Quem usa mostra com `@if` e fecha nos dois eventos.
  */
 @Component({
   selector: 'app-dialogo-motivo',
@@ -113,7 +115,7 @@ export class DialogoMotivo {
     if (e.key === 'Escape') {
       e.preventDefault();
       e.stopPropagation();
-      if (!this.ocupado()) this.cancelado.emit();
+      if (!this.ocupado() && !this.temTexto()) this.cancelado.emit();
       return;
     }
     if (e.key !== 'Tab') return;
@@ -131,8 +133,18 @@ export class DialogoMotivo {
     }
   }
 
-  /** O toque no fundo (fora do painel) cancela. */
+  /** O toque no fundo (fora do painel) cancela, salvo com o motivo digitado (M10). */
   protected aoClicarFora(e: MouseEvent): void {
-    if (!this.ocupado() && !this.painel().nativeElement.contains(e.target as Node)) this.cancelado.emit();
+    if (this.ocupado() || this.painel().nativeElement.contains(e.target as Node)) return;
+    if (this.temTexto()) {
+      this.campo()?.nativeElement.focus();
+      return;
+    }
+    this.cancelado.emit();
+  }
+
+  /** M10: há motivo digitado (além de espaços), que o Esc e o toque fora não descartam. */
+  private temTexto(): boolean {
+    return this.pedirMotivo() && this.tamanho() > 0;
   }
 }

@@ -90,7 +90,6 @@ describe('DialogoMotivo', () => {
 
   it('Esc e Cancelar fecham sem confirmar nada; o foco volta para quem abriu', async () => {
     let { fixture, el, host, gatilho } = montar();
-    digitar(fixture, dialogo(el)!.querySelector('textarea')!, 'Caro demais');
     tecla(dialogo(el)!.querySelector('textarea')!, 'Escape');
     fixture.detectChanges();
     expect(host.cancelado).toHaveBeenCalledTimes(1);
@@ -100,6 +99,8 @@ describe('DialogoMotivo', () => {
 
     TestBed.resetTestingModule();
     ({ fixture, el, host, gatilho } = montar());
+    // com o motivo digitado, o Cancelar continua fechando (é a escolha explícita)
+    digitar(fixture, dialogo(el)!.querySelector('textarea')!, 'Caro demais');
     botao(el, 'Cancelar').click();
     fixture.detectChanges();
     expect(host.cancelado).toHaveBeenCalledTimes(1);
@@ -155,5 +156,32 @@ describe('DialogoMotivo', () => {
     fixture.detectChanges();
     expect(host.cancelado).toHaveBeenCalled();
     expect(host.confirmado).not.toHaveBeenCalled();
+  });
+
+  it('M10: com o motivo digitado, o toque fora e o Esc não descartam o texto; o diálogo fica e o campo segue com o foco', async () => {
+    const { fixture, el, host } = montar();
+    const campo = dialogo(el)!.querySelector('textarea')!;
+    digitar(fixture, campo, 'Cliente desistiu');
+    el.querySelector<HTMLElement>('app-dialogo-motivo')!.click();
+    fixture.detectChanges();
+    const esc = tecla(campo, 'Escape');
+    fixture.detectChanges();
+    expect(esc.defaultPrevented).toBe(true);
+    expect(host.cancelado).not.toHaveBeenCalled();
+    expect(dialogo(el)).not.toBeNull();
+    expect(dialogo(el)!.querySelector('textarea')!.value).toBe('Cliente desistiu');
+    await vi.waitFor(() => expect(document.activeElement).toBe(campo));
+    // só espaços conta como vazio: fecha
+    digitar(fixture, campo, '   ');
+    el.querySelector<HTMLElement>('app-dialogo-motivo')!.click();
+    fixture.detectChanges();
+    expect(host.cancelado).toHaveBeenCalledTimes(1);
+  });
+
+  it('M10: na confirmação sem motivo, o toque fora e o Esc cancelam como antes', () => {
+    const { fixture, el, host } = montar({ pedirMotivo: false });
+    tecla(dialogo(el)!, 'Escape');
+    fixture.detectChanges();
+    expect(host.cancelado).toHaveBeenCalledTimes(1);
   });
 });

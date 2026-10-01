@@ -157,13 +157,15 @@ export class PropostasPage {
     const mostrarEncerradas = this.mostrarEncerradas();
     const clientes = this.clientePorId();
     const nomes = this.nomeUsuario();
+    // M6: a visão restrita (técnico) não mostra o responsável, como o detalhe
+    const restrito = this.restrito();
     const { naOutbox, comPendencia } = this.estado();
     return this.buscadas()
       .filter((p) => (status === 'TODAS' ? mostrarEncerradas || !encerrada(p.status) : p.status === status))
       .map((p) => ({
         proposta: p,
         clienteNome: p.clienteId ? (clientes.get(p.clienteId)?.nome ?? 'Cliente não encontrado') : 'Sem cliente',
-        responsavelNome: nomes.get(p.responsavelId) ?? null,
+        responsavelNome: restrito ? null : (nomes.get(p.responsavelId) ?? null),
         selos: selosDaProposta(p, { pendente: comPendencia.has(p.id), naoSincronizada: naOutbox.has(p.id), hoje: this.hoje() }),
       }));
   });
