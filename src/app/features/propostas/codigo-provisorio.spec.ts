@@ -1,4 +1,4 @@
-import { ALFABETO_PROVISORIO, codigoProvisorioValido, gerarCodigoProvisorio } from './codigo-provisorio';
+import { ALFABETO_PROVISORIO, codigoProvisorioValido, gerarCodigoComPrefixo, gerarCodigoProvisorio } from './codigo-provisorio';
 
 describe('codigo-provisorio', () => {
   it('alfabeto é base32 Crockford sem I, L, O e U', () => {
@@ -22,6 +22,16 @@ describe('codigo-provisorio', () => {
     expect(gerarCodigoProvisorio(rand)).toBe('PROV-0Z0ZZJ');
     expect(rand).toHaveBeenCalledTimes(1);
     expect(rand.mock.calls[0][0]).toHaveLength(6);
+  });
+
+  it('gerarCodigoComPrefixo: o mesmo gerador com outro prefixo (o OSP- da OS); o PROV- é ele com PROV', () => {
+    const rand = (a: Uint8Array) => {
+      a.set([1, 2, 3, 4, 5, 6]);
+      return a;
+    };
+    expect(gerarCodigoComPrefixo('OSP', rand)).toBe('OSP-123456');
+    expect(gerarCodigoProvisorio(rand)).toBe(gerarCodigoComPrefixo('PROV', rand));
+    expect(gerarCodigoComPrefixo('X')).toMatch(/^X-[0-9A-HJKMNP-TV-Z]{6}$/);
   });
 
   it('códigos diferentes em chamadas seguidas', () => {

@@ -47,6 +47,14 @@ describe('ClientesPage', () => {
     expect(fixture.nativeElement.textContent).toContain('ACME');
   });
 
+  it('cliente sem documento (o do TECNICO, Q14) aparece sem quebrar a lista', () => {
+    const semDocumento = paraClienteLocal('3', 1, { ...base, documento: undefined, nome: 'Sem Documento' });
+    const el = montar([semDocumento, paraClienteLocal('1', 0, base)]).nativeElement as HTMLElement;
+    expect(el.querySelectorAll('li')).toHaveLength(2);
+    expect(el.textContent).toContain('Sem Documento');
+    expect(el.textContent).toContain('529.982.247-25');
+  });
+
   it('mostra estado vazio', () => {
     const el = montar([]).nativeElement as HTMLElement;
     expect(el.textContent).toContain('Nenhum cliente cadastrado ainda.');

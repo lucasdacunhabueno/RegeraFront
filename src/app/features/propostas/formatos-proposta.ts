@@ -107,7 +107,7 @@ export function correspondeABusca(p: PropostaLocal, cliente: ClienteLocal | unde
   if (!cliente) return false;
   if (cliente.nomeBusca.includes(q)) return true;
   const doc = normalizarDocumento(busca);
-  return doc.length >= 3 && cliente.documento.includes(doc);
+  return doc.length >= 3 && cliente.documento !== null && cliente.documento.includes(doc);
 }
 
 const POR_CODIGO: ReadonlyMap<string, string> = new Map([

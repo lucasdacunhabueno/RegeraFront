@@ -39,6 +39,16 @@ describe('ClientesRepo', () => {
     await db.limparTudo();
   });
 
+  it('cliente do TECNICO sem documento (Q14) grava no Dexie, é encontrado e não atrapalha o índice de documento', async () => {
+    const doTecnico: Partial<ClienteDados> = dados('52998224725', 'Téo');
+    delete doTecnico.documento;
+    await db.clientes.put(paraClienteLocal('t1', 1, doTecnico as ClienteDados));
+    expect(await repo.buscar('t1')).toMatchObject({ documento: null, nome: 'Téo' });
+    expect(await db.clientes.orderBy('nomeBusca').primaryKeys()).toEqual(['t1']);
+    const id = await repo.salvar(dados('529.982.247-25'));
+    expect(await db.clientes.where('documento').equals('52998224725').primaryKeys()).toEqual([id]);
+  });
+
   it('salvar novo grava local com UUID v7, enfileira UPSERT sem versão e sincroniza', async () => {
     const id = await repo.salvar(dados('529.982.247-25'));
 
