@@ -17,6 +17,8 @@ const CHAVE_ULTIMO_SYNC = 'ultimoSync';
 const LOTE = 100;
 const LIMITE_PULL = 500;
 const MAX_RODADAS_PUSH = 50;
+/** Rodadas extras pedidas por `sincronizar()` durante uma rodada em andamento. */
+const MAX_REPETICOES = 3;
 /** Rejeições que o servidor não grava: é seguro reenviar a mesma mutação depois. */
 const CODIGOS_TRANSITORIOS = new Set(['ERRO_INTERNO', 'INTEGRIDADE']);
 
@@ -29,6 +31,8 @@ export class SyncService {
   private readonly toasts = inject(Toasts);
   private readonly arquivos = inject(ArquivosService);
   private emAndamento: Promise<void> | null = null;
+  /** Alguém pediu `sincronizar()` enquanto uma rodada rodava: o que ele quer enviar pode ter ficado de fora. */
+  private repetir = false;
 
   readonly sincronizando = signal(false);
   readonly ultimoSync = signal<string | null>(null);
@@ -76,9 +80,34 @@ export class SyncService {
     });
   }
 
+  /**
+   * Inicia uma sincronização ou, se já houver uma em curso, pede mais uma rodada ao fim dela (o push dela pode já ter
+   * passado da mutação que motivou a chamada) e devolve a promessa do laço inteiro.
+   */
   sincronizar(): Promise<void> {
-    this.emAndamento ??= this.executar().finally(() => (this.emAndamento = null));
+    if (this.emAndamento) {
+      this.repetir = true;
+      return this.emAndamento;
+    }
+    this.emAndamento = this.rodadas().finally(() => (this.emAndamento = null));
     return this.emAndamento;
+  }
+
+  private async rodadas(): Promise<void> {
+    this.repetir = false;
+    await this.executar();
+    for (let i = 0; i < MAX_REPETICOES && this.repetir; i++) {
+      this.repetir = false;
+      if (!this.conectividade.online() || !(await this.temEnvioElegivel())) break;
+      await this.executar();
+    }
+    this.repetir = false;
+  }
+
+  /** Há mutação na outbox de agregado sem pendência (a mesma regra de `enviar`). */
+  private async temEnvioElegivel(): Promise<boolean> {
+    const bloqueados = new Set((await this.db.pendencias.toArray()).map((p) => p.agregadoId));
+    return (await this.db.outbox.filter((m) => !bloqueados.has(m.agregadoId)).count()) > 0;
   }
 
   /** Espera a sincronização em curso (se houver), com teto de 5 s. */

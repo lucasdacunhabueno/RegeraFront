@@ -59,10 +59,11 @@ export async function semViolacaoCsp(context: BrowserContext): Promise<VigiaCsp>
 }
 
 /**
- * Espera a sincronização que o app dispara ao abrir terminar (o `ultimoSync` do Dexie `regera` é gravado depois do
- * carregamento desta página). Com o banco local grande, o pull inicial leva várias páginas; se o teste ficar offline e
- * salvar algo no meio dele, o `sincronizar()` de ao voltar a internet só reaproveita a rodada em curso (que já passou
- * do push) e a mutação nova espera o próximo ciclo de 60 s.
+ * Espera a sincronização que o app dispara ao abrir terminar: o `ultimoSync` do Dexie `regera` (tabela `meta`) passa a
+ * ser posterior ao carregamento desta página. Ele é gravado em `SyncService.executar`, depois do push e do pull.
+ * A espera só deixa o teste determinístico (o que ele faz offline não se mistura com o pull inicial, que leva várias
+ * páginas com o banco grande); não esconde mais bug: um `sincronizar()` pedido no meio de uma rodada agenda outra ao
+ * fim dela (ver `sync-durante-pull.e2e.ts`).
  */
 export async function aguardarSincronizacaoInicial(page: Page): Promise<void> {
   await expect

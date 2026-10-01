@@ -432,6 +432,51 @@ describe('SyncService', () => {
     await Promise.all([p1, p2]);
   });
 
+  it('sincronizar durante a rodada envia, ao terminar, o que entrou na outbox no meio dela', async () => {
+    const p = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'));
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+    const p2 = sync.sincronizar();
+    expect(p2).toBe(p);
+    pull.flush({ cursor: 0, temMais: false, mudancas: [], usuarios: [] });
+
+    // sem esperar o timer: a nova rodada começa assim que a atual termina
+    const push = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+    push.flush({ resultados: [{ mutationId: push.request.body.mutacoes[0].mutationId, status: 'OK', version: 0, dados: dados('A') }] });
+    await pullVazio();
+    await p2;
+    expect(await db.outbox.count()).toBe(0);
+  });
+
+  it('sincronizar durante a rodada com a outbox vazia não faz um segundo pull', async () => {
+    const p = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'));
+    const p2 = sync.sincronizar();
+    pull.flush({ cursor: 0, temMais: false, mudancas: [], usuarios: [] });
+    await Promise.all([p, p2]);
+    await new Promise((r) => setTimeout(r, 20));
+    http.expectNone((r) => r.url === '/api/sync/pull');
+    http.expectNone('/api/sync/push');
+  });
+
+  it('rodadas repetidas param no teto quando o servidor segue devolvendo ERRO_INTERNO', async () => {
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+    const p = sync.sincronizar();
+    // a primeira rodada e mais 3 repetições, cada uma pedida no meio da anterior
+    for (let i = 0; i < 4; i++) {
+      const push = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+      void sync.sincronizar();
+      push.flush({
+        resultados: [{ mutationId: push.request.body.mutacoes[0].mutationId, status: 'REJEITADO', erro: { codigo: 'ERRO_INTERNO', mensagem: 'falha' } }],
+      });
+      await pullVazio();
+    }
+    await p;
+    await new Promise((r) => setTimeout(r, 20));
+    http.expectNone('/api/sync/push');
+    expect(await db.outbox.count()).toBe(1);
+  });
+
   it('conta mutações e pendências não sincronizadas', async () => {
     await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
     await db.pendencias.put({
