@@ -67,12 +67,12 @@ const CAMPOS: readonly CampoDaTela[] = [
               </div>
               <button type="button" data-acao="subir" [attr.aria-label]="'Mover ' + l.nome + ' para cima'" title="Mover para cima"
                       [disabled]="primeiro" (click)="mover(i, -1)"
-                      class="flex h-12 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-slate-100 disabled:opacity-30">↑</button>
+                      class="flex size-12 shrink-0 items-center justify-center rounded-lg hover:bg-slate-100 disabled:opacity-30">↑</button>
               <button type="button" data-acao="descer" [attr.aria-label]="'Mover ' + l.nome + ' para baixo'" title="Mover para baixo"
                       [disabled]="ultimo" (click)="mover(i, 1)"
-                      class="flex h-12 w-10 shrink-0 items-center justify-center rounded-lg hover:bg-slate-100 disabled:opacity-30">↓</button>
+                      class="flex size-12 shrink-0 items-center justify-center rounded-lg hover:bg-slate-100 disabled:opacity-30">↓</button>
               <button type="button" data-acao="remover" [attr.aria-label]="'Remover ' + l.nome" title="Remover" (click)="remover(l, i)"
-                      class="flex h-12 w-10 shrink-0 items-center justify-center rounded-lg text-red-600 hover:bg-red-50">✕</button>
+                      class="flex size-12 shrink-0 items-center justify-center rounded-lg text-red-600 hover:bg-red-50">✕</button>
             </div>
 
             <div class="grid grid-cols-2 gap-3 sm:grid-cols-4">

@@ -365,6 +365,9 @@ describe('WizardPropostaPage', () => {
       const p = proposta({ itens: [linha('l1'), linha('l2', { nome: 'Inversor', itemCatalogoId: 'i9' })] });
       const { fixture, el, repo, pagina } = await montar({ id: 'p1', passo: '2', propostas: [p] });
       const ordem = () => [...el.querySelectorAll('li[data-linha-id]')].map((li) => li.getAttribute('data-linha-id'));
+      // alvos de 48 px (Global Constraints)
+      for (const b of el.querySelectorAll('li[data-linha-id=l1] button[data-acao]')) expect(b.classList).toContain('size-12');
+      expect(campoDaLinha(el, 'l1', 'quantidade')!.classList).toContain('h-12');
       el.querySelector<HTMLButtonElement>('li[data-linha-id=l1] button[data-acao=descer]')!.click();
       fixture.detectChanges();
       expect(ordem()).toEqual(['l2', 'l1']);
