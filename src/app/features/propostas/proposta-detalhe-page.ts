@@ -608,7 +608,7 @@ export class PropostaDetalhePage {
     if (destinos.includes('APROVADA')) lista.push({ acao: 'aprovar', rotulo: 'Aprovar', transicao: true, principal: true });
     if (destinos.includes('EM_EXECUCAO')) lista.push({ acao: 'iniciar', rotulo: 'Iniciar execução', transicao: true, principal: true });
     if (destinos.includes('FINALIZADA')) lista.push({ acao: 'finalizar', rotulo: 'Finalizar', transicao: true, principal: true });
-    if (destinos.includes('RECUSADA')) lista.push({ acao: 'recusar', rotulo: 'Recusar', transicao: true });
+    if (destinos.includes('RECUSADA')) lista.push({ acao: 'recusar', rotulo: 'Recusar', transicao: true, perigo: true });
     if (p.status === 'ENVIADA' && destinos.includes('RASCUNHO')) lista.push({ acao: 'nova-revisao', rotulo: 'Nova revisão', transicao: true });
     if (destinos.includes('CANCELADA')) lista.push({ acao: 'cancelar', rotulo: 'Cancelar proposta', transicao: true, perigo: true });
     lista.push({ acao: 'previa', rotulo: 'Ver prévia', transicao: false });

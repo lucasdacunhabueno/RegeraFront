@@ -370,6 +370,7 @@ describe('PropostaDetalhePage', () => {
       ]);
       for (const b of acoesEl.querySelectorAll('button')) expect(b.className).toMatch(/\b(min-)?h-12\b/);
       expect(botao(el, 'Cancelar proposta')!.className).toContain('text-red-700');
+      expect(botao(el, 'Recusar')!.className).toContain('text-red-700');
     });
 
     it('v1: o técnico tem o resumo sem o total', async () => {

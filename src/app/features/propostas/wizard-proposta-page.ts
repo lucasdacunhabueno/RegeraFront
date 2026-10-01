@@ -718,8 +718,8 @@ export class WizardPropostaPage implements ComAlteracoes {
     const alterados = this.passos().filter((n) => this.e.sujo(n));
     if (alterados.length === 0) {
       // P4c-R10: reenviar o que o servidor recusou voltaria recusado
+      // só o anúncio (com o foco no campo): um toast leria a mesma frase de novo
       this.anuncio.set('Corrija os campos destacados.');
-      this.toasts.erro('Corrija os campos destacados.');
       this.focarPrimeiroErro();
       return false;
     }

@@ -179,6 +179,9 @@ describe('formatos-proposta', () => {
       expect(rotuloDoCampo('itens[0].quantidade')).toBe('Item 1, quantidade');
       expect(rotuloDoCampo('itens[11].itemCatalogoId')).toBe('Item 12, item do catálogo');
       expect(rotuloDoCampo('itens[2].outro')).toBe('Item 3');
+      // propriedades herdadas do Object não viram rótulo
+      expect(rotuloDoCampo('itens[0].constructor')).toBe('Item 1');
+      expect(rotuloDoCampo('toString')).toBeNull();
       expect(rotuloDoCampo('desconhecido')).toBeNull();
     });
   });

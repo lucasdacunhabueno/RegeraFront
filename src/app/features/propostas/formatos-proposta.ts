@@ -68,7 +68,7 @@ export function rotuloDoCampo(campo: string): string | null {
   const linha = /^itens\[(\d+)\](?:\.(\w+))?/.exec(campo);
   if (linha) {
     const item = `Item ${Number(linha[1]) + 1}`;
-    const doCampo = linha[2] ? ROTULO_CAMPO_DA_LINHA[linha[2]] : undefined;
+    const doCampo = linha[2] && Object.hasOwn(ROTULO_CAMPO_DA_LINHA, linha[2]) ? ROTULO_CAMPO_DA_LINHA[linha[2]] : undefined;
     return doCampo ? `${item}, ${doCampo}` : item;
   }
   return Object.hasOwn(ROTULO_CAMPO, campo) ? ROTULO_CAMPO[campo] : null;

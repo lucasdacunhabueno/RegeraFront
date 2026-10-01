@@ -1210,11 +1210,11 @@ describe('WizardPropostaPage', () => {
       expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
     });
 
-    it('sem nenhum passo alterado, "Salvar e reenviar" não reenvia: anuncia e mostra "Corrija os campos destacados." (P4c-R10)', async () => {
+    it('sem nenhum passo alterado, "Salvar e reenviar" não reenvia: anuncia "Corrija os campos destacados." uma vez só, sem toast (P4c-R10)', async () => {
       const { fixture, el, pendencias, navegar, toastErro } = await corrigir();
       el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
       await ate(fixture, () => expect(el.querySelector('[role=status]')?.textContent).toContain('Corrija os campos destacados.'));
-      expect(toastErro).toHaveBeenCalledWith('Corrija os campos destacados.');
+      expect(toastErro).not.toHaveBeenCalled();
       expect(pendencias.corrigirProposta).not.toHaveBeenCalled();
       expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
     });
