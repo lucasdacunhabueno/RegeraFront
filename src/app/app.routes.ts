@@ -19,7 +19,7 @@ export const routes: Routes = [
         redirectTo: () => (inject(AuthService).usuario()?.perfil === 'TECNICO' ? 'propostas' : 'kanban'),
       },
       { path: 'kanban', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Kanban' } },
-      { path: 'propostas', loadComponent: emBreve, data: { titulo: 'Propostas' } },
+      { path: 'propostas', loadComponent: () => import('./features/propostas/propostas-page').then((m) => m.PropostasPage) },
       {
         path: 'clientes/novo',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
