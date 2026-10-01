@@ -16,7 +16,7 @@ const existente: ClienteDados = {
   enderecos: [{ tipo: 'PRINCIPAL', cep: '01001000', logradouro: 'Praça da Sé', numero: '1', complemento: null, bairro: 'Sé', cidade: 'São Paulo', uf: 'SP' }],
 };
 
-function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn>; buscar?: Promise<unknown> } = {}) {
+function montar(opcoes: { id?: string; voltar?: string; salvar?: ReturnType<typeof vi.fn>; buscar?: Promise<unknown> } = {}) {
   const repo = {
     buscar: opcoes.buscar ? vi.fn().mockReturnValue(opcoes.buscar) : vi.fn().mockResolvedValue(paraClienteLocal('id1', 3, existente)),
     salvar: opcoes.salvar ?? vi.fn().mockResolvedValue('novo-id'),
@@ -37,6 +37,7 @@ function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn>; buscar
   });
   const fixture = TestBed.createComponent(ClienteFormPage);
   if (opcoes.id) fixture.componentRef.setInput('id', opcoes.id);
+  if (opcoes.voltar !== undefined) fixture.componentRef.setInput('voltar', opcoes.voltar);
   fixture.detectChanges();
   const navegar = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
   return { fixture, repo, consultas, navegar, el: fixture.nativeElement as HTMLElement };
@@ -218,6 +219,39 @@ describe('ClienteFormPage', () => {
     clicar(el, '[data-testid=excluir]');
     expect(repo.excluir).not.toHaveBeenCalled();
   });
+  describe('voltar (Cadastrar cliente do wizard da proposta)', () => {
+    async function salvarNovo(voltar: string) {
+      const m = montar({ voltar });
+      digitar(m.fixture, '#documento', '52998224725');
+      digitar(m.fixture, '#nome', 'Maria');
+      clicar(m.el, 'button[type=submit]');
+      await vi.waitFor(() => expect(m.navegar).toHaveBeenCalled());
+      return m;
+    }
+
+    it('salvo, volta ao wizard com o clienteId novo', async () => {
+      const { navegar, fixture } = await salvarNovo('/propostas/nova?tipo=LOCACAO');
+      expect(navegar).toHaveBeenCalledWith('/propostas/nova?tipo=LOCACAO&clienteId=novo-id');
+      expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+    });
+
+    it('o link do topo volta à proposta, sem o clienteId', () => {
+      const { el } = montar({ voltar: '/propostas/p1/editar?passo=1' });
+      const link = el.querySelector<HTMLAnchorElement>('a')!;
+      expect(link.textContent).toContain('Voltar à proposta');
+      expect(link.getAttribute('href')).toBe('/propostas/p1/editar?passo=1');
+    });
+
+    it.each(['https://evil.example/propostas/nova', '//evil.example/propostas/nova', '/usuarios', '/propostas/../usuarios'])(
+      'voltar inválido (%s) é ignorado: vai para /clientes',
+      async (voltar) => {
+        const { navegar, el } = await salvarNovo(voltar);
+        expect(navegar).toHaveBeenCalledWith('/clientes');
+        expect(el.querySelector('a')!.getAttribute('href')).toBe('/clientes');
+      },
+    );
+  });
+
   it('alterações não salvas: limpo ao abrir, sujo ao editar, limpo depois de salvar', async () => {
     const { fixture, el, navegar } = montar();
     const pagina = fixture.componentInstance;

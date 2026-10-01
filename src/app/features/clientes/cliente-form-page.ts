@@ -4,6 +4,7 @@ import { FormArray, NonNullableFormBuilder, ReactiveFormsModule, Validators } fr
 import { Router, RouterLink } from '@angular/router';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { avisarAoSairDaPagina, ComAlteracoes, instantaneo } from '../../core/navegacao/alteracoes-guard';
+import { destinoDeVolta } from '../../core/navegacao/voltar';
 import { documentoValido, normalizarDocumento } from '../../core/util/documentos';
 import {
   formatarCep,
@@ -38,7 +39,11 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
   selector: 'app-cliente-form-page',
   imports: [ReactiveFormsModule, RouterLink],
   template: `
-    <a routerLink="/clientes" class="text-sm text-blue-700">← Clientes</a>
+    @if (voltarPara(); as destino) {
+      <a [routerLink]="destino" class="text-sm text-blue-700">← Voltar à proposta</a>
+    } @else {
+      <a routerLink="/clientes" class="text-sm text-blue-700">← Clientes</a>
+    }
     <h1 class="mb-4 mt-2 text-xl font-semibold">{{ id() ? 'Editar cliente' : 'Novo cliente' }}</h1>
 
     @if (temPendencia()) {
@@ -219,6 +224,11 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
 })
 export class ClienteFormPage implements ComAlteracoes {
   readonly id = input<string>();
+  /**
+   * `?voltar=`: a tela que abriu o cadastro ("Cadastrar cliente" do wizard da proposta). Validado por `destinoDeVolta`
+   * (só caminhos de `/propostas/`); o salvar volta para lá com `clienteId` do cliente salvo.
+   */
+  readonly voltar = input<string>();
 
   private readonly fb = inject(NonNullableFormBuilder);
   private readonly repo = inject(ClientesRepo);
@@ -253,6 +263,12 @@ export class ClienteFormPage implements ComAlteracoes {
     contatoNome: ['', Validators.maxLength(120)],
     observacoes: ['', Validators.maxLength(2000)],
     enderecos: this.fb.array<GrupoEndereco>([]),
+  });
+
+  /** O link do topo: a proposta de onde veio, como UrlTree (o caminho tem query). */
+  protected readonly voltarPara = computed(() => {
+    const destino = destinoDeVolta(this.voltar());
+    return destino ? this.router.parseUrl(destino) : null;
   });
 
   protected readonly tipo = toSignal(this.form.controls.tipo.valueChanges, { initialValue: 'PF' as TipoPessoa });
@@ -398,10 +414,10 @@ export class ClienteFormPage implements ComAlteracoes {
     };
     this.salvando.set(true);
     try {
-      await this.repo.salvar(dados, this.id(), this.versaoCarregada);
+      const id = await this.repo.salvar(dados, this.id(), this.versaoCarregada);
       this.estadoSalvo = this.estado();
       this.toasts.mostrar('Cliente salvo.');
-      await this.router.navigateByUrl('/clientes');
+      await this.router.navigateByUrl(destinoDeVolta(this.voltar(), { clienteId: id }) ?? '/clientes');
     } catch (e) {
       if (e instanceof ErroCampo) {
         this.erroDocumento.set(e.message);
