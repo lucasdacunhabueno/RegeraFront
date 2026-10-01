@@ -14,13 +14,13 @@ const ROTULO_TIPO = new Map<string, string>(TIPOS_PROPOSTA.map((t) => [t.valor, 
   template: `
     <div class="mb-4 flex items-center justify-between gap-3">
       <h1 class="text-xl font-semibold">Templates</h1>
-      <a routerLink="/templates/novo" class="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white">Novo template</a>
+      <a routerLink="/templates/novo" class="inline-flex min-h-12 items-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Novo template</a>
     </div>
 
     <div class="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar por tipo de proposta">
       @for (f of filtros; track f.valor) {
         <button type="button" (click)="filtro.set(f.valor)" [attr.aria-pressed]="filtro() === f.valor"
-                class="min-h-9 rounded-full border px-3 py-1.5 text-sm"
+                class="min-h-12 rounded-full border px-4 py-1.5 text-sm"
                 [class.border-blue-600]="filtro() === f.valor" [class.bg-blue-50]="filtro() === f.valor"
                 [class.border-slate-300]="filtro() !== f.valor">{{ f.rotulo }}</button>
       }

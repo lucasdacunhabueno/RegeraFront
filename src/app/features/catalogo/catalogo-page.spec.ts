@@ -77,6 +77,13 @@ describe('CatalogoPage', () => {
     });
   });
 
+  it('chips de filtro com 48 px no mínimo (alvo de toque)', () => {
+    const el = montar('ADMIN').nativeElement as HTMLElement;
+    const chips = [...el.querySelectorAll('[role=group] button')];
+    expect(chips.length).toBeGreaterThan(0);
+    chips.forEach((c) => expect(c.classList).toContain('min-h-12'));
+  });
+
   it('filtra por serviço e por busca', async () => {
     const fixture = montar('ADMIN');
     const el = fixture.nativeElement as HTMLElement;

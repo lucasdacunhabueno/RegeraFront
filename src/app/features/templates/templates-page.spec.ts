@@ -87,6 +87,15 @@ describe('TemplatesPage', () => {
     expect(el.querySelectorAll('li').length).toBe(4);
   });
 
+  it('alvos de toque: "Novo template" e os chips com 48 px no mínimo', () => {
+    const { el } = montar();
+    const link = [...el.querySelectorAll('a')].find((a) => a.textContent?.trim() === 'Novo template')!;
+    expect(link.classList).toContain('min-h-12');
+    const chips = [...el.querySelectorAll('[role=group] button')];
+    expect(chips.length).toBeGreaterThan(0);
+    chips.forEach((c) => expect(c.classList).toContain('min-h-12'));
+  });
+
   it('vazio', () => {
     const { el } = montar([], new Map());
     expect(el.textContent).toContain('Nenhum template ainda.');

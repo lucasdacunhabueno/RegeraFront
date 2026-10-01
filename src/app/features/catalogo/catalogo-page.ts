@@ -26,7 +26,7 @@ import { FiltroCatalogo, filtrarItens } from './item-models';
     <div class="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar catálogo">
       @for (f of filtros; track f.valor) {
         <button type="button" (click)="filtro.set(f.valor)" [attr.aria-pressed]="filtro() === f.valor"
-                class="rounded-full border px-3 py-1.5 text-sm"
+                class="min-h-12 rounded-full border px-4 py-1.5 text-sm"
                 [class.border-blue-600]="filtro() === f.valor" [class.bg-blue-50]="filtro() === f.valor"
                 [class.border-slate-300]="filtro() !== f.valor">{{ f.rotulo }}</button>
       }
