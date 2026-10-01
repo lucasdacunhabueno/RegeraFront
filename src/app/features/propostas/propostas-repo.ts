@@ -28,6 +28,7 @@ import {
   DocumentoLocal,
   exigeMotivo,
   ItemPropostaLocal,
+  ordenarPorAtualizacao,
   paraPropostaLocal,
   podeAlterarResponsavel,
   podeAlterarTecnico,
@@ -261,10 +262,11 @@ export interface DocumentoDaProposta {
   arquivoId: string | null;
 }
 
-/** Ids com mutação na outbox e ids com pendência (`observarEstadoSync`). */
+/** Ids com mutação na outbox, com pendência e com CONFLITO (`observarEstadoSync`). */
 export interface EstadoSync {
   naOutbox: ReadonlySet<string>;
   comPendencia: ReadonlySet<string>;
+  comConflito: ReadonlySet<string>;
 }
 
 /** `duplicar`: o rascunho novo e quantas linhas ficaram de fora (item do catálogo inativo ou fora do aparelho). */
@@ -405,12 +407,6 @@ function itemDoPdf(l: ItemPropostaLocal): ItemPdf {
   };
 }
 
-/** `atualizadoEm` desc pelo instante (o texto ISO tem frações de tamanho variável); sem data por último; empate: id desc. */
-function ordenar(lista: PropostaLocal[]): PropostaLocal[] {
-  const instante = (p: PropostaLocal) => (p.atualizadoEm ? Date.parse(p.atualizadoEm) : Number.NEGATIVE_INFINITY);
-  return lista.sort((a, b) => instante(b) - instante(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
-}
-
 /** O documento de uma mutação de UPLOAD na fila (ou na pendência); null se ela não é um upload. */
 function documentoDoUpload(m: { entidade: string; dados: unknown }): string | null {
   return m.entidade === TIPO_UPLOAD_DOCUMENTO ? ((m.dados as DadosUpload | null)?.documentoId ?? null) : null;
@@ -440,16 +436,16 @@ export class PropostasRepo {
 
   /** Todas as visíveis neste aparelho, por `atualizadoEm` desc (§13, kanban). */
   observarTodas(): Observable<PropostaLocal[]> {
-    return observar(async () => ordenar(await this.db.propostas.toArray()));
+    return observar(async () => ordenarPorAtualizacao(await this.db.propostas.toArray()));
   }
 
   observarDoCliente(clienteId: string): Observable<PropostaLocal[]> {
-    return observar(async () => ordenar(await this.db.propostas.where('clienteId').equals(clienteId).toArray()));
+    return observar(async () => ordenarPorAtualizacao(await this.db.propostas.where('clienteId').equals(clienteId).toArray()));
   }
 
   /** As atribuídas ao técnico (a lista dele no P4c). */
   observarDoTecnico(usuarioId: string): Observable<PropostaLocal[]> {
-    return observar(async () => ordenar(await this.db.propostas.where('tecnicoId').equals(usuarioId).toArray()));
+    return observar(async () => ordenarPorAtualizacao(await this.db.propostas.where('tecnicoId').equals(usuarioId).toArray()));
   }
 
   observarNaoSincronizados(): Observable<Set<string>> {
@@ -458,13 +454,18 @@ export class PropostasRepo {
 
   /**
    * Os dois selos de sync do P4c, separados: `naOutbox` = agregados com mutação esperando envio (inclusive o upload do
-   * PDF, que leva o id da proposta); `comPendencia` = agregados com conflito ou rejeição.
+   * PDF, que leva o id da proposta); `comPendencia` = agregados com conflito ou rejeição; `comConflito` = só os com
+   * CONFLITO (o kanban trava o card, como o detalhe trava as transições).
    */
   observarEstadoSync(): Observable<EstadoSync> {
-    return observar(async () => ({
-      naOutbox: new Set((await this.db.outbox.toArray()).map((m) => m.agregadoId)),
-      comPendencia: new Set((await this.db.pendencias.toArray()).map((p) => p.agregadoId)),
-    }));
+    return observar(async () => {
+      const pendencias = await this.db.pendencias.toArray();
+      return {
+        naOutbox: new Set((await this.db.outbox.toArray()).map((m) => m.agregadoId)),
+        comPendencia: new Set(pendencias.map((p) => p.agregadoId)),
+        comConflito: new Set(pendencias.filter((p) => p.tipo === 'CONFLITO').map((p) => p.agregadoId)),
+      };
+    });
   }
 
   /** Os usuários que vieram no sync (nome do responsável e do técnico nas telas). */

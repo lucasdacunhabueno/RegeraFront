@@ -64,7 +64,7 @@ function montar(o: Opcoes = {}) {
   const repo = {
     observarTodas: vi.fn(() => o.todas ?? of(LISTA)),
     observarDoTecnico: vi.fn((usuarioId: string) => (usuarioId ? (o.doTecnico ?? of(LISTA)) : of([]))),
-    observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set(['b']), comPendencia: new Set(['c']) }),
+    observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set(['b']), comPendencia: new Set(['c']), comConflito: new Set<string>() }),
     observarUsuarios: () => of(USUARIOS),
   };
   TestBed.configureTestingModule({

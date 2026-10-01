@@ -109,7 +109,7 @@ async function montar(o: Opcoes = {}) {
     observarProposta: vi.fn(() => repo.proposta$.asObservable()),
     observarDocumentos: vi.fn(() => repo.documentos$.asObservable()),
     observarPendencias: vi.fn(() => repo.pendencias$.asObservable()),
-    observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set<string>(), comPendencia: new Set<string>() }),
+    observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() }),
     observarUsuarios: () => of(USUARIOS),
     transicionar: vi.fn<(id: string, para: StatusProposta, motivo?: string | null) => Promise<void>>(async () => undefined),
     atribuir: vi.fn<(id: string, m: { tecnicoId?: string | null }) => Promise<void>>(async () => undefined),
@@ -234,7 +234,7 @@ describe('PropostaDetalhePage', () => {
     it('sem documento PROV, só o número; selos Expirada, Não sincronizada e Pendência', async () => {
       const { el } = await montar({
         proposta: proposta({ validadeAte: '2026-09-30' }),
-        estado: { naOutbox: new Set(['p1']), comPendencia: new Set(['p1']) },
+        estado: { naOutbox: new Set(['p1']), comPendencia: new Set(['p1']), comConflito: new Set() },
         pendencias: [conflito()],
       });
       expect(el.querySelector('h1')?.textContent?.trim()).toBe('000277');
@@ -351,7 +351,7 @@ describe('PropostaDetalhePage', () => {
     });
 
     it('v1: resumo (cliente, total, validade, selos) antes das ações; a principal em largura total, as outras em duas colunas', async () => {
-      const { el } = await montar({ estado: { naOutbox: new Set(['p1']), comPendencia: new Set() } });
+      const { el } = await montar({ estado: { naOutbox: new Set(['p1']), comPendencia: new Set(), comConflito: new Set() } });
       const resumo = el.querySelector<HTMLElement>('[data-testid=resumo]')!;
       const acoesEl = el.querySelector<HTMLElement>('[data-testid=acoes]')!;
       expect(resumo.compareDocumentPosition(acoesEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();

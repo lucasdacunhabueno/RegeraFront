@@ -125,7 +125,7 @@ export class PropostasPage {
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
   private readonly usuarios = toSignal(this.repo.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
-    initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>() } as EstadoSync,
+    initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
   });
   /** Data civil de São Paulo (selo Expirada), refeita à meia-noite e quando a aba volta a ficar visível. */
   private readonly hoje = hojeReativo();

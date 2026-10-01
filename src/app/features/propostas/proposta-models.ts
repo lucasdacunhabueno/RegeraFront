@@ -286,6 +286,15 @@ export function codigoExibido(p: Pick<PropostaLocal, 'numero' | 'revisao' | 'cod
   return p.revisao !== null && p.revisao > 1 ? `${base}-R${p.revisao}` : base;
 }
 
+/**
+ * Ordena no lugar por `atualizadoEm` desc pelo instante (o texto ISO tem frações de tamanho variável); sem data por
+ * último; empate: id desc. A ordem das listas e das colunas do kanban (§13).
+ */
+export function ordenarPorAtualizacao<T extends Pick<PropostaLocal, 'id' | 'atualizadoEm'>>(lista: T[]): T[] {
+  const instante = (p: T) => (p.atualizadoEm ? Date.parse(p.atualizadoEm) : Number.NEGATIVE_INFINITY);
+  return lista.sort((a, b) => instante(b) - instante(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+}
+
 // --- ciclo de vida (§8) e permissões (§10): espelho de TransicoesProposta (casos-transicoes.json) ---
 
 /** O que importa da mutação para validar a transição (`TransicoesProposta.Contexto`). */

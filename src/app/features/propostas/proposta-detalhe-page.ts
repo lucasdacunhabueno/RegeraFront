@@ -489,7 +489,7 @@ export class PropostaDetalhePage {
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
   private readonly usuarios = toSignal(this.repo.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
-    initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>() } as EstadoSync,
+    initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
   });
   private readonly hoje = hojeReativo();
 
