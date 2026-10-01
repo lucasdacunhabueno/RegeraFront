@@ -7,7 +7,8 @@ import { MenuMover, MovimentoEscolhido } from './menu-mover';
 @Component({
   imports: [MenuMover],
   template: `
-    <app-menu-mover [destinos]="destinos()" [codigo]="'000277'" [bloqueado]="bloqueado()" (escolhido)="escolhidos.push($event)" />
+    <app-menu-mover [destinos]="destinos()" [codigo]="'000277'" [bloqueado]="bloqueado()" (escolhido)="escolhidos.push($event)"
+                    (fechouBloqueado)="fechouBloqueado = fechouBloqueado + 1" />
     <button type="button" id="fora">Fora</button>
   `,
 })
@@ -15,6 +16,7 @@ class Hospedeiro {
   readonly destinos = signal<StatusProposta[]>(['RASCUNHO', 'APROVADA', 'RECUSADA', 'CANCELADA']);
   readonly bloqueado = signal(false);
   readonly escolhidos: MovimentoEscolhido[] = [];
+  fechouBloqueado = 0;
 }
 
 function montar() {
@@ -119,6 +121,23 @@ describe('MenuMover', () => {
     fixture.detectChanges();
     expect(itens()).toEqual([]);
     expect(gatilho().getAttribute('aria-expanded')).toBe('false');
+  });
+
+  it('N2: fechado por bloqueio com o foco dentro, avisa quem usa (fechouBloqueado) para mover o foco; sem foco dentro, não', async () => {
+    const primeiro = montar();
+    await primeiro.abrir();
+    await vi.waitFor(() => expect(document.activeElement).toBe(primeiro.itens()[0]));
+    primeiro.host.bloqueado.set(true);
+    primeiro.fixture.detectChanges();
+    expect(primeiro.host.fechouBloqueado).toBe(1);
+
+    TestBed.resetTestingModule();
+    const segundo = montar();
+    await segundo.abrir();
+    segundo.el.querySelector<HTMLButtonElement>('#fora')!.focus();
+    segundo.host.bloqueado.set(true);
+    segundo.fixture.detectChanges();
+    expect(segundo.host.fechouBloqueado).toBe(0);
   });
 
   it('bloqueado (CONFLITO): desabilitado, com a dica "Resolva a pendência primeiro."', () => {

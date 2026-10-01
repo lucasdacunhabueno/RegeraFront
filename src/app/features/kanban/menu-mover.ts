@@ -1,4 +1,6 @@
-import { afterNextRender, Component, effect, ElementRef, inject, Injector, input, output, signal, viewChild, viewChildren } from '@angular/core';
+import {
+  afterNextRender, Component, effect, ElementRef, inject, Injector, input, output, signal, untracked, viewChild, viewChildren,
+} from '@angular/core';
 import { LucideChevronDown, LucideDynamicIcon } from '@lucide/angular';
 import { STATUS_PROPOSTA, StatusProposta } from '../propostas/proposta-models';
 
@@ -51,6 +53,11 @@ export class MenuMover {
   readonly codigo = input.required<string>();
   readonly bloqueado = input(false);
   readonly escolhido = output<MovimentoEscolhido>();
+  /**
+   * O menu fechou por bloqueio (CONFLITO) com o foco dentro dele: o item focado sumiu e o botão está desabilitado,
+   * então quem usa decide para onde o foco vai (o kanban: o link do card).
+   */
+  readonly fechouBloqueado = output<void>();
 
   protected readonly id = `menu-mover-${++sequencia}`;
   protected readonly aberto = signal(false);
@@ -64,7 +71,13 @@ export class MenuMover {
   constructor() {
     // um CONFLITO chegou com o menu aberto: fecha (o botão fica desabilitado, com a dica)
     effect(() => {
-      if (this.bloqueado()) this.aberto.set(false);
+      if (!this.bloqueado()) return;
+      untracked(() => {
+        const ativo = this.host.nativeElement.ownerDocument.activeElement;
+        const tinhaFoco = this.aberto() && !!ativo && this.host.nativeElement.contains(ativo);
+        this.aberto.set(false);
+        if (tinhaFoco) this.fechouBloqueado.emit();
+      });
     });
   }
 

@@ -256,6 +256,8 @@ describe('KanbanPage', () => {
         expect(rolavel).not.toBeNull();
         expect(rolavel.nativeElement).toBe(fixture.debugElement.query(By.directive(CdkDropListGroup)).nativeElement);
         expect((rolavel.nativeElement as HTMLElement).classList).toContain('overflow-x-auto');
+        // o sr-only (position: absolute) das colunas fora da tela tem de ficar contido no quadro, senão alarga a página
+        expect((rolavel.nativeElement as HTMLElement).classList).toContain('relative');
       });
 
       it('no toque (notebook híbrido) o arrasto só começa depois de segurar 300 ms; no mouse, na hora', () => {
@@ -500,6 +502,8 @@ describe('KanbanPage', () => {
       expect(el.querySelector('[role="dialog"]')).toBeNull();
       expect(erro).toHaveBeenCalledWith('Resolva a pendência primeiro.');
       expect(gatilhoDe(el, 'a')!.disabled).toBe(true);
+      // N2: o "Mover para…" ficou desabilitado; o foco vai ao link do card, não ao body
+      await vi.waitFor(() => expect(document.activeElement).toBe(cartao(el, 'a')!.querySelector('a')));
     });
 
     it('m6: o status mudou pelo sync com o diálogo aberto (o destino não vale mais): não grava, fecha e avisa', async () => {
@@ -517,6 +521,24 @@ describe('KanbanPage', () => {
       expect(repo.transicionar).not.toHaveBeenCalled();
       expect(el.querySelector('[role="dialog"]')).toBeNull();
       expect(erro).toHaveBeenCalledWith('A proposta mudou e não pode mais ir para Recusada.');
+      await vi.waitFor(() => expect(document.activeElement).toBe(cartao(el, 'a')!.querySelector('a')));
+    });
+
+    it('N2: o card some depois do fechamento do m6 (filtrado/oculto): o foco vai ao título', async () => {
+      const todas = new BehaviorSubject<PropostaLocal[]>(LISTA);
+      const { fixture, el } = montar({ desktop: true, todas });
+      escolher(fixture, el, 'a', 'Cancelada');
+      // virou CANCELADA por outro aparelho, e as encerradas estão ocultas
+      todas.next(LISTA.map((p) => (p.id === 'a' ? { ...p, status: 'CANCELADA' as const } : p)));
+      fixture.detectChanges();
+      const campo = el.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!;
+      campo.value = 'Desistiu da compra';
+      campo.dispatchEvent(new Event('input'));
+      botao(el, 'Cancelar proposta')!.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(cartao(el, 'a')).toBeNull();
+      await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('h1')));
     });
 
     it('m6: com o menu aberto, um CONFLITO que chega fecha o menu', () => {
@@ -526,6 +548,18 @@ describe('KanbanPage', () => {
       estado.next({ ...VAZIO, comPendencia: new Set(['a']), comConflito: new Set(['a']) });
       fixture.detectChanges();
       expect(cartao(el, 'a')!.querySelector('[role="menu"]')).toBeNull();
+    });
+
+    it('N2: o menu fecha por CONFLITO com o foco num item: o foco vai ao link do card', async () => {
+      const estado = new BehaviorSubject<EstadoSync>(VAZIO);
+      const { fixture, el } = montar({ desktop: true, estado });
+      abrirMenu(fixture, el, 'a');
+      await fixture.whenStable();
+      const primeiro = cartao(el, 'a')!.querySelector<HTMLElement>('[role="menuitem"]')!;
+      await vi.waitFor(() => expect(document.activeElement).toBe(primeiro));
+      estado.next({ ...VAZIO, comPendencia: new Set(['a']), comConflito: new Set(['a']) });
+      fixture.detectChanges();
+      await vi.waitFor(() => expect(document.activeElement).toBe(cartao(el, 'a')!.querySelector('a')));
     });
 
     it('com CONFLITO: sem arrastar e "Mover para…" desabilitado, com "Resolva a pendência primeiro"', () => {
@@ -642,6 +676,7 @@ describe('KanbanPage', () => {
       const faixa = el.querySelector('[role="tablist"]')!;
       expect(faixa.classList).toContain('px-4');
       expect(faixa.classList).toContain('scroll-px-4');
+      expect(faixa.classList).toContain('relative');
       expect(codigos(painel(el))).toEqual(['PROV-B00000']);
       expect(fixture.debugElement.queryAll(By.directive(CdkDrag)).length).toBe(0);
       expect(el.querySelectorAll('[data-coluna]').length).toBe(1);

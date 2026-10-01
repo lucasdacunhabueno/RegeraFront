@@ -147,7 +147,8 @@ function midiaDesktop(): Signal<boolean> {
     @if (carregando()) {
       <p class="py-8 text-center text-slate-500">Carregando…</p>
     } @else if (desktop()) {
-      <div cdkDropListGroup cdkScrollable class="flex gap-3 overflow-x-auto pb-2">
+      <!-- relative: o quadro é o bloco de contenção do sr-only (absolute) das colunas fora da tela; sem isso alargam a página -->
+      <div cdkDropListGroup cdkScrollable class="relative flex gap-3 overflow-x-auto pb-2">
         @for (c of quadro(); track c.status) {
           <section [attr.data-coluna]="c.status" [attr.data-proibida]="proibida(c.status) ? '' : null" [attr.aria-labelledby]="'coluna-' + c.status"
                    class="flex min-w-64 flex-1 flex-col rounded-xl bg-slate-100 transition-opacity" [class.opacity-40]="proibida(c.status)">
@@ -166,7 +167,7 @@ function midiaDesktop(): Signal<boolean> {
       </div>
     } @else {
       <div role="tablist" aria-label="Colunas do kanban"
-           class="-mx-4 mb-3 flex snap-x scroll-px-4 gap-2 overflow-x-auto px-4 pb-1">
+           class="relative -mx-4 mb-3 flex snap-x scroll-px-4 gap-2 overflow-x-auto px-4 pb-1">
         @for (c of quadro(); track c.status) {
           <button type="button" role="tab" [id]="'aba-' + c.status" [attr.aria-controls]="ativa()?.status === c.status ? 'painel-' + c.status : null"
                   [attr.aria-selected]="ativa()?.status === c.status" [tabindex]="ativa()?.status === c.status ? 0 : -1"
@@ -213,7 +214,7 @@ function midiaDesktop(): Signal<boolean> {
                            [mostrarValores]="!restrito()" [selos]="k.selos" [mostrarStatus]="false" />
         @if (k.destinos.length > 0) {
           <app-menu-mover class="block px-4 pb-3" [destinos]="k.destinos" [codigo]="k.codigo" [bloqueado]="k.conflito"
-                          (escolhido)="aoEscolher(k.proposta, $event)" />
+                          (escolhido)="aoEscolher(k.proposta, $event)" (fechouBloqueado)="focarLinkDoCard(k.proposta.id)" />
         }
       </div>
     </ng-template>
@@ -428,6 +429,8 @@ export class KanbanPage {
           ? 'Resolva a pendência primeiro.'
           : `A proposta mudou e não pode mais ir para ${STATUS_PROPOSTA[para].rotulo}.`,
       );
+      // o diálogo devolveria o foco ao "Mover para…", agora desabilitado (ou recriado noutra coluna)
+      this.focarLinkDoCard(p.id);
       return;
     }
     this.ocupado.set(true);
@@ -443,6 +446,14 @@ export class KanbanPage {
     } finally {
       this.ocupado.set(false);
     }
+  }
+
+  /** Depois do próximo render: o link do card (o "Mover para…" pode estar desabilitado); sem o card, o título. */
+  protected focarLinkDoCard(id: string): void {
+    afterNextRender(
+      () => (this.documento.querySelector<HTMLElement>(`[data-proposta="${id}"] a`) ?? this.titulo().nativeElement).focus(),
+      { injector: this.injector },
+    );
   }
 
   private soltavel(p: PropostaLocal, para: StatusProposta): boolean {
