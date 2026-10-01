@@ -111,6 +111,20 @@ export class ArquivosService {
     }
   }
 
+  /**
+   * Baixa o arquivo direto do servidor (o mesmo `GET /api/arquivos/{id}` autenticado), sem ler nem gravar o cache
+   * local e sem object URL: para o PDF da proposta, que tem valores e é `no-store` também no Dexie (P4b-R6). Sem
+   * internet ou sem sessão falha sem pedir nada (sem sessão o pedido voltaria 401 e marcaria a sessão expirada);
+   * erro do servidor propaga.
+   */
+  async baixarSemCache(id: string): Promise<Blob> {
+    if (!this.conectividade.online()) throw new Error('Sem internet: o arquivo não está neste aparelho.');
+    if (!this.auth.autenticado()) throw new Error('Entre de novo para baixar o arquivo.');
+    return firstValueFrom(
+      this.http.get(`/api/arquivos/${encodeURIComponent(id)}`, { responseType: 'blob' }).pipe(timeout(30_000)),
+    );
+  }
+
   /** Muda a cada limpar(): quem começou um trabalho em segundo plano compara para saber se deve parar. */
   geracaoAtual(): number {
     return this.geracao;

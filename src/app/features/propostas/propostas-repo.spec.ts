@@ -22,7 +22,9 @@ import { codigoProvisorioValido } from './codigo-provisorio';
 import {
   dadosDaProposta, DocumentoLocal, ItemPropostaLocal, PropostaDados, PropostaLocal, StatusProposta,
 } from './proposta-models';
-import { ErroProposta, hojeEmSaoPaulo, msAteAmanhaEmSaoPaulo, PropostasRepo, somarDias } from './propostas-repo';
+import {
+  ErroProposta, hojeEmSaoPaulo, motivoParaRegerar, msAteAmanhaEmSaoPaulo, PropostasRepo, somarDias,
+} from './propostas-repo';
 
 const COMERCIAL: UsuarioSessao = { id: 'u-com', nome: 'Carla Comercial', email: 'carla@regera.com', perfil: 'COMERCIAL', ativo: true };
 const OUTRO_COMERCIAL: UsuarioSessao = { id: 'u-com2', nome: 'Beto', email: 'beto@regera.com', perfil: 'COMERCIAL', ativo: true };
@@ -56,6 +58,11 @@ const pendencia = (entidade: Pendencia['entidade'], agregadoId: string, mutation
 /** Bytes de "abc": SHA-256 conhecido. */
 const ABC = new TextEncoder().encode('abc');
 const SHA_ABC = 'ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad';
+
+async function sha256(texto: string): Promise<string> {
+  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(texto)));
+  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
+}
 
 describe('datas da proposta', () => {
   it('hoje é a data civil de São Paulo, não a do UTC', () => {
@@ -858,6 +865,183 @@ describe('PropostasRepo', () => {
       expect(await db.documentos.count()).toBe(0);
       expect(await db.outbox.count()).toBe(0);
       expect((await db.propostas.get('p1'))!.status).toBe('RASCUNHO');
+    });
+  });
+
+  describe('regerarDocumento (P4b-R13)', () => {
+    const XYZ = new TextEncoder().encode('xyz');
+    const gerar = () => vi.fn<(e: EntradaPdf) => Promise<Blob>>(async () => new Blob([XYZ], { type: 'application/pdf' }));
+
+    /**
+     * O R13 de ponta a ponta: envio offline com PROV-AAAAAA; na sincronização o PROV colide e o aparelho o troca por
+     * PROV-BBBBBB (como `trocarCodigoProvisorio`), a criação e a transição são aceitas (version 2, número 277) e o
+     * upload, que leva o PDF com o código antigo, volta CODIGO_EXIBIDO_INVALIDO (como `aplicarResultado`).
+     */
+    async function uploadRecusado(numero: number | null = 277): Promise<{ id: string; antigo: DocumentoLocal }> {
+      const id = await repo.criar('VENDA', 'c1');
+      await db.propostas.update(id, { codigoProvisorio: 'PROV-AAAAAA' });
+      await repo.adicionarItem(id, (await db.itens.get('i-venda'))!);
+      await repo.enviar(id, vi.fn(async () => new Blob([ABC], { type: 'application/pdf' })));
+      const [antigo] = await db.documentos.toArray();
+      expect(antigo.codigoExibido).toBe('PROV-AAAAAA');
+      const [, , upload] = await fila();
+      await db.outbox.clear();
+      await db.propostas.update(id, { codigoProvisorio: 'PROV-BBBBBB', numero, version: 2 });
+      await db.pendencias.put({
+        mutationId: upload.mutationId, entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: id, tipo: 'REJEITADO', criadaEm: '',
+        mutacao: { ...upload, enviando: false },
+        erro: { codigo: 'CODIGO_EXIBIDO_INVALIDO', mensagem: 'O PDF PROV-AAAAAA não foi aceito. O código da proposta mudou.' },
+      });
+      sincronizar.mockClear();
+      return { id, antigo };
+    }
+
+    it('R13: gera o PDF oficial com o código atual, troca o documento não enviado e reenfileira o UPLOAD, numa transação', async () => {
+      const { id, antigo } = await uploadRecusado();
+      const antes = (await db.propostas.get(id))!;
+      const g = gerar();
+
+      const blob = await repo.regerarDocumento(id, g);
+
+      expect(g).toHaveBeenCalledTimes(1);
+      const entrada = g.mock.calls[0][0];
+      expect(entrada.previa).toBe(false);
+      // a mesma montagem da prévia (`montarEntrada`), mas oficial
+      expect(entrada).toEqual({ ...(await repo.entradaPrevia(id)), previa: false });
+      expect(entrada.proposta).toMatchObject({ codigoExibido: '000277', revisao: 1, referenciaProvisoria: null });
+
+      const docs = await db.documentos.toArray();
+      expect(docs.map((d) => d.id)).not.toContain(antigo.id);
+      expect(docs).toHaveLength(1);
+      const [novo] = docs;
+      expect(novo).toMatchObject({
+        propostaId: id, revisao: 1, codigoExibido: '000277', enviado: false, arquivoId: null, geradoPor: COMERCIAL.id,
+        sha256: await sha256('xyz'),
+      });
+      expect(Array.from(new Uint8Array(novo.bytes!))).toEqual(Array.from(XYZ));
+      expect(novo.snapshot).toEqual({ ...JSON.parse(JSON.stringify({ ...entrada, logoDataUrl: undefined })), logoArquivoId: 'logo-1' });
+
+      // a pendência do upload sai; o UPLOAD novo (o real `registrarUpload`) é o que sai na próxima sincronização
+      expect(await db.pendencias.count()).toBe(0);
+      const m = await fila();
+      expect(m.map((x) => [x.entidade, x.op, x.agregadoId, x.dados])).toEqual([[TIPO_UPLOAD_DOCUMENTO, 'UPLOAD', id, { documentoId: novo.id }]]);
+      expect(m[0]).toMatchObject({ separada: true, baseVersion: null });
+      // a proposta não muda
+      expect(await db.propostas.get(id)).toEqual(antes);
+      expect(sincronizar).toHaveBeenCalled();
+      expect(Array.from(new Uint8Array(await blob.arrayBuffer()))).toEqual(Array.from(XYZ));
+    });
+
+    it('R13 sem número ainda: o PDF novo leva o PROV atual', async () => {
+      const { id } = await uploadRecusado(null);
+      const g = gerar();
+      await repo.regerarDocumento(id, g);
+      expect(g.mock.calls[0][0].proposta.codigoExibido).toBe('PROV-BBBBBB');
+      expect((await db.documentos.toArray()).map((d) => d.codigoExibido)).toEqual(['PROV-BBBBBB']);
+    });
+
+    it('sem documento da revisão atual (upload descartado em Pendências): gera e enfileira; os enviados de antes ficam', async () => {
+      await existente('APROVADA', {
+        numero: 30, revisao: 2,
+        documentos: [{ id: 'd1', revisao: 1, codigoExibido: '000030', arquivoId: 'a1', sha256: 'x', geradoEm: '', geradoPor: '' }],
+        historico: [{ statusDe: 'RASCUNHO', statusPara: 'ENVIADA', usuarioId: COMERCIAL.id, em: '', observacao: null }],
+      });
+      await db.documentos.put({
+        id: 'd1', propostaId: 'p1', revisao: 1, codigoExibido: '000030', sha256: 'x', geradoEm: '', geradoPor: null, bytes: null,
+        enviado: true, arquivoId: 'a1',
+      });
+      await repo.regerarDocumento('p1', gerar());
+      const docs = (await db.documentos.toArray()).sort((a, b) => a.revisao - b.revisao);
+      expect(docs.map((d) => [d.id === 'd1', d.revisao, d.codigoExibido, d.enviado])).toEqual([
+        [true, 1, '000030', true], [false, 2, '000030-R2', false],
+      ]);
+      expect((await fila()).map((x) => x.op)).toEqual(['UPLOAD']);
+    });
+
+    it('com o documento da revisão em dia, no rascunho, para o técnico ou o comercial de outra proposta: recusa sem gerar', async () => {
+      const g = gerar();
+      await existente('ENVIADA', {
+        documentos: [{ id: 'd1', revisao: 1, codigoExibido: 'PROV-ABCDEF', arquivoId: 'a1', sha256: 'x', geradoEm: '', geradoPor: '' }],
+      });
+      expect((await erroDe(repo.regerarDocumento('p1', g))).codigo).toBe('DOCUMENTO_EM_DIA');
+      await existente('RASCUNHO', { revisao: 2, historico: [{ statusDe: 'RASCUNHO', statusPara: 'ENVIADA', usuarioId: 'u', em: '' }] });
+      expect((await erroDe(repo.regerarDocumento('p1', g))).codigo).toBe('DOCUMENTO_EM_DIA');
+      await existente('ENVIADA', { tecnicoId: TECNICO.id });
+      usuario.set(TECNICO);
+      expect((await erroDe(repo.regerarDocumento('p1', g))).codigo).toBe('ACESSO_NEGADO');
+      usuario.set(OUTRO_COMERCIAL);
+      expect((await erroDe(repo.regerarDocumento('p1', g))).codigo).toBe('ACESSO_NEGADO');
+      expect(g).not.toHaveBeenCalled();
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.documentos.count()).toBe(0);
+    });
+
+    it('os limites do envio: PDF acima de 10 MB e snapshot acima de 512 KB não mudam nada', async () => {
+      const { id } = await uploadRecusado();
+      const antes = { docs: await db.documentos.toArray(), pend: await db.pendencias.toArray(), fila: await fila() };
+      const grande = vi.fn(async () => new Blob([new Uint8Array(10 * 1024 * 1024 + 1)], { type: 'application/pdf' }));
+      expect((await erroDe(repo.regerarDocumento(id, grande))).codigo).toBe('PDF_GRANDE');
+      await db.propostas.update(id, { observacoes: 'x'.repeat(600 * 1024) });
+      const g = gerar();
+      expect((await erroDe(repo.regerarDocumento(id, g))).codigo).toBe('SNAPSHOT_GRANDE');
+      expect(g).not.toHaveBeenCalled();
+      expect({ docs: await db.documentos.toArray(), pend: await db.pendencias.toArray(), fila: await fila() }).toEqual(antes);
+    });
+
+    it('a proposta muda durante a geração (o ack traz o número): gera de novo com o código novo', async () => {
+      const { id } = await uploadRecusado(null);
+      let vez = 0;
+      const g = vi.fn(async (e: EntradaPdf) => {
+        if (vez++ === 0) await db.propostas.update(id, { numero: 300, version: 3 });
+        return new Blob([e.proposta.codigoExibido], { type: 'application/pdf' });
+      });
+      await repo.regerarDocumento(id, g);
+      expect(g.mock.calls.map((c) => c[0].proposta.codigoExibido)).toEqual(['PROV-BBBBBB', '000300']);
+      expect((await db.documentos.toArray()).map((d) => d.codigoExibido)).toEqual(['000300']);
+      expect((await fila()).map((x) => x.op)).toEqual(['UPLOAD']);
+    });
+
+    it('com o upload antigo em voo, recusa (PROPOSTA_SINCRONIZANDO) sem trocar nada', async () => {
+      const { id, antigo } = await uploadRecusado();
+      await db.outbox.add({
+        mutationId: 'em-voo', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: id, op: 'UPLOAD', baseVersion: null,
+        dados: { documentoId: antigo.id }, separada: true, enviando: true, criadaEm: '',
+      });
+      const antes = { docs: await db.documentos.toArray(), pend: await db.pendencias.toArray(), fila: await fila() };
+      expect((await erroDe(repo.regerarDocumento(id, gerar()))).codigo).toBe('PROPOSTA_SINCRONIZANDO');
+      expect({ docs: await db.documentos.toArray(), pend: await db.pendencias.toArray(), fila: await fila() }).toEqual(antes);
+    });
+
+    it('motivoParaRegerar: CODIGO_EXIBIDO_INVALIDO, falta do documento da revisão, ou nada', () => {
+      const base = { status: 'ENVIADA' as StatusProposta, revisao: 2, documentos: [], historico: [] };
+      const recusa = { ...pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1'), erro: { codigo: 'CODIGO_EXIBIDO_INVALIDO', mensagem: '' } };
+      const outra = { ...pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1'), erro: { codigo: 'SHA_DIVERGENTE', mensagem: '' } };
+      expect(motivoParaRegerar(base, [{ revisao: 2 }], [recusa])).toBe('CODIGO_EXIBIDO_INVALIDO');
+      expect(motivoParaRegerar(base, [{ revisao: 1 }], [])).toBe('SEM_DOCUMENTO');
+      expect(motivoParaRegerar(base, [{ revisao: 2 }], [outra])).toBeNull();
+      expect(motivoParaRegerar({ ...base, status: 'RASCUNHO' }, [], [recusa])).toBeNull();
+      // cancelada direto do rascunho: nunca houve envio, não falta documento
+      expect(motivoParaRegerar({ ...base, status: 'CANCELADA', revisao: 1 }, [], [])).toBeNull();
+    });
+  });
+
+  describe('pendências da proposta (detalhe e correção)', () => {
+    it('observarPendencias traz as da proposta (as de dados e as do upload); recusaCorrigivel só a recusa VALIDACAO de rascunho', async () => {
+      const p = await existente('ENVIADA');
+      const dados = dadosDaProposta({ ...p, status: 'RASCUNHO' });
+      const corrigivel: Pendencia = {
+        ...pendencia('proposta', 'p1', 'e1'), erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { prazoExecucao: 'x' } },
+        mutacao: { ...pendencia('proposta', 'p1', 'e1').mutacao, dados },
+      };
+      await db.pendencias.bulkPut([
+        { ...pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1', 'u1'), criadaEm: '2026-10-01T10:00:00Z' },
+        { ...pendencia('proposta', 'outra', 'x1') },
+      ]);
+      expect(await repo.recusaCorrigivel('p1')).toBeUndefined();
+      await db.pendencias.put({ ...corrigivel, criadaEm: '2026-10-01T09:00:00Z' });
+      const lista = await firstValueFrom(repo.observarPendencias('p1'));
+      expect(lista.map((x) => x.mutationId)).toEqual(['e1', 'u1']);
+      expect((await repo.recusaCorrigivel('p1'))?.mutationId).toBe('e1');
     });
   });
 

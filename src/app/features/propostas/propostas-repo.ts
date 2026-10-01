@@ -8,7 +8,7 @@ import { RegeraDb } from '../../core/db/regera-db';
 import type { ClientePdf, EmpresaPdf, EntradaPdf, ItemPdf } from '../../core/pdf/pdf-models';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { observarNaoSincronizados } from '../../core/sync/nao-sincronizados';
-import type { ErroMutacao, Pendencia, UsuarioResumo } from '../../core/sync/sync-models';
+import { DadosUpload, ErroMutacao, Pendencia, TIPO_UPLOAD_DOCUMENTO, UsuarioResumo } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { formatarCep } from '../../core/util/formatos';
@@ -273,11 +273,68 @@ export interface Duplicada {
   linhasDescartadas: number;
 }
 
+/**
+ * A linha nova de `adicionarItem` (e da correção, que a monta sem gravar): o snapshot do catálogo (código, nome,
+ * descrição, unidade, natureza e custo, se o perfil o vê), quantidade 1, sem desconto; preço de venda, ou o mensal em
+ * LOCACAO com item locável (aí `meses = 1`). Recusa item inativo e a 201ª linha (`quantasLinhas` = as que já existem).
+ */
+export function linhaDoCatalogo(tipo: TipoProposta, quantasLinhas: number, itemCatalogo: ItemLocal): ItemPropostaLocal {
+  if (!itemCatalogo.ativo) validacao({ itens: 'Este item do catálogo está inativo.' });
+  if (quantasLinhas >= MAX_ITENS) validacao({ itens: `Máximo de ${MAX_ITENS} itens.` });
+  const mensal = tipo === 'LOCACAO' && itemCatalogo.locavel;
+  const preco = mensal ? itemCatalogo.precoLocacaoMensal : itemCatalogo.precoVenda;
+  return {
+    id: uuidv7(),
+    itemCatalogoId: itemCatalogo.id,
+    codigo: itemCatalogo.codigo,
+    nome: itemCatalogo.nome,
+    descricao: itemCatalogo.descricao,
+    unidade: itemCatalogo.unidade,
+    natureza: itemCatalogo.natureza,
+    precoCustoCentavos: itemCatalogo.precoCusto == null ? null : Number(paraCentavos(itemCatalogo.precoCusto)),
+    quantidadeMilesimos: 1000,
+    precoUnitarioCentavos: preco == null ? 0 : Number(paraCentavos(preco)),
+    descontoCentesimos: 0,
+    meses: mensal ? 1 : null,
+    subtotalCentavos: null,
+    ordem: null,
+  };
+}
+
+const CODIGO_INVALIDO = 'CODIGO_EXIBIDO_INVALIDO';
+
+/** Por que "Gerar PDF novamente" vale (P4b-R13), ou null. */
+export type MotivoRegerar = 'CODIGO_EXIBIDO_INVALIDO' | 'SEM_DOCUMENTO';
+
+/**
+ * "Gerar PDF novamente" (P4b-R13) vale fora do rascunho (o servidor só recebe documento de proposta enviada ou
+ * posterior, e da revisão dela) quando:
+ * - o upload de um PDF dela voltou `CODIGO_EXIBIDO_INVALIDO` (o PROV mudou depois de o PDF ser gerado offline); ou
+ * - ela já foi enviada e não há documento da revisão atual, nem do servidor nem do aparelho (ex.: o upload recusado
+ *   foi descartado em Pendências).
+ * `documentos`: os do aparelho (ou `observarDocumentos`); `pendencias`: as da proposta. A tela e `regerarDocumento`
+ * decidem por aqui.
+ */
+export function motivoParaRegerar(
+  p: Pick<PropostaLocal, 'status' | 'revisao' | 'documentos' | 'historico'>,
+  documentos: readonly { revisao: number }[],
+  pendencias: readonly Pendencia[],
+): MotivoRegerar | null {
+  if (p.status === 'RASCUNHO') return null;
+  if (pendencias.some((x) => x.entidade === TIPO_UPLOAD_DOCUMENTO && x.erro?.codigo === CODIGO_INVALIDO)) return CODIGO_INVALIDO;
+  if (!jaFoiEnviada(p)) return null;
+  const revisao = p.revisao ?? 1;
+  return [...p.documentos, ...documentos].some((d) => d.revisao === revisao) ? null : 'SEM_DOCUMENTO';
+}
+
+const sincronizando = (): ErroProposta =>
+  new ErroProposta('PROPOSTA_SINCRONIZANDO', 'proposta', 'A proposta está sendo sincronizada. Tente de novo em instantes.');
+
 /** Status que só existem depois de um envio (CANCELADA pode vir direto do rascunho: aí vale o documento). */
 const DEPOIS_DO_ENVIO: readonly StatusProposta[] = ['ENVIADA', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA', 'RECUSADA'];
 
 /** Fora do rascunho, a proposta já passou por um envio (e não é só uma transição que não existe). */
-function jaFoiEnviada(p: PropostaLocal): boolean {
+function jaFoiEnviada(p: Pick<PropostaLocal, 'status' | 'documentos' | 'historico'>): boolean {
   return DEPOIS_DO_ENVIO.includes(p.status) || p.documentos.length > 0 || p.historico.some((h) => h.statusPara === 'ENVIADA');
 }
 
@@ -308,7 +365,7 @@ const EMPRESA_VAZIA: EmpresaPdf = {
 const CLIENTE_VAZIO: ClientePdf = { nome: '', documento: '', endereco: null, contato: null, telefone: null, email: null };
 
 /** Endereço principal (ou o primeiro) em uma linha: `Logradouro, nº - compl. - bairro - Cidade/UF - CEP 00000-000`. */
-function enderecoDoCliente(c: ClienteLocal): string | null {
+export function enderecoDoCliente(c: ClienteLocal): string | null {
   const e = c.enderecos.find((x) => x.tipo === 'PRINCIPAL') ?? c.enderecos[0];
   if (!e) return null;
   const local = [e.cidade, e.uf].map(texto).filter((x) => x !== null).join('/');
@@ -352,6 +409,11 @@ function itemDoPdf(l: ItemPropostaLocal): ItemPdf {
 function ordenar(lista: PropostaLocal[]): PropostaLocal[] {
   const instante = (p: PropostaLocal) => (p.atualizadoEm ? Date.parse(p.atualizadoEm) : Number.NEGATIVE_INFINITY);
   return lista.sort((a, b) => instante(b) - instante(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
+}
+
+/** O documento de uma mutação de UPLOAD na fila (ou na pendência); null se ela não é um upload. */
+function documentoDoUpload(m: { entidade: string; dados: unknown }): string | null {
+  return m.entidade === TIPO_UPLOAD_DOCUMENTO ? ((m.dados as DadosUpload | null)?.documentoId ?? null) : null;
 }
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
@@ -423,6 +485,18 @@ export class PropostasRepo {
     return (await this.db.pendencias.where('agregadoId').equals(id).count()) > 0;
   }
 
+  /** As pendências da proposta (as dos dados e as do upload do PDF, que leva o id dela), das mais antigas às novas. */
+  observarPendencias(id: string): Observable<Pendencia[]> {
+    return observar(async () =>
+      (await this.db.pendencias.where('agregadoId').equals(id).toArray()).sort((a, b) => a.criadaEm.localeCompare(b.criadaEm)),
+    );
+  }
+
+  /** A recusa da proposta que "Corrigir e reenviar" conserta (`pendenciaCorrigivel`, P4b-R28), se houver. */
+  async recusaCorrigivel(id: string): Promise<Pendencia | undefined> {
+    return (await this.db.pendencias.where('agregadoId').equals(id).toArray()).find(pendenciaCorrigivel);
+  }
+
   /**
    * Novo RASCUNHO com os padrões (§13): o usuário atual é o responsável (obrigatório para o COMERCIAL); emissão hoje
    * em São Paulo; validade = hoje + `validadePadraoDias` da empresa (15 sem empresa); condições de pagamento da
@@ -484,34 +558,15 @@ export class PropostasRepo {
   }
 
   /**
-   * Inclui o item do catálogo no rascunho, com o snapshot copiado dele (código, nome, descrição, unidade, natureza e
-   * custo, se o perfil o vê). Preço: o de venda, ou o mensal em LOCACAO com item locável (aí `meses = 1`).
-   * Quantidade 1, sem desconto. Devolve o id da linha.
+   * Inclui o item do catálogo no rascunho, com o snapshot copiado dele (`linhaDoCatalogo`: código, nome, descrição,
+   * unidade, natureza e custo, se o perfil o vê). Preço: o de venda, ou o mensal em LOCACAO com item locável (aí
+   * `meses = 1`). Quantidade 1, sem desconto. Devolve o id da linha.
    */
   async adicionarItem(id: string, itemCatalogo: ItemLocal): Promise<string> {
     const u = this.usuario();
     const atual = await this.carregar(id);
     this.exigirEdicao(atual, u);
-    if (!itemCatalogo.ativo) validacao({ itens: 'Este item do catálogo está inativo.' });
-    if (atual.itens.length >= MAX_ITENS) validacao({ itens: `Máximo de ${MAX_ITENS} itens.` });
-    const mensal = atual.tipo === 'LOCACAO' && itemCatalogo.locavel;
-    const preco = mensal ? itemCatalogo.precoLocacaoMensal : itemCatalogo.precoVenda;
-    const linha: ItemPropostaLocal = {
-      id: uuidv7(),
-      itemCatalogoId: itemCatalogo.id,
-      codigo: itemCatalogo.codigo,
-      nome: itemCatalogo.nome,
-      descricao: itemCatalogo.descricao,
-      unidade: itemCatalogo.unidade,
-      natureza: itemCatalogo.natureza,
-      precoCustoCentavos: itemCatalogo.precoCusto == null ? null : Number(paraCentavos(itemCatalogo.precoCusto)),
-      quantidadeMilesimos: 1000,
-      precoUnitarioCentavos: preco == null ? 0 : Number(paraCentavos(preco)),
-      descontoCentesimos: 0,
-      meses: mensal ? 1 : null,
-      subtotalCentavos: null,
-      ordem: null,
-    };
+    const linha = linhaDoCatalogo(atual.tipo, atual.itens.length, itemCatalogo);
     const itens = [...atual.itens, linha];
     await this.gravarEdicao(comTotais({ ...atual, itens }), { itens }, atual.version);
     return linha.id;
@@ -669,41 +724,7 @@ export class PropostasRepo {
   ): Promise<Blob | null> {
     const id = p.id;
     this.exigirTransicao(p, 'ENVIADA', u, contexto(p));
-    const cliente = await this.db.clientes.get(p.clienteId!);
-    if (!cliente) validacao({ clienteId: 'O cliente não está neste aparelho. Sincronize e tente de novo.' });
-    const template = await this.db.templates.get(p.templateId!);
-    if (!template) validacao({ templateId: 'O template não está neste aparelho. Sincronize e tente de novo.' });
-
-    const empresa = await this.empresa();
-    const entrada = await this.montarEntrada(p, cliente!, template!, empresa, u, false);
-    // snapshot: a entrada sem a logo em data URL (pesada; vai a referência do arquivo)
-    const snapshot = JSON.parse(JSON.stringify({ ...entrada, logoDataUrl: undefined })) as Record<string, unknown>;
-    snapshot['logoArquivoId'] = empresa?.logoArquivoId ?? null;
-    if (new TextEncoder().encode(JSON.stringify(snapshot)).length > SNAPSHOT_MAX_BYTES) {
-      throw new ErroProposta('SNAPSHOT_GRANDE', 'proposta', 'Os dados desta proposta passam do limite do documento (512 KB).');
-    }
-
-    const blob = await gerarPdf(entrada);
-    const bytes = await paraBytes(blob);
-    if (bytes.byteLength > PDF_MAX_BYTES) {
-      // o upload voltaria 413 e a proposta ficaria ENVIADA no servidor sem documento
-      throw new ErroProposta('PDF_GRANDE', 'proposta', 'O PDF passou de 10 MB. Reduza imagens do template.');
-    }
-    const sha256 = await sha256Hex(bytes);
-    const revisao = p.revisao ?? 1;
-    const documento: DocumentoLocal = {
-      id: uuidv7(),
-      propostaId: p.id,
-      revisao,
-      codigoExibido: codigoExibido({ ...p, revisao }),
-      sha256,
-      geradoEm: new Date().toISOString(),
-      geradoPor: u.id,
-      bytes,
-      enviado: false,
-      arquivoId: null,
-      snapshot,
-    };
+    const { blob, documento } = await this.gerarDocumento(p, u, gerarPdf);
     const enviada: PropostaLocal = { ...p, status: 'ENVIADA', atualizadoEm: new Date().toISOString() };
     const gravou = await this.db.transaction('rw', [this.db.propostas, this.db.documentos, this.db.outbox], async () => {
       // o PDF foi gerado fora da transação: se a proposta mudou nesse meio-tempo, ele não a representa mais
@@ -717,6 +738,57 @@ export class PropostasRepo {
       return true;
     });
     return gravou ? blob : null;
+  }
+
+  /**
+   * "Gerar PDF novamente" (P4b-R13), quando `motivoParaRegerar` diz que vale: gera o PDF oficial da revisão atual com o
+   * código de agora (a mesma montagem e os mesmos limites do `enviar`: snapshot de 512 KB, PDF de 10 MB, SHA-256 no
+   * aparelho) e, numa transação só:
+   * 1. apaga os documentos não enviados da revisão atual e os das recusas `CODIGO_EXIBIDO_INVALIDO`, com os UPLOADs
+   *    deles na fila e nas pendências (a pendência sai e a proposta volta a sincronizar);
+   * 2. grava o documento novo e enfileira o UPLOAD dele, atrás do que já está na fila da proposta.
+   * A proposta não muda. Se ela mudou durante a geração (o ack traz o número), gera de novo, até 3 vezes, como o
+   * `enviar` (P4b-R21). Com o upload antigo em voo, recusa (`PROPOSTA_SINCRONIZANDO`). Devolve o Blob para compartilhar.
+   */
+  async regerarDocumento(id: string, gerarPdf: (entrada: EntradaPdf) => Promise<Blob>): Promise<Blob> {
+    const u = this.usuario();
+    for (let tentativa = 1; ; tentativa++) {
+      const p = comTotais(await this.carregar(id));
+      // o perfil primeiro (técnico, comercial de outra proposta): ACESSO_NEGADO
+      this.checar(validarTransicao(p.status, p.status, u.perfil, p.responsavelId === u.id, contexto(p)));
+      await this.exigirMotivoParaRegerar(p);
+      const { blob, documento } = await this.gerarDocumento(p, u, gerarPdf);
+      const tabelas = [this.db.propostas, this.db.documentos, this.db.outbox, this.db.pendencias];
+      const gravou = await this.db.transaction('rw', tabelas, async () => {
+        const agora = await this.db.propostas.get(id);
+        if (!agora || JSON.stringify(comTotais(agora)) !== JSON.stringify(p)) return false;
+        const pendencias = await this.exigirMotivoParaRegerar(agora);
+        const recusas = pendencias.filter((x) => documentoDoUpload(x.mutacao) !== null && x.erro?.codigo === CODIGO_INVALIDO);
+        const daRecusa = new Set(recusas.map((x) => documentoDoUpload(x.mutacao)));
+        const antigos = new Set(
+          (await this.db.documentos.where('propostaId').equals(id).toArray())
+            .filter((d) => !d.enviado && (d.revisao === documento.revisao || daRecusa.has(d.id)))
+            .map((d) => d.id),
+        );
+        const doAntigo = (m: { entidade: string; dados: unknown }) => antigos.has(documentoDoUpload(m) ?? '');
+        const naFila = (await this.db.outbox.where('agregadoId').equals(id).toArray()).filter(doAntigo);
+        if (naFila.some((m) => m.enviando)) throw sincronizando();
+        await this.db.outbox.bulkDelete(naFila.map((m) => m.seq!));
+        const resolvidas = pendencias.filter((x) => recusas.includes(x) || doAntigo(x.mutacao));
+        await this.db.pendencias.bulkDelete(resolvidas.map((x) => x.mutationId));
+        await this.db.documentos.bulkDelete([...antigos]);
+        await this.db.documentos.add(documento);
+        await this.sync.registrarUpload(id, documento.id);
+        return true;
+      });
+      if (gravou) {
+        void this.sync.sincronizar();
+        return blob;
+      }
+      if (tentativa >= TENTATIVAS_ENVIO) {
+        throw new ErroProposta('PROPOSTA_ALTERADA', 'proposta', 'A proposta mudou enquanto o PDF era gerado. Tente de novo.');
+      }
+    }
   }
 
   /**
@@ -734,9 +806,7 @@ export class PropostasRepo {
       throw new ErroProposta('PROPOSTA_NUMERADA', 'proposta', 'Uma proposta numerada não pode ser excluída. Cancele-a.');
     }
     await this.db.transaction('rw', [this.db.propostas, this.db.documentos, this.db.outbox, this.db.pendencias], async () => {
-      if (await this.db.outbox.where('agregadoId').equals(id).filter((m) => !!m.enviando).count()) {
-        throw new ErroProposta('PROPOSTA_SINCRONIZANDO', 'proposta', 'A proposta está sendo sincronizada. Tente de novo em instantes.');
-      }
+      if (await this.db.outbox.where('agregadoId').equals(id).filter((m) => !!m.enviando).count()) throw sincronizando();
       await this.db.documentos.where('propostaId').equals(id).delete();
       await this.db.pendencias.where('agregadoId').equals(id).delete();
       await this.db.propostas.delete(id);
@@ -921,6 +991,64 @@ export class PropostasRepo {
       else if (!exige && l.meses !== null) campos[pre + 'meses'] = 'Meses só em proposta de locação com item locável.';
     }
     return campos;
+  }
+
+  /** Recusa (`DOCUMENTO_EM_DIA`) quando `motivoParaRegerar` não vale para `p`; devolve as pendências dela. */
+  private async exigirMotivoParaRegerar(p: PropostaLocal): Promise<Pendencia[]> {
+    const pendencias = await this.db.pendencias.where('agregadoId').equals(p.id).toArray();
+    const locais = await this.db.documentos.where('propostaId').equals(p.id).toArray();
+    if (!motivoParaRegerar(p, locais, pendencias)) {
+      throw new ErroProposta('DOCUMENTO_EM_DIA', 'proposta', 'O PDF desta revisão já está no aparelho ou no servidor.');
+    }
+    return pendencias;
+  }
+
+  /**
+   * O PDF oficial de `p` como ela está (`enviar` e `regerarDocumento`), sem gravar nada: confere que o cliente e o
+   * template estão no aparelho, monta a entrada (`montarEntrada`, `previa: false`), recusa o snapshot acima de 512 KB
+   * antes de gerar e o PDF acima de 10 MB depois (o upload voltaria 413), e calcula o SHA-256 dos bytes. Código
+   * exibido: `codigoExibido` da revisão atual.
+   */
+  private async gerarDocumento(
+    p: PropostaLocal,
+    u: UsuarioSessao,
+    gerarPdf: (entrada: EntradaPdf) => Promise<Blob>,
+  ): Promise<{ blob: Blob; documento: DocumentoLocal }> {
+    const cliente = p.clienteId === null ? undefined : await this.db.clientes.get(p.clienteId);
+    if (!cliente) validacao({ clienteId: 'O cliente não está neste aparelho. Sincronize e tente de novo.' });
+    const template = p.templateId === null ? undefined : await this.db.templates.get(p.templateId);
+    if (!template) validacao({ templateId: 'O template não está neste aparelho. Sincronize e tente de novo.' });
+
+    const empresa = await this.empresa();
+    const entrada = await this.montarEntrada(p, cliente!, template!, empresa, u, false);
+    // snapshot: a entrada sem a logo em data URL (pesada; vai a referência do arquivo)
+    const snapshot = JSON.parse(JSON.stringify({ ...entrada, logoDataUrl: undefined })) as Record<string, unknown>;
+    snapshot['logoArquivoId'] = empresa?.logoArquivoId ?? null;
+    if (new TextEncoder().encode(JSON.stringify(snapshot)).length > SNAPSHOT_MAX_BYTES) {
+      throw new ErroProposta('SNAPSHOT_GRANDE', 'proposta', 'Os dados desta proposta passam do limite do documento (512 KB).');
+    }
+
+    const blob = await gerarPdf(entrada);
+    const bytes = await paraBytes(blob);
+    if (bytes.byteLength > PDF_MAX_BYTES) {
+      // o upload voltaria 413 e a proposta ficaria no servidor sem documento
+      throw new ErroProposta('PDF_GRANDE', 'proposta', 'O PDF passou de 10 MB. Reduza imagens do template.');
+    }
+    const revisao = p.revisao ?? 1;
+    const documento: DocumentoLocal = {
+      id: uuidv7(),
+      propostaId: p.id,
+      revisao,
+      codigoExibido: codigoExibido({ ...p, revisao }),
+      sha256: await sha256Hex(bytes),
+      geradoEm: new Date().toISOString(),
+      geradoPor: u.id,
+      bytes,
+      enviado: false,
+      arquivoId: null,
+      snapshot,
+    };
+    return { blob, documento };
   }
 
   /** A entrada do PDF oficial (`enviar`) e da prévia (`entradaPrevia`): uma montagem só, para as duas não divergirem. */
