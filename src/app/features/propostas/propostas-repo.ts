@@ -21,6 +21,8 @@ import { TemplatesRepo } from '../templates/templates-repo';
 import { calcular, deCentesimos, deMilesimos, paraCentavos } from './calculo';
 import { gerarCodigoProvisorio } from './codigo-provisorio';
 import {
+  codigoBase,
+  codigoExibido,
   ContextoTransicao,
   dadosDaProposta,
   DocumentoLocal,
@@ -219,9 +221,10 @@ function itemDoPdf(l: ItemPropostaLocal): ItemPdf {
   };
 }
 
-/** Número com 6 dígitos, se já existe; senão, o PROV. Sem o `-R<n>` (o motor de PDF põe a revisão). */
-function codigoBase(p: PropostaLocal): string {
-  return p.numero === null ? p.codigoProvisorio : String(p.numero).padStart(6, '0');
+/** `atualizadoEm` desc pelo instante (o texto ISO tem frações de tamanho variável); sem data por último; empate: id desc. */
+function ordenar(lista: PropostaLocal[]): PropostaLocal[] {
+  const instante = (p: PropostaLocal) => (p.atualizadoEm ? Date.parse(p.atualizadoEm) : Number.NEGATIVE_INFINITY);
+  return lista.sort((a, b) => instante(b) - instante(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0));
 }
 
 async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
@@ -246,18 +249,18 @@ export class PropostasRepo {
   private readonly templates = inject(TemplatesRepo);
   private readonly pdf = inject(PdfService);
 
-  /** Todas as visíveis neste aparelho, as mais novas primeiro (o id é UUID v7, ordenado pela criação). */
+  /** Todas as visíveis neste aparelho, por `atualizadoEm` desc (§13, kanban). */
   observarTodas(): Observable<PropostaLocal[]> {
-    return observar(() => this.db.propostas.orderBy('id').reverse().toArray());
+    return observar(async () => ordenar(await this.db.propostas.toArray()));
   }
 
   observarDoCliente(clienteId: string): Observable<PropostaLocal[]> {
-    return observar(async () => (await this.db.propostas.where('clienteId').equals(clienteId).toArray()).reverse());
+    return observar(async () => ordenar(await this.db.propostas.where('clienteId').equals(clienteId).toArray()));
   }
 
   /** As atribuídas ao técnico (a lista dele no P4c). */
   observarDoTecnico(usuarioId: string): Observable<PropostaLocal[]> {
-    return observar(async () => (await this.db.propostas.where('tecnicoId').equals(usuarioId).toArray()).reverse());
+    return observar(async () => ordenar(await this.db.propostas.where('tecnicoId').equals(usuarioId).toArray()));
   }
 
   observarNaoSincronizados(): Observable<Set<string>> {
@@ -308,6 +311,7 @@ export class PropostasRepo {
       itens: [],
       historico: [],
       documentos: [],
+      atualizadoEm: null,
     });
     await this.gravar(p, null);
     return p.id;
@@ -450,6 +454,7 @@ export class PropostasRepo {
       itens: original.itens.map((l) => ({ ...l, id: uuidv7() })),
       historico: [],
       documentos: [],
+      atualizadoEm: null,
     });
     await this.gravar(p, null);
     return p.id;
@@ -492,7 +497,7 @@ export class PropostasRepo {
       id: uuidv7(),
       propostaId: p.id,
       revisao,
-      codigoExibido: codigoBase(p) + (revisao > 1 ? `-R${revisao}` : ''),
+      codigoExibido: codigoExibido({ ...p, revisao }),
       sha256,
       geradoEm: new Date().toISOString(),
       geradoPor: u.id,
@@ -501,7 +506,7 @@ export class PropostasRepo {
       arquivoId: null,
       snapshot,
     };
-    const enviada: PropostaLocal = { ...p, status: 'ENVIADA' };
+    const enviada: PropostaLocal = { ...p, status: 'ENVIADA', atualizadoEm: new Date().toISOString() };
     await this.db.transaction('rw', [this.db.propostas, this.db.documentos, this.db.outbox], async () => {
       // o PDF foi gerado fora da transação: se a proposta mudou nesse meio-tempo, ele não a representa mais
       const agora = await this.db.propostas.get(id);
@@ -653,7 +658,7 @@ export class PropostasRepo {
         totalDescontosCentavos: p.totalDescontosCentavos ?? 0,
         totalCentavos: p.totalCentavos ?? 0,
         responsavelNome: responsavel?.nome ?? (souEu ? u.nome : null),
-        responsavelEmail: souEu ? u.email : null,
+        responsavelEmail: responsavel?.email ?? (souEu ? u.email : null),
       },
       itens: p.itens.map(itemDoPdf),
       blocos: template.blocos,
@@ -667,6 +672,8 @@ export class PropostasRepo {
    * mutação `proposta` rejeitada (como nos outros repos); a rejeição de upload continua.
    */
   private async gravar(p: PropostaLocal, baseVersion: number | null, separada = false, limparRejeicao = false): Promise<void> {
+    // P4b-R19: atualizadoEm otimista (o kanban reordena na hora); o servidor sobrescreve no retorno
+    p = { ...p, atualizadoEm: new Date().toISOString() };
     await this.db.transaction('rw', [this.db.propostas, this.db.outbox, this.db.pendencias], async () => {
       await this.db.propostas.put(p);
       if (limparRejeicao) {

@@ -112,10 +112,10 @@ describe('PropostasRepo', () => {
       paraItemLocal('i-sem-preco', 1, item('S-1', { natureza: 'SERVICO', precoVenda: null, precoCusto: null, descricao: null })),
     ]);
     await db.usuarios.bulkPut([
-      { id: COMERCIAL.id, nome: COMERCIAL.nome, perfil: 'COMERCIAL' },
-      { id: OUTRO_COMERCIAL.id, nome: OUTRO_COMERCIAL.nome, perfil: 'COMERCIAL' },
-      { id: ADMIN.id, nome: ADMIN.nome, perfil: 'ADMIN' },
-      { id: TECNICO.id, nome: TECNICO.nome, perfil: 'TECNICO' },
+      { id: COMERCIAL.id, nome: COMERCIAL.nome, email: COMERCIAL.email, perfil: 'COMERCIAL' },
+      { id: OUTRO_COMERCIAL.id, nome: OUTRO_COMERCIAL.nome, email: OUTRO_COMERCIAL.email, perfil: 'COMERCIAL' },
+      { id: ADMIN.id, nome: ADMIN.nome, email: ADMIN.email, perfil: 'ADMIN' },
+      { id: TECNICO.id, nome: TECNICO.nome, email: TECNICO.email, perfil: 'TECNICO' },
     ]);
   });
 
@@ -145,7 +145,7 @@ describe('PropostasRepo', () => {
       clienteId: 'c1', templateId: 't-venda', responsavelId: COMERCIAL.id, tecnicoId: null, dataEmissao: '2026-09-20',
       validadeAte: '2026-09-30', condicoesPagamento: 'À vista', prazoExecucao: '10 dias', observacoes: null,
       descontoGeralCentesimos: 0, totalItensCentavos: 20000, totalDescontosCentavos: 0, totalCentavos: 20000,
-      motivoEncerramento: null, itens: [linha], historico: [], documentos: [], ...p,
+      motivoEncerramento: null, itens: [linha], historico: [], documentos: [], atualizadoEm: '2026-09-20T10:00:00Z', ...p,
     };
     await db.propostas.put(proposta);
     return proposta;
@@ -548,6 +548,14 @@ describe('PropostasRepo', () => {
       expect(g.mock.calls[1][0].proposta).toMatchObject({ codigoExibido: '000277', referenciaProvisoria: 'PROV-ABCDEF' });
     });
 
+    it('P4b-R20: o e-mail do responsável vem da lista de usuários quando ele não é o usuário atual', async () => {
+      usuario.set(ADMIN);
+      await existente('RASCUNHO');
+      const g = gerar();
+      await repo.enviar('p1', g);
+      expect(g.mock.calls[0][0].proposta).toMatchObject({ responsavelNome: COMERCIAL.nome, responsavelEmail: COMERCIAL.email });
+    });
+
     it('PROV na revisão 2: o documento leva o sufixo; sem empresa nem logo, o PDF sai mesmo assim', async () => {
       await db.empresa.clear();
       pdf.logoDataUrl.mockResolvedValue(null);
@@ -594,15 +602,37 @@ describe('PropostasRepo', () => {
   });
 
   describe('consultas', () => {
-    it('observarTodas, observarDoCliente e observarDoTecnico', async () => {
-      await db.propostas.bulkPut([
-        { ...(await existente('RASCUNHO')), id: 'a', clienteId: 'c1', tecnicoId: TECNICO.id },
-        { ...(await existente('ENVIADA')), id: 'b', clienteId: 'c2', tecnicoId: null },
-      ]);
+    it('observarTodas, observarDoCliente e observarDoTecnico, por atualizadoEm desc (sem data por último)', async () => {
+      const base = await existente('RASCUNHO');
       await db.propostas.delete('p1');
-      expect((await firstValueFrom(repo.observarTodas())).map((p) => p.id).sort()).toEqual(['a', 'b']);
-      expect((await firstValueFrom(repo.observarDoCliente('c1'))).map((p) => p.id)).toEqual(['a']);
-      expect((await firstValueFrom(repo.observarDoTecnico(TECNICO.id))).map((p) => p.id)).toEqual(['a']);
+      await db.propostas.bulkPut([
+        { ...base, id: 'a', clienteId: 'c1', tecnicoId: TECNICO.id, atualizadoEm: '2026-09-01T10:00:00.000001Z' },
+        { ...base, id: 'b', clienteId: 'c2', tecnicoId: null, atualizadoEm: '2026-09-30T08:00:00Z' },
+        { ...base, id: 'c', clienteId: 'c1', tecnicoId: TECNICO.id, atualizadoEm: null },
+        { ...base, id: 'd', clienteId: 'c1', tecnicoId: TECNICO.id, atualizadoEm: '2026-09-02T00:00:00Z' },
+      ]);
+      expect((await firstValueFrom(repo.observarTodas())).map((p) => p.id)).toEqual(['b', 'd', 'a', 'c']);
+      expect((await firstValueFrom(repo.observarDoCliente('c1'))).map((p) => p.id)).toEqual(['d', 'a', 'c']);
+      expect((await firstValueFrom(repo.observarDoTecnico(TECNICO.id))).map((p) => p.id)).toEqual(['d', 'a', 'c']);
+    });
+
+    it('P4b-R19: toda escrita local marca atualizadoEm = agora (o servidor sobrescreve no retorno)', async () => {
+      const agora = AGORA.toISOString();
+      const id = await repo.criar('VENDA', 'c1');
+      expect((await db.propostas.get(id))!.atualizadoEm).toBe(agora);
+      for (const passo of [
+        () => repo.salvarRascunho('p1', { observacoes: 'x' }),
+        () => repo.adicionarItem('p1', { ...paraItemLocal('i-venda', 1, item('P-1')) }),
+        () => repo.transicionar('p1', 'CANCELADA', 'Desistiu'),
+        () => repo.atribuir('p1', { tecnicoId: TECNICO.id }),
+        () => repo.enviar('p1', async () => new Blob([ABC])),
+      ]) {
+        await existente('RASCUNHO');
+        await passo();
+        expect((await db.propostas.get('p1'))!.atualizadoEm).toBe(agora);
+      }
+      const dup = await repo.duplicar('p1');
+      expect((await db.propostas.get(dup))!.atualizadoEm).toBe(agora);
     });
 
     it('buscar, temPendencia e observarNaoSincronizados', async () => {

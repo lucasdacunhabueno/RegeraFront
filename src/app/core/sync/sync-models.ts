@@ -72,6 +72,8 @@ export interface Mudanca {
 export interface UsuarioResumo {
   id: string;
   nome: string;
+  /** P4b-R20: para `responsavel.email` no PDF. Ausente em linhas gravadas antes do servidor mandá-lo. */
+  email?: string | null;
   perfil: Perfil;
 }
 

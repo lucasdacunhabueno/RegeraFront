@@ -5,6 +5,7 @@
 import casosTexto from './casos-transicoes.json' with { loader: 'text' };
 import type { Perfil } from '../../core/auth/auth-models';
 import {
+  codigoBase,
   codigoExibido,
   ContextoTransicao,
   dadosDaProposta,
@@ -79,6 +80,7 @@ function dadosAdmin(): PropostaDados {
     ],
     historico: [{ statusDe: null, statusPara: 'RASCUNHO', usuarioId: 'u1', em: '2026-10-01T10:00:00Z', observacao: null }],
     documentos: [{ id: 'd1', revisao: 1, codigoExibido: '000277', arquivoId: 'a1', sha256: 'ab'.repeat(32), geradoEm: '2026-10-01T11:00:00Z', geradoPor: 'u1' }],
+    atualizadoEm: '2026-10-01T12:34:56.123456Z',
   };
 }
 
@@ -199,6 +201,13 @@ describe('proposta-models', () => {
     expect(codigoExibido({ numero: null, revisao: null, codigoProvisorio: 'PROV-0Z9XY7' })).toBe('PROV-0Z9XY7');
   });
 
+  it('P4b-R18: o PROV também leva -R<n> na revisão > 1 (como codigosExibidos do servidor); a base não leva', () => {
+    expect(codigoExibido({ numero: null, revisao: 2, codigoProvisorio: 'PROV-0Z9XY7' })).toBe('PROV-0Z9XY7-R2');
+    expect(codigoExibido({ numero: null, revisao: 1, codigoProvisorio: 'PROV-0Z9XY7' })).toBe('PROV-0Z9XY7');
+    expect(codigoBase({ numero: 277, codigoProvisorio: 'PROV-0Z9XY7' })).toBe('000277');
+    expect(codigoBase({ numero: null, codigoProvisorio: 'PROV-0Z9XY7' })).toBe('PROV-0Z9XY7');
+  });
+
   describe('dados ↔ PropostaLocal', () => {
     it('ADMIN: valores em centavos, milésimos e centésimos inteiros, e volta igual', () => {
       const d = dadosAdmin();
@@ -217,6 +226,7 @@ describe('proposta-models', () => {
       expect(p.itens[1].quantidadeMilesimos).toBe(999999999);
       expect(p.historico).toEqual(d.historico);
       expect(p.documentos).toEqual(d.documentos);
+      expect(p.atualizadoEm).toBe('2026-10-01T12:34:56.123456Z');
       expect(dadosDaProposta(p)).toEqual(d);
       // na rede, os decimais saem exatos (sem resíduo de float)
       expect(JSON.stringify(dadosDaProposta(p).itens[0])).toContain('"quantidade":1.333,"precoUnitario":999999999999.99,"descontoPercentual":33.33');
@@ -260,7 +270,7 @@ describe('proposta-models', () => {
       expect(p).toMatchObject({
         numero: null, revisao: null, clienteId: null, templateId: null, tecnicoId: null, validadeAte: null,
         condicoesPagamento: null, prazoExecucao: null, observacoes: null, totalItensCentavos: null, motivoEncerramento: null,
-        historico: [], documentos: [], descontoGeralCentesimos: 0,
+        historico: [], documentos: [], descontoGeralCentesimos: 0, atualizadoEm: null,
       });
       expect(p.itens[0]).toMatchObject({ codigo: null, nome: null, meses: null, subtotalCentavos: null, ordem: null, quantidadeMilesimos: 2000 });
       const volta = dadosDaProposta(p);

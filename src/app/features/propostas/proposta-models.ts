@@ -38,6 +38,8 @@ export interface PropostaDados {
   itens: ItemPropostaDados[];
   historico?: HistoricoDados[];
   documentos?: DocumentoDados[];
+  /** [srv] Última escrita no servidor (ISO-8601, P4b-R19): ordena o kanban. */
+  atualizadoEm?: string | null;
 }
 
 export interface ItemPropostaDados {
@@ -122,6 +124,8 @@ export interface PropostaLocal {
   itens: ItemPropostaLocal[];
   historico: HistoricoDados[];
   documentos: DocumentoDados[];
+  /** ISO-8601. Uma escrita local marca o agora (otimista); o servidor sobrescreve no retorno. */
+  atualizadoEm: string | null;
 }
 
 /** PDF de um envio, guardado no aparelho (tabela `documentos`). `enviado` = o upload já foi aceito. */
@@ -202,6 +206,7 @@ export function paraPropostaLocal(id: string, version: number | null, d: Propost
     })),
     historico: (d.historico ?? []).map((h) => ({ ...h, statusDe: h.statusDe ?? null, observacao: h.observacao ?? null })),
     documentos: [...(d.documentos ?? [])],
+    atualizadoEm: d.atualizadoEm ?? null,
   };
 }
 
@@ -245,6 +250,7 @@ export function dadosDaProposta(p: PropostaLocal): PropostaDados {
     })),
     historico: p.historico.map((h) => ({ ...h })),
     documentos: p.documentos.map((d) => ({ ...d })),
+    atualizadoEm: p.atualizadoEm,
   };
 }
 
@@ -266,9 +272,18 @@ export function numeroExibido(numero: number, revisao: number | null): string {
   return revisao !== null && revisao > 1 ? `${base}-R${revisao}` : base;
 }
 
-/** O número, se já existe; senão, o código provisório. */
+/** O número com 6 dígitos, se já existe; senão, o código provisório. Sem a revisão (o motor de PDF a acrescenta). */
+export function codigoBase(p: Pick<PropostaLocal, 'numero' | 'codigoProvisorio'>): string {
+  return p.numero === null ? p.codigoProvisorio : String(p.numero).padStart(6, '0');
+}
+
+/**
+ * A base (número ou PROV) com `-R<n>` quando a revisão passa de 1, para o PROV também (P4b-R18): é o que o
+ * `DocumentoPropostaService.codigosExibidos` do servidor aceita como código do documento.
+ */
 export function codigoExibido(p: Pick<PropostaLocal, 'numero' | 'revisao' | 'codigoProvisorio'>): string {
-  return p.numero === null ? p.codigoProvisorio : numeroExibido(p.numero, p.revisao);
+  const base = codigoBase(p);
+  return p.revisao !== null && p.revisao > 1 ? `${base}-R${p.revisao}` : base;
 }
 
 // --- ciclo de vida (§8) e permissões (§10): espelho de TransicoesProposta (casos-transicoes.json) ---

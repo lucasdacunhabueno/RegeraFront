@@ -90,7 +90,7 @@ describe('SyncService', () => {
     push.flush({ resultados: [{ mutationId: mut.mutationId, status: 'OK', version: 0, dados: dados('A servidor') }] });
 
     const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'));
-    pull.flush({ cursor: 42, temMais: false, mudancas: [], usuarios: [{ id: 'u1', nome: 'Ana', perfil: 'ADMIN' }] });
+    pull.flush({ cursor: 42, temMais: false, mudancas: [], usuarios: [{ id: 'u1', nome: 'Ana', email: 'ana@regera.com', perfil: 'ADMIN' }] });
     await p;
 
     expect(await db.outbox.count()).toBe(0);
@@ -99,6 +99,8 @@ describe('SyncService', () => {
     expect(local?.nome).toBe('A servidor');
     expect(await db.lerMeta('cursor')).toBe(42);
     expect(await db.usuarios.count()).toBe(1);
+    // P4b-R20: o e-mail fica guardado (variável responsavel.email do PDF)
+    expect(await db.usuarios.get('u1')).toEqual({ id: 'u1', nome: 'Ana', email: 'ana@regera.com', perfil: 'ADMIN' });
     expect(sync.ultimoSync()).not.toBeNull();
   });
 
