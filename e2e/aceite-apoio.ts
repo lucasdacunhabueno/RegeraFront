@@ -245,32 +245,47 @@ export class Api {
   }
 
   /**
-   * §19.1: a empresa com logo. Sem empresa cadastrada, cadastra uma de teste com a logo; com empresa e sem logo, só
-   * acrescenta a logo; com logo, deixa como está (não sobrescreve dados que não são do teste). Devolve o id da logo.
+   * §19.1: a empresa do PDF. M8: uma empresa que já existe nunca é alterada (os dados não são do teste) — vale como
+   * está, com ou sem logo. Só sem empresa nenhuma o teste cadastra uma dele, com a logo. Devolve o id da logo, ou null
+   * se a empresa existente não tem.
    */
-  async garantirEmpresaComLogo(): Promise<string> {
+  async garantirEmpresa(): Promise<string | null> {
     const atual = await this.http.get('/api/empresa', { headers: this.auth });
     expect([200, 404]).toContain(atual.status());
-    const existente = atual.status() === 200 ? ((await atual.json()) as { version: number; dados: Record<string, unknown> }) : null;
-    const logoAtual = existente?.dados['logoArquivoId'];
-    if (typeof logoAtual === 'string') return logoAtual;
+    if (atual.status() === 200) {
+      const { dados } = (await atual.json()) as { dados: Record<string, unknown> };
+      const logo = dados['logoArquivoId'];
+      return typeof logo === 'string' ? logo : null;
+    }
     const upload = await this.http.post('/api/arquivos', {
       headers: this.auth,
       multipart: { arquivo: { name: 'logo-aceite.png', mimeType: 'image/png', buffer: Buffer.from(PNG_LOGO, 'base64') } },
     });
     expect(upload.status(), 'upload da logo').toBe(201);
     const { id: logoArquivoId } = (await upload.json()) as { id: string };
-    const dados = existente?.dados ?? {
-      razaoSocial: 'Empresa Aceite E2E Ltda', nomeFantasia: 'Aceite E2E', cnpj: null, endereco: 'Rua do Teste, 100',
-      telefone: '1130000000', email: 'contato@aceite-e2e.local', site: null, corPrimaria: '#1D4ED8',
-      validadePadraoDias: 15, condicoesPagamentoPadrao: 'À vista',
-    };
     const salvar = await this.http.put('/api/empresa', {
       headers: this.auth,
-      data: { version: existente?.version ?? null, dados: { ...dados, logoArquivoId } },
+      data: {
+        version: null,
+        dados: {
+          razaoSocial: 'Empresa Aceite E2E Ltda', nomeFantasia: 'Aceite E2E', cnpj: null, endereco: 'Rua do Teste, 100',
+          telefone: '1130000000', email: 'contato@aceite-e2e.local', site: null, corPrimaria: '#1D4ED8',
+          validadePadraoDias: 15, condicoesPagamentoPadrao: 'À vista', logoArquivoId,
+        },
+      },
     });
     expect(salvar.ok(), 'salvar empresa').toBeTruthy();
     return logoArquivoId;
+  }
+
+  /** Cliente PF criado direto no servidor (o carimbo do teste no nome). Devolve o id. */
+  async criarClientePf(nome: string, cpf: string): Promise<string> {
+    const id = randomUUID();
+    await this.pushOk('cliente', id, null, {
+      tipo: 'PF', documento: cpf, nome, nomeFantasia: null, inscricaoEstadual: null, inscricaoMunicipal: null, email: null,
+      telefone: null, whatsapp: null, contatoNome: null, observacoes: null, enderecos: [],
+    });
+    return id;
   }
 }
 
@@ -282,6 +297,13 @@ const PNG_LOGO =
 
 export function novoContexto(browser: Browser): Promise<BrowserContext> {
   return browser.newContext({ ...devices['Pixel 7'], baseURL: BASE_URL, ignoreHTTPSErrors: true });
+}
+
+/** M7: desktop de 1280 px com mouse (ponteiro fino, sem toque): o kanban em colunas com arrastar e o PDF em iframe. */
+export function novoContextoDesktop(browser: Browser): Promise<BrowserContext> {
+  return browser.newContext({
+    ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 }, baseURL: BASE_URL, ignoreHTTPSErrors: true,
+  });
 }
 
 /** Login pela tela; o admin e o comercial caem no kanban, o técnico nas propostas dele. */
@@ -323,15 +345,30 @@ export interface ArquivoCompartilhado {
 /**
  * Substitui o Web Share do contexto (antes do primeiro `goto`): `canShare` responde `podeCompartilhar` e `share`
  * lê o `File` recebido na página (nome, tipo, tamanho e os 5 primeiros bytes) e o repassa ao teste. Com
- * `podeCompartilhar = false`, o app cai no download (`<a download>`).
+ * `podeCompartilhar = false`, o app cai no download (`<a download>`). `recusarSemGesto`: as primeiras N chamadas do
+ * contexto recusam com `NotAllowedError`, como o navegador sem gesto do usuário (P4c-R8), e não registram nada.
  */
-export async function interceptarCompartilhamento(context: BrowserContext, podeCompartilhar = true): Promise<ArquivoCompartilhado[]> {
+export async function interceptarCompartilhamento(
+  context: BrowserContext,
+  podeCompartilhar = true,
+  recusarSemGesto = 0,
+): Promise<ArquivoCompartilhado[]> {
   const compartilhados: ArquivoCompartilhado[] = [];
+  let recusas = recusarSemGesto;
   await context.exposeBinding('__registrarCompartilhado', (_origem, arquivo: ArquivoCompartilhado) => {
     compartilhados.push(arquivo);
   });
+  // a contagem fica no teste (o contexto inteiro, não cada página): a página só pergunta se deve recusar
+  await context.exposeBinding('__recusarSemGesto', () => {
+    if (recusas <= 0) return false;
+    recusas--;
+    return true;
+  });
   await context.addInitScript((pode: boolean) => {
-    const w = window as unknown as { __registrarCompartilhado: (a: unknown) => Promise<void> };
+    const w = window as unknown as {
+      __registrarCompartilhado: (a: unknown) => Promise<void>;
+      __recusarSemGesto: () => Promise<boolean>;
+    };
     Object.defineProperty(navigator, 'canShare', {
       configurable: true,
       value: (dados?: ShareData) => pode && !!dados?.files?.length,
@@ -339,6 +376,7 @@ export async function interceptarCompartilhamento(context: BrowserContext, podeC
     Object.defineProperty(navigator, 'share', {
       configurable: true,
       value: async (dados: ShareData) => {
+        if (await w.__recusarSemGesto()) throw new DOMException('Must be handling a user gesture to perform a share request.', 'NotAllowedError');
         const arquivo = dados.files![0];
         const bytes = new Uint8Array(await arquivo.arrayBuffer());
         await w.__registrarCompartilhado({

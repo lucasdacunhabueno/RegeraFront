@@ -124,6 +124,9 @@ test('conflito: dois aparelhos editam o mesmo rascunho offline; o segundo resolv
     // o segundo volta: CONFLITO no detalhe e em Pendências; "Manter a minha" reenvia sobre a versão do servidor
     await ctx2.setOffline(false);
     await expect(page2.getByTestId('pendencia')).toContainText('Conflito', { timeout: 30_000 });
+    // P4c-R15: com o conflito, nada de enviar (nem pelo Editar → wizard) até resolver
+    for (const rotulo of ['Enviar', 'Editar']) await expect(page2.getByRole('button', { name: rotulo, exact: true })).toBeDisabled();
+    await expect(page2.getByText('Resolva a pendência primeiro.', { exact: true })).toBeVisible();
     await irParaPendencias(page2);
     const pendencia = page2.getByRole('listitem').filter({ hasText: `Proposta ${numero}` });
     await expect(pendencia).toContainText('Alterado por outra pessoa enquanto você editava.');
@@ -206,6 +209,9 @@ test('rejeição com envio offline: o item é inativado; "Corrigir e reenviar" t
     // correção: troca o item X pelo Y e reenvia
     await expect(page).toHaveURL(new RegExp(`/propostas/${propostaId}/corrigir$`));
     await expect(page.getByRole('heading', { name: 'Corrigir proposta' })).toBeVisible();
+    // P4c-R16: o PDF já saiu com o item X; a tela avisa que a correção não muda esse PDF
+    const avisoPdf = 'O PDF já enviado ao cliente mostra os dados anteriores. Para mandar o PDF corrigido, use Nova revisão depois de sincronizar.';
+    await expect(page.getByTestId('nota-pdf-anterior')).toHaveText(avisoPdf);
     await expect(page.getByRole('heading', { name: 'Itens', level: 2 })).toBeVisible();
     await page.getByRole('button', { name: `Remover ${itemX.dados.nome}` }).click();
     await page.locator('#busca-catalogo').fill(itemY.dados.codigo);
@@ -213,6 +219,7 @@ test('rejeição com envio offline: o item é inativado; "Corrigir e reenviar" t
     await expect(page.getByTestId('subtotal')).toHaveText(/120,00/);
     await page.getByTestId('salvar-rascunho').click();
     await expect(page).toHaveURL(new RegExp(`/propostas/${propostaId}$`));
+    await expect(page.getByRole('status').filter({ hasText: avisoPdf })).toBeVisible();
 
     // servidor: ENVIADA, com número, o item Y e o PDF; no aparelho, sem pendência e com o número
     await expect
