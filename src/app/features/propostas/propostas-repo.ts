@@ -211,12 +211,13 @@ function corrigirDadosDaProposta(id: string, dados: PropostaDados, edicao: Parti
 
 /**
  * P4b-R28: só a recusa de dados (VALIDACAO, com os campos) de uma mutação de rascunho tem conserto editando campos.
- * Outras (TRANSICAO_INVALIDA, ACESSO_NEGADO, PROPOSTA_NAO_EDITAVEL...) ou a de uma transição voltariam recusadas.
+ * Outras (TRANSICAO_INVALIDA, ACESSO_NEGADO, PROPOSTA_NAO_EDITAVEL...) ou a de uma transição voltariam recusadas —
+ * inclusive a "Nova revisão" (`separada`, status RASCUNHO): campos editados nela o servidor vê saindo de ENVIADA.
  */
 export function pendenciaCorrigivel(p: Pendencia): boolean {
   const dados = p.mutacao.dados as PropostaDados | null;
   return p.entidade === 'proposta' && p.tipo === 'REJEITADO' && p.erro?.codigo === 'VALIDACAO'
-    && p.mutacao.op === 'UPSERT' && dados?.status === 'RASCUNHO';
+    && p.mutacao.op === 'UPSERT' && dados?.status === 'RASCUNHO' && !p.mutacao.separada;
 }
 
 /** P4b-R29: ids das linhas da mutação recusada citadas nos campos da recusa (`itens[i].…`). */
@@ -997,11 +998,13 @@ export class PropostasRepo {
     // P4b-R19: atualizadoEm otimista
     p = { ...p, atualizadoEm: new Date().toISOString() };
     await this.db.transaction('rw', this.tabelasDaCorrecao(), async () => {
-      const recusas = this.db.pendencias
+      // toArray, não first(): o first() limita a Collection no lugar, e um delete() nela depois apagaria só uma
+      const recusas = await this.db.pendencias
         .where('agregadoId')
         .equals(p.id)
-        .filter((x) => x.tipo === 'REJEITADO' && x.entidade === 'proposta');
-      const recusa = await recusas.first();
+        .filter((x) => x.tipo === 'REJEITADO' && x.entidade === 'proposta')
+        .toArray();
+      const recusa = recusas[0];
       if (recusa && (await this.db.outbox.where('agregadoId').equals(p.id).count()) > 0) {
         if (!pendenciaCorrigivel(recusa)) {
           throw new ErroProposta('RESOLVA_A_PENDENCIA', 'proposta', 'Resolva a pendência desta proposta antes de editá-la.');
@@ -1009,7 +1012,7 @@ export class PropostasRepo {
         await this.corrigirNaFila(recusa, edicao);
         return;
       }
-      if (recusa) await recusas.delete();
+      await this.db.pendencias.bulkDelete(recusas.map((x) => x.mutationId));
       await this.db.propostas.put(p);
       await this.sync.registrar('proposta', p.id, 'UPSERT', dadosDaProposta(p), baseVersion);
     });

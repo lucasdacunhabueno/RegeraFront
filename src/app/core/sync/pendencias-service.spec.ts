@@ -610,6 +610,8 @@ describe('PendenciasService', () => {
         { ...p, erro: { codigo: 'ACESSO_NEGADO', mensagem: 'x' } },
         { ...p, mutacao: { ...p.mutacao, dados: proposta('APROVADA') } },
         { ...p, mutacao: { ...p.mutacao, dados: proposta('ENVIADA') } },
+        // "Nova revisão" (ENVIADA → RASCUNHO, separada): campos editados nela o servidor recusa (fora do rascunho)
+        { ...p, mutacao: { ...p.mutacao, separada: true } },
       ];
       for (const r of recusas) {
         await db.pendencias.put(r);

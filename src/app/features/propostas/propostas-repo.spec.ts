@@ -273,9 +273,11 @@ describe('PropostasRepo', () => {
       expect(sincronizar).toHaveBeenCalled();
     });
 
-    it('sem versão carregada, a base é a versão local; apaga a rejeição anterior da proposta', async () => {
+    it('sem versão carregada, a base é a versão local; apaga as rejeições anteriores da proposta', async () => {
       await existente('RASCUNHO');
-      await db.pendencias.bulkPut([pendencia('proposta', 'p1'), pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1')]);
+      await db.pendencias.bulkPut([
+        pendencia('proposta', 'p1'), pendencia('proposta', 'p1', 'm-proposta-2'), pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1'),
+      ]);
       await repo.salvarRascunho('p1', { clienteId: null });
       expect((await fila())[0].baseVersion).toBe(4);
       expect((await db.pendencias.toArray()).map((x) => x.entidade)).toEqual([TIPO_UPLOAD_DOCUMENTO]);
@@ -395,6 +397,17 @@ describe('PropostasRepo', () => {
         m = await fila();
         expect(m).toHaveLength(4);
         expect(m[3]).toMatchObject({ op: 'UPSERT', baseVersion: null, dados: { observacoes: 'depois' } });
+      });
+
+      it('adicionarItem com a linha recusada ainda lá é recusado no campo dela, e nada muda', async () => {
+        await recusada({ codigo: 'VALIDACAO', mensagem: 'Dados inválidos.' });
+        // o item da linha 0 foi inativado (o motivo da recusa); incluir outro item não conserta a criação
+        await db.itens.put(paraItemLocal('i-venda', 2, item('P-1', { ativo: false })));
+        const antes = { fila: await fila(), pendencias: await db.pendencias.toArray(), p: await db.propostas.get('p1') };
+        const e = await erroDe(repo.adicionarItem('p1', (await db.itens.get('i-sem-preco'))!));
+        expect(e.codigo).toBe('VALIDACAO');
+        expect(e.campo).toBe('itens[0].itemCatalogoId');
+        expect({ fila: await fila(), pendencias: await db.pendencias.toArray(), p: await db.propostas.get('p1') }).toEqual(antes);
       });
 
       it('com a recusa que uma edição não conserta, recusa a edição em vez de perder a criação', async () => {
