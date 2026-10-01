@@ -36,7 +36,7 @@ const ERRO_PROCESSAR = 'Não foi possível processar a imagem.';
  * As saídas vêm na mesma ordem pedida; a ordem decrescente de `max` é a que economiza memória.
  */
 export async function gerarImagens(arquivo: Blob, saidas: readonly SaidaImagem[]): Promise<ImagemGerada[]> {
-  const original = await createImageBitmap(arquivo, { imageOrientation: 'from-image' });
+  const original = await decodificar(arquivo);
   // as dimensões do original, guardadas: um ImageBitmap fechado passa a ter 0 × 0
   const { width, height } = original;
   const abertos = new Set<ImageBitmap>([original]);
@@ -65,6 +65,19 @@ export async function gerarImagens(arquivo: Blob, saidas: readonly SaidaImagem[]
   }
 }
 
+/**
+ * Decodifica com a orientação EXIF. Navegador que não aceita o objeto de opções (TypeError) decodifica sem ele: a
+ * orientação `from-image` é o padrão da especificação. Outros erros (imagem ilegível) seguem para quem chamou.
+ */
+async function decodificar(arquivo: Blob): Promise<ImageBitmap> {
+  try {
+    return await createImageBitmap(arquivo, { imageOrientation: 'from-image' });
+  } catch (e) {
+    if (!(e instanceof TypeError)) throw e;
+    return createImageBitmap(arquivo);
+  }
+}
+
 /** A fonte reduzida a largura × altura pelo decodificador; a própria fonte se já tem o tamanho ou sem suporte a `resizeWidth`. */
 async function reduzir(fonte: ImageBitmap, largura: number, altura: number): Promise<ImageBitmap> {
   if (fonte.width === largura && fonte.height === altura) return fonte;
@@ -79,22 +92,28 @@ async function reduzir(fonte: ImageBitmap, largura: number, altura: number): Pro
   return fonte;
 }
 
-function desenhar(fonte: ImageBitmap, largura: number, altura: number, saida: SaidaImagem): Promise<Blob> {
+async function desenhar(fonte: ImageBitmap, largura: number, altura: number, saida: SaidaImagem): Promise<Blob> {
   const canvas = document.createElement('canvas');
-  canvas.width = largura;
-  canvas.height = altura;
-  const ctx = canvas.getContext('2d');
-  if (!ctx) throw new Error(ERRO_PROCESSAR);
-  ctx.imageSmoothingQuality = 'high';
-  if (saida.tipo === 'image/jpeg') {
-    // JPEG não tem transparência: sem fundo, o transparente de um PNG vira preto
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, largura, altura);
+  try {
+    canvas.width = largura;
+    canvas.height = altura;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error(ERRO_PROCESSAR);
+    ctx.imageSmoothingQuality = 'high';
+    if (saida.tipo === 'image/jpeg') {
+      // JPEG não tem transparência: sem fundo, o transparente de um PNG vira preto
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, largura, altura);
+    }
+    ctx.drawImage(fonte, 0, 0, largura, altura);
+    return await new Promise<Blob>((resolve, reject) =>
+      canvas.toBlob((b) => (b ? resolve(b) : reject(new Error(ERRO_PROCESSAR))), saida.tipo, saida.qualidade),
+    );
+  } finally {
+    // o Safari do iOS segura a memória do canvas até o GC (e tem teto total): zerar a libera na hora
+    canvas.width = 0;
+    canvas.height = 0;
   }
-  ctx.drawImage(fonte, 0, 0, largura, altura);
-  return new Promise((resolve, reject) =>
-    canvas.toBlob((b) => (b ? resolve(b) : reject(new Error(ERRO_PROCESSAR))), saida.tipo, saida.qualidade),
-  );
 }
 
 @Injectable({ providedIn: 'root' })

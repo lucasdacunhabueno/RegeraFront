@@ -5,6 +5,8 @@ import { FOTO_MAX_BYTES, prepararFoto } from './foto-os';
 interface CanvasFalso {
   width: number;
   height: number;
+  /** [width, height] no momento do toBlob (depois o canvas é zerado). */
+  noToBlob: number[];
   toBlob: ReturnType<typeof vi.fn>;
 }
 
@@ -21,11 +23,13 @@ function canvasesFalsos(tamanhoDaFoto = 1000): CanvasFalso[] {
     if (tag !== 'canvas') return criarOriginal(tag);
     const indice = canvases.length;
     const ctx = { fillStyle: '', imageSmoothingQuality: '', fillRect: vi.fn(), drawImage: vi.fn() };
-    const canvas = {
+    const canvas: CanvasFalso & { getContext: () => unknown } = {
       width: 0,
       height: 0,
+      noToBlob: [],
       getContext: vi.fn(() => ctx),
       toBlob: vi.fn((cb: (b: Blob | null) => void, tipo: string) => {
+        canvas.noToBlob = [canvas.width, canvas.height];
         const bytes = new Uint8Array(indice === 0 ? tamanhoDaFoto : 100).fill(indice + 1);
         cb(new Blob([bytes], { type: tipo }));
       }),
@@ -88,7 +92,7 @@ describe('prepararFoto', () => {
     const r = await prepararFoto(arquivo);
 
     expect(fn.mock.calls[0]).toEqual([arquivo, { imageOrientation: 'from-image' }]);
-    expect(canvases.map((c) => [c.width, c.height])).toEqual([
+    expect(canvases.map((c) => c.noToBlob)).toEqual([
       [1600, 1200],
       [320, 240],
     ]);
@@ -103,7 +107,7 @@ describe('prepararFoto', () => {
     const canvases = canvasesFalsos();
     const r = await prepararFoto(foto());
     expect([r.largura, r.altura]).toEqual([1200, 1600]);
-    expect([canvases[1].width, canvases[1].height]).toEqual([240, 320]);
+    expect(canvases[1].noToBlob).toEqual([240, 320]);
   });
 
   it('devolve os bytes da foto, os da miniatura e o SHA-256 dos bytes da foto', async () => {
@@ -144,11 +148,15 @@ describe('prepararFoto', () => {
   });
 
   it('imagem que o aparelho não consegue abrir (corrompida, HEIC no Chrome...): erro em pt-BR', async () => {
-    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(new DOMException('The source image could not be decoded.')));
+    const causa = new DOMException('The source image could not be decoded.', 'InvalidStateError');
+    vi.stubGlobal('createImageBitmap', vi.fn().mockRejectedValue(causa));
     canvasesFalsos();
+    const aviso = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const e = await erroDe(prepararFoto(foto('image/heic')));
     expect(e.codigo).toBe('FOTO_ILEGIVEL');
     expect(e.message).toBe('Não foi possível abrir a foto. Escolha outra imagem.');
+    // a causa real fica no console, para o suporte de campo
+    expect(aviso).toHaveBeenCalledWith(causa);
   });
 
   it(`resultado acima de 3 MB: "A foto ficou grande demais." (exatamente 3 MB passa)`, async () => {

@@ -115,6 +115,24 @@ export function dimensoesDaSaida(caixa: Caixa): { largura: number; altura: numbe
   };
 }
 
+const px = (valor: string): number => parseFloat(valor) || 0;
+
+/** A caixa de conteúdo do canvas em px CSS: o clientWidth/Height (já sem borda) menos o padding. */
+function medirConteudo(canvas: HTMLCanvasElement): { largura: number; altura: number } {
+  const estilo = getComputedStyle(canvas);
+  return {
+    largura: canvas.clientWidth - px(estilo.paddingLeft) - px(estilo.paddingRight),
+    altura: canvas.clientHeight - px(estilo.paddingTop) - px(estilo.paddingBottom),
+  };
+}
+
+/** O canto da caixa de conteúdo na janela: o retângulo da borda, mais a borda (clientLeft/Top) e o padding. */
+function origemDoConteudo(canvas: HTMLCanvasElement): Ponto {
+  const r = canvas.getBoundingClientRect();
+  const estilo = getComputedStyle(canvas);
+  return { x: r.left + canvas.clientLeft + px(estilo.paddingLeft), y: r.top + canvas.clientTop + px(estilo.paddingTop) };
+}
+
 /** Desenha os comandos: o pingo é um círculo cheio do diâmetro do traço; o resto, um caminho com stroke. */
 function aplicar(ctx: CanvasRenderingContext2D, comandos: readonly Comando[], espessura: number): void {
   if (comandos.length === 0) return;
@@ -170,7 +188,8 @@ export class AssinaturaCanvas {
   /** O traço em andamento e o ponteiro que o desenha. */
   private atual: Ponto[] | null = null;
   private ponteiro: number | null = null;
-  private retangulo: DOMRect | null = null;
+  /** Canto da caixa de conteúdo do canvas na janela (clientX/Y), medido no início do traço. */
+  private origem: Ponto | null = null;
 
   constructor(opcoes: OpcoesAssinatura = {}) {
     this.espessura = opcoes.espessura ?? ESPESSURA_PADRAO;
@@ -183,6 +202,12 @@ export class AssinaturaCanvas {
     return this.pontos;
   }
 
+  /**
+   * Passa a desenhar neste canvas (solta o anterior). **O canvas precisa de largura e altura no CSS** (ex.: `block`,
+   * largura cheia e uma altura fixa ou a do contêiner): sem elas o tamanho do elemento segue o `width`/`height` do bitmap, que aqui é o
+   * tamanho CSS × `devicePixelRatio`, e o canvas apareceria ampliado (o laço com o ResizeObserver é cortado em
+   * `ajustarTamanho`, mas o tamanho visível fica errado). Padding e borda podem existir: o bitmap cobre só o conteúdo.
+   */
   ligar(canvas: HTMLCanvasElement): void {
     if (this.canvas) this.desligar();
     this.canvas = canvas;
@@ -213,19 +238,31 @@ export class AssinaturaCanvas {
     this.ctx = null;
   }
 
-  /** Refaz o canvas no tamanho atual do elemento, na densidade da tela, e redesenha os traços. */
+  /**
+   * Refaz o canvas no tamanho atual da caixa de conteúdo do elemento (sem padding e borda; o getBoundingClientRect
+   * incluiria os dois), na densidade da tela, e redesenha os traços. Sem mudança de tamanho, não faz nada.
+   */
   ajustarTamanho(): void {
     const canvas = this.canvas;
     if (!canvas) return;
-    const rect = canvas.getBoundingClientRect();
+    const { largura, altura } = medirConteudo(canvas);
     // escondido (display: none, a tela fechando): zerar o canvas apagaria o desenho e o recorte do paraPng
-    if (rect.width === 0 || rect.height === 0) return;
+    if (largura <= 0 || altura <= 0) return;
     const densidade = globalThis.devicePixelRatio || 1;
-    this.largura = rect.width;
-    this.altura = rect.height;
-    canvas.width = Math.round(rect.width * densidade);
-    canvas.height = Math.round(rect.height * densidade);
-    if (this.atual) this.retangulo = rect;
+    const larguraBitmap = Math.round(largura * densidade);
+    const alturaBitmap = Math.round(altura * densidade);
+    if (this.ctx) {
+      // o ResizeObserver avisa ao observar e a cada mudança: no mesmo tamanho, nada a refazer
+      if (canvas.width === larguraBitmap && canvas.height === alturaBitmap) return;
+      // canvas sem tamanho no CSS: o elemento passou a ter o tamanho do bitmap que acabamos de pôr, e refazê-lo o
+      // multiplicaria pela densidade a cada aviso, sem fim. Tamanho CSS igual ao intrínseco, com densidade > 1, é isso
+      if (densidade !== 1 && largura === canvas.width && altura === canvas.height) return;
+    }
+    this.largura = largura;
+    this.altura = altura;
+    canvas.width = larguraBitmap;
+    canvas.height = alturaBitmap;
+    if (this.atual) this.origem = origemDoConteudo(canvas);
     // mudar o tamanho do canvas zera o contexto (transformação e estilo) e apaga o desenho
     this.ctx = canvas.getContext('2d');
     if (!this.ctx) return;
@@ -253,24 +290,36 @@ export class AssinaturaCanvas {
     if (this.vazio()) return null;
     const caixa = caixaDosTracos(this.pontos, MARGEM + this.espessura / 2, { largura: this.largura, altura: this.altura });
     if (!caixa) return null;
-    const { largura, altura, escala } = dimensoesDaSaida(caixa);
-    const canvas = document.createElement('canvas');
-    canvas.width = largura;
-    canvas.height = altura;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new ErroOs('ASSINATURA_FALHOU', 'assinatura', 'Não foi possível gerar a assinatura.');
-    ctx.fillStyle = '#fff';
-    ctx.fillRect(0, 0, largura, altura);
-    ctx.setTransform(escala, 0, 0, escala, -caixa.x * escala, -caixa.y * escala);
-    this.estilizar(ctx);
-    for (const traco of this.pontos) aplicar(ctx, comandosDoTraco(traco), this.espessura);
-    const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
-    if (!blob) throw new ErroOs('ASSINATURA_FALHOU', 'assinatura', 'Não foi possível gerar a assinatura.');
+    const blob = await this.rasterizar(caixa);
     if (blob.size > ASSINATURA_MAX_BYTES) {
       throw new ErroOs('ASSINATURA_GRANDE', 'assinatura', 'A assinatura ficou grande demais.');
     }
     const bytes = await paraBytes(blob);
     return { bytes, sha256: await sha256Hex(bytes) };
+  }
+
+  /** Os traços recortados à caixa, em PNG, num canvas próprio do tamanho de saída (zerado depois, para a memória). */
+  private async rasterizar(caixa: Caixa): Promise<Blob> {
+    const { largura, altura, escala } = dimensoesDaSaida(caixa);
+    const canvas = document.createElement('canvas');
+    try {
+      canvas.width = largura;
+      canvas.height = altura;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) throw new ErroOs('ASSINATURA_FALHOU', 'assinatura', 'Não foi possível gerar a assinatura.');
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, 0, largura, altura);
+      ctx.setTransform(escala, 0, 0, escala, -caixa.x * escala, -caixa.y * escala);
+      this.estilizar(ctx);
+      for (const traco of this.pontos) aplicar(ctx, comandosDoTraco(traco), this.espessura);
+      const blob = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'));
+      if (!blob) throw new ErroOs('ASSINATURA_FALHOU', 'assinatura', 'Não foi possível gerar a assinatura.');
+      return blob;
+    } finally {
+      // o Safari do iOS segura a memória do canvas até o GC (e tem teto total): zerar a libera na hora
+      canvas.width = 0;
+      canvas.height = 0;
+    }
   }
 
   private aoPressionar(e: PointerEvent): void {
@@ -280,7 +329,7 @@ export class AssinaturaCanvas {
     if (!canvas) return;
     e.preventDefault();
     this.ponteiro = e.pointerId;
-    this.retangulo = canvas.getBoundingClientRect();
+    this.origem = origemDoConteudo(canvas);
     try {
       canvas.setPointerCapture(e.pointerId);
     } catch {
@@ -317,12 +366,12 @@ export class AssinaturaCanvas {
     if (this.atual && this.ctx) aplicar(this.ctx, trechoFinal(this.atual), this.espessura);
     this.atual = null;
     this.ponteiro = null;
-    this.retangulo = null;
+    this.origem = null;
   }
 
   private ponto(e: { clientX: number; clientY: number }): Ponto {
-    const r = this.retangulo;
-    return r ? { x: e.clientX - r.left, y: e.clientY - r.top } : { x: e.clientX, y: e.clientY };
+    const o = this.origem ?? { x: 0, y: 0 };
+    return { x: e.clientX - o.x, y: e.clientY - o.y };
   }
 
   private estilizar(ctx: CanvasRenderingContext2D): void {

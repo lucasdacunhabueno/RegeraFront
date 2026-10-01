@@ -48,7 +48,9 @@ export async function prepararFoto(arquivo: Blob): Promise<FotoPreparada> {
       { max: FOTO_LADO_MAXIMO, tipo: 'image/jpeg', qualidade: FOTO_QUALIDADE },
       { max: MINIATURA_LADO_MAXIMO, tipo: 'image/jpeg', qualidade: MINIATURA_QUALIDADE },
     ]);
-  } catch {
+  } catch (e) {
+    // a mensagem ao técnico é genérica; a causa real (formato, decodificador, memória) fica para o suporte de campo
+    console.warn(e);
     throw new ErroOs('FOTO_ILEGIVEL', 'foto', 'Não foi possível abrir a foto. Escolha outra imagem.');
   }
   const [foto, miniatura] = geradas;

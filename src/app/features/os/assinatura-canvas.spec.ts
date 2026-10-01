@@ -26,19 +26,42 @@ function ctxFalso() {
   return { ctx, ops };
 }
 
-/** Canvas da tela, falso: um EventTarget de verdade (os listeners funcionam) com tamanho CSS e posição na página. */
-function canvasDaTela(rect = { left: 10, top: 20, width: 300, height: 150 }) {
+/** Padding de cada canvas falso, para o getComputedStyle falso (o jsdom não calcula estilo de um EventTarget). */
+const paddings = new WeakMap<object, number>();
+
+function estiloFalso() {
+  vi.stubGlobal('getComputedStyle', (el: object) => {
+    const p = `${paddings.get(el) ?? 0}px`;
+    return { paddingLeft: p, paddingRight: p, paddingTop: p, paddingBottom: p } as CSSStyleDeclaration;
+  });
+}
+
+/**
+ * Canvas da tela, falso: um EventTarget de verdade (os listeners funcionam). `rect` é a caixa de conteúdo (left/top na
+ * página, largura/altura CSS); `padding` e `borda` ficam em volta dela, como no navegador: o getBoundingClientRect
+ * inclui os dois, o clientWidth só o padding, e o clientLeft é a borda.
+ */
+function canvasDaTela(rect = { left: 10, top: 20, width: 300, height: 150 }, { padding = 0, borda = 0 } = {}) {
   const { ctx, ops } = ctxFalso();
   const alvo = new EventTarget();
   const canvas = Object.assign(alvo, {
     width: 300,
     height: 150,
     style: {} as Record<string, string>,
-    getBoundingClientRect: vi.fn(() => ({ ...rect, right: rect.left + rect.width, bottom: rect.top + rect.height, x: rect.left, y: rect.top })),
+    clientLeft: borda,
+    clientTop: borda,
+    getBoundingClientRect: vi.fn(() => {
+      const width = rect.width + 2 * (padding + borda);
+      const height = rect.height + 2 * (padding + borda);
+      return { left: rect.left, top: rect.top, width, height, right: rect.left + width, bottom: rect.top + height, x: rect.left, y: rect.top };
+    }),
     getContext: vi.fn(() => ctx),
     setPointerCapture: vi.fn(),
     releasePointerCapture: vi.fn(),
   });
+  Object.defineProperty(canvas, 'clientWidth', { get: () => rect.width + 2 * padding, configurable: true });
+  Object.defineProperty(canvas, 'clientHeight', { get: () => rect.height + 2 * padding, configurable: true });
+  paddings.set(canvas, padding);
   return { canvas, el: canvas as unknown as HTMLCanvasElement, ctx, ops, rect };
 }
 
@@ -75,14 +98,18 @@ function tracar(alvo: EventTarget, pontos: Ponto[], pointerId = 1) {
   ponteiro(alvo, 'pointerup', { pointerId, clientX: ultimo.x + 10, clientY: ultimo.y + 20 });
 }
 
-/** Canvas de saída do paraPng (document.createElement('canvas')), falso. */
-function canvasDeSaida(tamanhoDoPng = 2000) {
+/** Canvas de saída do paraPng (document.createElement('canvas')), falso; `noToBlob` guarda o tamanho antes de zerar. */
+function canvasDeSaida(tamanhoDoPng: number | null = 2000, { semContexto = false } = {}) {
   const { ctx, ops } = ctxFalso();
   const saida = {
     width: 0,
     height: 0,
-    getContext: vi.fn(() => ctx),
-    toBlob: vi.fn((cb: (b: Blob | null) => void, tipo: string) => cb(new Blob([new Uint8Array(tamanhoDoPng).fill(7)], { type: tipo }))),
+    noToBlob: [] as number[],
+    getContext: vi.fn(() => (semContexto ? null : ctx)),
+    toBlob: vi.fn((cb: (b: Blob | null) => void, tipo: string) => {
+      saida.noToBlob = [saida.width, saida.height];
+      cb(tamanhoDoPng === null ? null : new Blob([new Uint8Array(tamanhoDoPng).fill(7)], { type: tipo }));
+    }),
   };
   const criarOriginal = document.createElement.bind(document);
   const criar = vi
@@ -182,6 +209,8 @@ describe('recorte (funções puras)', () => {
 });
 
 describe('AssinaturaCanvas', () => {
+  beforeEach(() => estiloFalso());
+
   afterEach(() => {
     vi.restoreAllMocks();
     vi.unstubAllGlobals();
@@ -365,6 +394,86 @@ describe('AssinaturaCanvas', () => {
     ]);
   });
 
+  it('tamanho pela caixa de conteúdo e tinta sob o dedo com padding e borda (p-2 border)', () => {
+    vi.stubGlobal('devicePixelRatio', 2);
+    const { el, canvas, ops } = canvasDaTela({ left: 10, top: 20, width: 300, height: 150 }, { padding: 8, borda: 2 });
+    const a = new AssinaturaCanvas();
+    a.ligar(el);
+    // o bitmap cobre só o conteúdo (300×150 CSS), não padding nem borda
+    expect([canvas.width, canvas.height]).toEqual([600, 300]);
+    ops.length = 0;
+    // o conteúdo começa em left 10 + borda 2 + padding 8 = 20; top 20 + 2 + 8 = 30
+    ponteiro(canvas, 'pointerdown', { clientX: 20, clientY: 30 });
+    ponteiro(canvas, 'pointermove', { clientX: 70, clientY: 80 });
+    ponteiro(canvas, 'pointerup', { clientX: 70, clientY: 80 });
+    expect(a.tracos).toEqual([
+      [
+        { x: 0, y: 0 },
+        { x: 50, y: 50 },
+      ],
+    ]);
+    expect(ops).toContainEqual(['moveTo', 0, 0]);
+  });
+
+  it('canvas sem tamanho no CSS e densidade > 1: o ResizeObserver não entra em laço (o canvas não cresce sem parar)', () => {
+    vi.stubGlobal('devicePixelRatio', 2);
+    const observadores: { cb: () => void }[] = [];
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        observe = vi.fn();
+        disconnect = vi.fn();
+        constructor(public cb: () => void) {
+          observadores.push(this);
+        }
+      },
+    );
+    const { el, canvas } = canvasDaTela();
+    // sem CSS, o tamanho do elemento é o intrínseco: segue o width/height do canvas
+    Object.defineProperty(canvas, 'clientWidth', { get: () => canvas.width });
+    Object.defineProperty(canvas, 'clientHeight', { get: () => canvas.height });
+    const a = new AssinaturaCanvas();
+    a.ligar(el);
+    expect([canvas.width, canvas.height]).toEqual([600, 300]);
+    // o elemento cresceu para 600×300 CSS e o observador avisa; depois avisaria de novo, e de novo
+    for (let i = 0; i < 5; i++) observadores[0].cb();
+    expect([canvas.width, canvas.height]).toEqual([600, 300]);
+  });
+
+  it('aviso sem mudança de tamanho não refaz o canvas', () => {
+    const { el, canvas } = canvasDaTela();
+    const a = new AssinaturaCanvas();
+    a.ligar(el);
+    canvas.getContext.mockClear();
+    a.ajustarTamanho();
+    expect(canvas.getContext).not.toHaveBeenCalled();
+  });
+
+  it('lostpointercapture (o sistema tomou o toque, sem pointerup) encerra o traço', () => {
+    const { el, canvas, ops } = canvasDaTela();
+    const a = new AssinaturaCanvas();
+    a.ligar(el);
+    ponteiro(canvas, 'pointerdown', { clientX: 20, clientY: 30 });
+    ponteiro(canvas, 'pointermove', { clientX: 40, clientY: 30 });
+    ops.length = 0;
+    ponteiro(canvas, 'lostpointercapture', { clientX: 90, clientY: 90 });
+    // o trecho final vai até o último ponto recebido, não até onde o ponteiro foi perdido
+    expect(ops.filter(([n]) => ['moveTo', 'lineTo'].includes(n))).toEqual([
+      ['moveTo', 20, 10],
+      ['lineTo', 30, 10],
+    ]);
+    ponteiro(canvas, 'pointermove', { clientX: 60, clientY: 60 });
+    expect(a.tracos).toEqual([
+      [
+        { x: 10, y: 10 },
+        { x: 30, y: 10 },
+      ],
+    ]);
+    // o próximo toque começa outro traço
+    ponteiro(canvas, 'pointerdown', { clientX: 100, clientY: 100 });
+    expect(a.tracos).toHaveLength(2);
+  });
+
   it('elemento escondido (0×0, ex.: a tela fechou antes do paraPng): mantém o tamanho e os traços', async () => {
     const { el, canvas, rect } = canvasDaTela();
     const a = new AssinaturaCanvas();
@@ -443,7 +552,9 @@ describe('AssinaturaCanvas', () => {
 
       // margem 12 + metade da espessura: caixa (87, 87) a (513, 213) → 426×126 → escala 640/426
       const escala = 640 / 426;
-      expect([saida.width, saida.height]).toEqual([640, Math.round(126 * escala)]);
+      expect(saida.noToBlob).toEqual([640, Math.round(126 * escala)]);
+      // zerado depois do toBlob: o iOS segura a memória do canvas até o GC
+      expect([saida.width, saida.height]).toEqual([0, 0]);
       const fundo = ops.findIndex(([n]) => n === 'fillRect');
       expect(ops[fundo]).toEqual(['fillRect', 0, 0, 640, Math.round(126 * escala)]);
       const transformacao = ops.findIndex(([n]) => n === 'setTransform');
@@ -492,9 +603,9 @@ describe('AssinaturaCanvas', () => {
       ]);
       const { saida } = canvasDeSaida();
       await a.paraPng();
-      expect(saida.width).toBeLessThanOrEqual(640);
-      expect(saida.height).toBeLessThanOrEqual(320);
-      expect(saida.height).toBe(320);
+      const [largura, altura] = saida.noToBlob;
+      expect(largura).toBeLessThanOrEqual(640);
+      expect(altura).toBe(320);
     });
 
     it('acima de 512 KB: ErroOs (o servidor recusaria)', async () => {
@@ -509,6 +620,37 @@ describe('AssinaturaCanvas', () => {
       const erro = await a.paraPng().catch((e: unknown) => e);
       expect(erro).toBeInstanceOf(ErroOs);
       expect(erro).toMatchObject({ codigo: 'ASSINATURA_GRANDE', campo: 'assinatura', message: 'A assinatura ficou grande demais.' });
+    });
+
+    it('sem contexto 2D: ErroOs ASSINATURA_FALHOU, e o canvas de saída zerado', async () => {
+      const tela = canvasDaTela();
+      const a = new AssinaturaCanvas();
+      a.ligar(tela.el);
+      tracar(tela.canvas, [
+        { x: 10, y: 10 },
+        { x: 50, y: 50 },
+      ]);
+      const { saida } = canvasDeSaida(2000, { semContexto: true });
+      const erro = await a.paraPng().catch((e: unknown) => e);
+      expect(erro).toBeInstanceOf(ErroOs);
+      expect(erro).toMatchObject({ codigo: 'ASSINATURA_FALHOU', campo: 'assinatura', message: 'Não foi possível gerar a assinatura.' });
+      expect([saida.width, saida.height]).toEqual([0, 0]);
+    });
+
+    it('toBlob sem blob: ErroOs ASSINATURA_FALHOU, e o canvas de saída zerado', async () => {
+      const tela = canvasDaTela();
+      const a = new AssinaturaCanvas();
+      a.ligar(tela.el);
+      tracar(tela.canvas, [
+        { x: 10, y: 10 },
+        { x: 50, y: 50 },
+      ]);
+      const { saida } = canvasDeSaida(null);
+      const erro = await a.paraPng().catch((e: unknown) => e);
+      expect(erro).toBeInstanceOf(ErroOs);
+      expect(erro).toMatchObject({ codigo: 'ASSINATURA_FALHOU', campo: 'assinatura' });
+      expect(saida.noToBlob).toHaveLength(2);
+      expect([saida.width, saida.height]).toEqual([0, 0]);
     });
 
     it('depois de desligar() ainda gera o PNG (a tela confirma e depois fecha)', async () => {
