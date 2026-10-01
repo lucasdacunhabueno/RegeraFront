@@ -292,6 +292,27 @@ describe('PendenciasPage', () => {
       erro: { codigo, mensagem: 'O código impresso no PDF não é o da proposta.' },
       mutacao: { mutationId: 'mu', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null, dados: { documentoId: 'd1' }, criadaEm: '' },
     });
+    // o download (`<a download>`) é interceptado: nada de navegação no jsdom; tudo volta ao original no fim
+    const cliques: string[] = [];
+    let clickOriginal: typeof HTMLAnchorElement.prototype.click;
+    let criarUrl: typeof URL.createObjectURL;
+    let revogarUrl: typeof URL.revokeObjectURL;
+    beforeEach(() => {
+      cliques.length = 0;
+      clickOriginal = HTMLAnchorElement.prototype.click;
+      criarUrl = URL.createObjectURL;
+      revogarUrl = URL.revokeObjectURL;
+      HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+        cliques.push(this.download);
+      };
+      URL.createObjectURL = vi.fn(() => 'blob:x');
+      URL.revokeObjectURL = vi.fn();
+    });
+    afterEach(() => {
+      HTMLAnchorElement.prototype.click = clickOriginal;
+      URL.createObjectURL = criarUrl;
+      URL.revokeObjectURL = revogarUrl;
+    });
     const abrir = (el: HTMLElement) => el.querySelector<HTMLAnchorElement>('[data-testid="abrir-proposta"]');
 
     it('título com o código da cópia local (número) e, sem ela, o provisório da mutação', () => {
@@ -331,14 +352,7 @@ describe('PendenciasPage', () => {
     });
 
     it('upload CODIGO_EXIBIDO_INVALIDO de proposta enviada: "Gerar PDF novamente" regera pelo repositório e compartilha (sem share: baixa)', async () => {
-      const cliques: string[] = [];
-      const original = HTMLAnchorElement.prototype.click;
-      HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
-        cliques.push(this.download);
-      };
-      URL.createObjectURL = vi.fn(() => 'blob:x');
-      URL.revokeObjectURL = vi.fn();
-      try {
+      {
         const { el, repo, pdf, fixture } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
         expect(el.textContent).toContain('PDF da proposta PROV-ABC123');
         expect(el.textContent).toContain('Gere o PDF novamente');
@@ -351,8 +365,6 @@ describe('PendenciasPage', () => {
         expect(pdf.gerarBlob).toHaveBeenCalled();
         await fixture.whenStable();
         expect(botao(el, 'Gerar PDF novamente').disabled).toBe(false);
-      } finally {
-        HTMLAnchorElement.prototype.click = original;
       }
     });
 
@@ -366,6 +378,51 @@ describe('PendenciasPage', () => {
       botao(el, 'Gerando PDF…').click();
       expect(regerar).toHaveBeenCalledTimes(1);
       liberar({ blob: new Blob(['x']), codigoExibido: 'PROV-ABC123' });
+      await vi.waitFor(() => expect(cliques).toEqual(['Proposta-PROV-ABC123.pdf']));
+      await fixture.whenStable();
+    });
+
+    it('o rótulo "Gerando PDF…" é só da regeração: Descartar em curso não o mostra', async () => {
+      let liberar!: () => void;
+      const descartar = new Promise<void>((r) => (liberar = r));
+      const { el, svc, fixture } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      svc.descartar.mockReturnValue(descartar);
+      botao(el, 'Descartar').click();
+      fixture.detectChanges();
+      expect(botao(el, 'Gerar PDF novamente').disabled).toBe(true);
+      expect(el.textContent).not.toContain('Gerando PDF…');
+      liberar();
+      await fixture.whenStable();
+    });
+
+    it('comercial responsável corrige e reenvia', () => {
+      const { el, navegarRota } = montar([rejeitada()], 0, 'COMERCIAL', { propostas: [propostaLocal('p1', { responsavelId: 'u' })] });
+      botao(el, 'Corrigir e reenviar').click();
+      expect(navegarRota).toHaveBeenCalledWith(['/propostas', 'p1', 'corrigir']);
+    });
+
+    it.each<Perfil>(['TECNICO', 'COMERCIAL'])('%s (sem ser o responsável) não vê "Gerar PDF novamente" e a mensagem manda descartar', (perfil) => {
+      const { el } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, perfil, { propostas: [propostaLocal('p1', { responsavelId: 'outro' })] });
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      expect(el.textContent).not.toContain('Gere o PDF novamente');
+      expect(el.textContent).toContain('Descarte esta pendência');
+      expect(botao(el, 'Descartar')).toBeDefined();
+    });
+
+    it('sem a cópia local: sem "Gerar PDF novamente"', () => {
+      const { el } = montar([upload('CODIGO_EXIBIDO_INVALIDO')]);
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      expect(botao(el, 'Descartar')).toBeDefined();
+    });
+
+    it('sem a cópia local (ex.: exclusão recusada): sem "Corrigir e reenviar" nem "Abrir proposta", só Descartar', () => {
+      const exclusao = rejeitada({}, { status: 'RASCUNHO' });
+      exclusao.mutacao = { ...exclusao.mutacao, op: 'DELETE', dados: null };
+      const conflito = rejeitada({ mutationId: 'mc', tipo: 'CONFLITO', erro: undefined });
+      const { el } = montar([exclusao, conflito]);
+      expect(botao(el, 'Corrigir e reenviar')).toBeUndefined();
+      expect(abrir(el)).toBeNull();
+      expect(botao(el, 'Descartar')).toBeDefined();
     });
 
     it('"Gerar PDF novamente": o erro do repositório vira toast e a pendência continua', async () => {

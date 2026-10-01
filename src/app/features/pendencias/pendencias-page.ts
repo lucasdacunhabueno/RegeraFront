@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, effect, ElementRef, inject, signal, viewChild } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { map } from 'rxjs';
 import { Router, RouterLink } from '@angular/router';
@@ -29,7 +29,7 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
   selector: 'app-pendencias-page',
   imports: [RouterLink, PdfPronto],
   template: `
-    <h1 class="mb-4 text-xl font-semibold">Pendências de sync</h1>
+    <h1 #cabecalho tabindex="-1" class="mb-4 text-xl font-semibold outline-none">Pendências de sync</h1>
     <p role="status" aria-live="polite" class="sr-only">{{ anuncio() }}</p>
 
     <section class="mb-4 flex items-center justify-between gap-3 rounded-xl bg-white p-4">
@@ -53,7 +53,7 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
       <p class="py-8 text-center text-slate-500">Nenhum conflito ou rejeição.</p>
     }
 
-    <ul class="space-y-3" [class.pb-72]="!!pdfPronto()">
+    <ul class="space-y-3 sm:pb-0" [class.pb-72]="!!pdfPronto()">
       @for (p of itens(); track p.mutationId) {
         <li class="rounded-xl bg-white p-4">
           <p class="font-medium">{{ titulo(p) }}</p>
@@ -86,7 +86,7 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
               @if (podeRegerar(p)) {
                 <button type="button" data-testid="regerar" (click)="regerar(p)" [disabled]="ocupada(p)"
                         class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-60">
-                  {{ ocupada(p) ? 'Gerando PDF…' : 'Gerar PDF novamente' }}
+                  {{ regerando(p) ? 'Gerando PDF…' : 'Gerar PDF novamente' }}
                 </button>
               }
               @if (rotaEdicao(p); as rota) {
@@ -98,7 +98,7 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
               }
               <button type="button" (click)="descartar(p)" [disabled]="ocupada(p)" class="h-12 rounded-lg px-4 text-sm font-semibold text-red-600 disabled:opacity-60">Descartar</button>
             }
-            @if (p.tipo === 'CONFLITO' && p.entidade === 'proposta') {
+            @if (p.tipo === 'CONFLITO' && p.entidade === 'proposta' && temCopia(p)) {
               <a data-testid="abrir-proposta" [routerLink]="['/propostas', p.agregadoId]"
                  class="inline-flex h-12 items-center rounded-lg border border-slate-300 px-4 text-sm font-semibold">Abrir proposta</a>
             }
@@ -129,6 +129,16 @@ export class PendenciasPage {
   /** P4c-R8: o PDF regerado esperando um toque para o compartilhamento (o navegador recusou sem gesto). */
   protected readonly pdfPronto = signal<File | null>(null);
   protected readonly corrigivel = pendenciaCorrigivel;
+
+  constructor() {
+    effect(() => {
+      const id = this.focarAoSair();
+      if (id && !this.itens().some((x) => x.mutationId === id)) {
+        this.focarAoSair.set(null);
+        this.cabecalho()?.nativeElement.focus();
+      }
+    });
+  }
 
   private readonly propostasRepo = inject(PropostasRepo);
   private readonly pdf = inject(PdfService);
@@ -178,14 +188,17 @@ export class PendenciasPage {
     return d?.codigoProvisorio ?? null;
   }
 
-  /** Corrigir e reenviar / gerar o PDF: o ADMIN ou o comercial responsável (sem a cópia local, quem tem a pendência). */
+  /** A proposta está neste aparelho: sem ela não há o que corrigir nem abrir (ex.: exclusão recusada), só descartar. */
+  protected temCopia(p: Pendencia): boolean {
+    return this.propostas().has(p.agregadoId);
+  }
+
+  /** Corrigir e reenviar / gerar o PDF: com a cópia local, o ADMIN ou o comercial responsável. */
   protected podeMexer(p: Pendencia): boolean {
     const u = this.auth.usuario();
-    if (!u) return false;
-    if (u.perfil === 'ADMIN') return true;
-    if (u.perfil !== 'COMERCIAL') return false;
     const local = this.propostas().get(p.agregadoId);
-    return !local || local.responsavelId === u.id;
+    if (!u || !local) return false;
+    return u.perfil === 'ADMIN' || (u.perfil === 'COMERCIAL' && local.responsavelId === u.id);
   }
 
   /** O upload recusado por `CODIGO_EXIBIDO_INVALIDO` de uma proposta que já saiu do rascunho: dá para gerar o PDF de novo. */
@@ -197,7 +210,7 @@ export class PendenciasPage {
 
   /** "Abrir proposta": toda rejeição de proposta que não é a correção direta (o conflito tem o link à parte). */
   protected abrirProposta(p: Pendencia): boolean {
-    return p.entidade === 'proposta' && !(this.corrigivel(p) && this.podeMexer(p));
+    return p.entidade === 'proposta' && this.temCopia(p) && !(this.corrigivel(p) && this.podeMexer(p));
   }
 
   /** Para onde "Editar" leva; null = sem edição (ex.: catálogo para quem não é admin). */
@@ -217,9 +230,10 @@ export class PendenciasPage {
       return 'Este código já é usado por outro item. Edite o código deste item.';
     }
     if (p.entidade === TIPO_UPLOAD_DOCUMENTO && p.erro?.codigo === 'CODIGO_EXIBIDO_INVALIDO') {
+      if (this.podeRegerar(p)) return 'O código da proposta mudou depois que o PDF foi gerado. Gere o PDF novamente.';
       return this.propostas().get(p.agregadoId)?.status === 'RASCUNHO'
         ? 'Este PDF é de uma revisão que já foi substituída. Descarte esta pendência.'
-        : 'O código da proposta mudou depois que o PDF foi gerado. Gere o PDF novamente.';
+        : `${p.erro?.mensagem ?? 'O código impresso no PDF não é o da proposta.'} Descarte esta pendência.`;
     }
     if (p.tipo !== 'CONFLITO') return p.erro?.mensagem;
     return this.excluidoNoServidor(p) ? 'Excluído por outra pessoa.' : 'Alterado por outra pessoa enquanto você editava.';
@@ -256,18 +270,38 @@ export class PendenciasPage {
   /** "Gerar PDF novamente": o mesmo caminho do detalhe (`regerarPdf`), depois compartilhar ou o painel "PDF pronto". */
   protected regerar(p: Pendencia): Promise<void> {
     return this.agir(p, async () => {
+      this.regerandoIds.update((s) => new Set(s).add(p.mutationId));
       try {
         this.anuncio.set('Gerando o PDF da proposta…');
         const { arquivo, blob } = await regerarPdf(this.propostasRepo, this.pdf, p.agregadoId);
         this.toasts.mostrar('PDF gerado de novo. Ele vai para o servidor na próxima sincronização.');
+        this.anuncio.set('PDF gerado de novo.');
+        // a pendência sai da lista: o foco vai ao título (o botão que o tinha deixou de existir)
+        this.focarAoSair.set(p.mutationId);
         const r = await compartilharArquivo(arquivo, blob);
         if (r === 'precisa-toque') this.pdfPronto.set(arquivo);
         else this.aposCompartilhar(r, arquivo);
       } catch (e) {
+        this.anuncio.set('');
         this.toasts.erro(mensagemErroProposta(e));
+      } finally {
+        this.regerandoIds.update((s) => {
+          const resto = new Set(s);
+          resto.delete(p.mutationId);
+          return resto;
+        });
       }
     });
   }
+
+  private readonly regerandoIds = signal<ReadonlySet<string>>(new Set());
+  protected regerando(p: Pendencia): boolean {
+    return this.regerandoIds().has(p.mutationId);
+  }
+
+  private readonly cabecalho = viewChild<ElementRef<HTMLElement>>('cabecalho');
+  /** A pendência cuja saída da lista pede o foco no título. */
+  private readonly focarAoSair = signal<string | null>(null);
 
   protected aposCompartilhar(r: Exclude<ResultadoCompartilhar, 'precisa-toque'> | 'fechado', arquivo: File): void {
     this.pdfPronto.set(null);
