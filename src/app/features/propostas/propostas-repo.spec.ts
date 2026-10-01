@@ -1022,6 +1022,18 @@ describe('PropostasRepo', () => {
       expect([...estado.comPendencia]).toEqual(['p-pend']);
     });
 
+    it('observarProposta reemite a cada escrita na proposta (o wizard confere edições de outro aparelho)', async () => {
+      await existente('RASCUNHO');
+      const vistas: (string | null | undefined)[] = [];
+      const s = repo.observarProposta('p1').subscribe((p) => vistas.push(p?.observacoes));
+      await vi.waitFor(() => expect(vistas.length).toBe(1));
+      await db.propostas.update('p1', { observacoes: 'de outro aparelho' });
+      await vi.waitFor(() => expect(vistas.at(-1)).toBe('de outro aparelho'));
+      await db.propostas.delete('p1');
+      await vi.waitFor(() => expect(vistas.at(-1)).toBeUndefined());
+      s.unsubscribe();
+    });
+
     it('observarUsuarios: os usuários do sync (nomes de responsável e técnico)', async () => {
       const usuarios = await firstValueFrom(repo.observarUsuarios());
       expect(usuarios.map((u) => u.nome).sort()).toEqual([ADMIN.nome, OUTRO_COMERCIAL.nome, COMERCIAL.nome, TECNICO.nome].sort());

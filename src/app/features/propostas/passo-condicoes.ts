@@ -45,7 +45,8 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
         <div class="space-y-1">
           <label for="validade" class="text-sm font-medium">Validade</label>
           <input id="validade" type="date" [value]="e.validadeAte()" (input)="e.validadeAte.set($any($event.target).value); limpar('validadeAte')"
-                 [attr.aria-describedby]="erros().validadeAte ? 'validade-erro' : null"
+                 [attr.aria-invalid]="erros().validadeAte ? 'true' : 'false'"
+                  [attr.aria-describedby]="erros().validadeAte ? 'validade-erro' : null"
                  class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3" />
           @if (erros().validadeAte; as erro) { <p id="validade-erro" class="text-sm text-red-600">{{ erro }}</p> }
         </div>
@@ -65,6 +66,7 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
         <label for="condicoes-pagamento" class="text-sm font-medium">Condições de pagamento</label>
         <textarea id="condicoes-pagamento" rows="3" maxlength="1000" [value]="e.condicoesPagamento()"
                   (input)="e.condicoesPagamento.set($any($event.target).value); limpar('condicoesPagamento')"
+                  [attr.aria-invalid]="erros().condicoesPagamento ? 'true' : 'false'"
                   [attr.aria-describedby]="erros().condicoesPagamento ? 'condicoes-erro' : null"
                   class="w-full rounded-lg border border-slate-300 px-3 py-2"></textarea>
         @if (erros().condicoesPagamento; as erro) { <p id="condicoes-erro" class="text-sm text-red-600">{{ erro }}</p> }
@@ -74,7 +76,8 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
         <label for="prazo-execucao" class="text-sm font-medium">Prazo de execução</label>
         <input id="prazo-execucao" maxlength="200" autocomplete="off" [value]="e.prazoExecucao()"
                (input)="e.prazoExecucao.set($any($event.target).value); limpar('prazoExecucao')"
-               [attr.aria-describedby]="erros().prazoExecucao ? 'prazo-erro' : null"
+               [attr.aria-invalid]="erros().prazoExecucao ? 'true' : 'false'"
+                  [attr.aria-describedby]="erros().prazoExecucao ? 'prazo-erro' : null"
                class="h-12 w-full rounded-lg border border-slate-300 px-3" />
         @if (erros().prazoExecucao; as erro) { <p id="prazo-erro" class="text-sm text-red-600">{{ erro }}</p> }
       </div>
@@ -83,6 +86,7 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
         <label for="observacoes" class="text-sm font-medium">Observações</label>
         <textarea id="observacoes" rows="3" maxlength="4000" [value]="e.observacoes()"
                   (input)="e.observacoes.set($any($event.target).value); limpar('observacoes')"
+                  [attr.aria-invalid]="erros().observacoes ? 'true' : 'false'"
                   [attr.aria-describedby]="erros().observacoes ? 'observacoes-erro' : null"
                   class="w-full rounded-lg border border-slate-300 px-3 py-2"></textarea>
         @if (erros().observacoes; as erro) { <p id="observacoes-erro" class="text-sm text-red-600">{{ erro }}</p> }
@@ -91,7 +95,8 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
       <div class="space-y-1">
         <label for="tecnico" class="text-sm font-medium">Técnico (opcional)</label>
         <select id="tecnico" [disabled]="!e.podeTrocarTecnico()" (change)="e.tecnicoId.set($any($event.target).value || null); limpar('tecnicoId')"
-                [attr.aria-describedby]="erros().tecnicoId ? 'tecnico-erro' : null"
+                [attr.aria-invalid]="erros().tecnicoId ? 'true' : 'false'"
+                  [attr.aria-describedby]="erros().tecnicoId ? 'tecnico-erro' : null"
                 class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3 disabled:bg-slate-100">
           <option value="" [selected]="!e.tecnicoId()">Nenhum</option>
           @for (u of tecnicos(); track u.id) {
@@ -105,6 +110,7 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
         <div class="space-y-1">
           <label for="responsavel" class="text-sm font-medium">Responsável</label>
           <select id="responsavel" (change)="e.responsavelId.set($any($event.target).value); limpar('responsavelId')"
+                  [attr.aria-invalid]="erros().responsavelId ? 'true' : 'false'"
                   [attr.aria-describedby]="erros().responsavelId ? 'responsavel-erro' : null"
                   class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3">
             @for (u of responsaveis(); track u.id) {
@@ -115,7 +121,7 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
         </div>
       }
 
-      <p class="flex items-baseline justify-between border-t border-slate-200 pt-3 font-semibold" aria-live="polite">
+      <p class="flex items-baseline justify-between border-t border-slate-200 pt-3 font-semibold">
         <span>Total</span>
         <span data-testid="total-condicoes">{{ total() }}</span>
       </p>

@@ -9,6 +9,7 @@ import {
   paraLinhaEditavel,
   passoDoCampo,
   textoDecimal,
+  textoMoeda,
   totaisDe,
 } from './edicao-wizard';
 import { ItemPropostaLocal } from './proposta-models';
@@ -47,6 +48,15 @@ describe('edicao-wizard', () => {
     expect(textoDecimal(0n, 2, false)).toBe('0');
   });
 
+  it('textoMoeda: milhar pt-BR com 2 casas, relido por lerDecimalEstrito sem ambiguidade', () => {
+    expect(textoMoeda(125050n)).toBe('1.250,50');
+    expect(textoMoeda(0n)).toBe('0,00');
+    expect(textoMoeda(99_999_999_999_999n)).toBe('999.999.999.999,99');
+    for (const v of [5n, 125050n, 100000n, 99_999_999_999_999n]) {
+      expect(lerCampoDecimal(textoMoeda(v), 2, 0n, 99_999_999_999_999n, 'x')).toBe(v);
+    }
+  });
+
   it('lerCampoDecimal: valor, erro de digitação ou fora do limite', () => {
     expect(lerCampoDecimal('1.234,56', 2, 0n, 1_000_000n, 'limite')).toBe(123456n);
     expect(lerCampoDecimal('1.234', 3, 1n, 999_999_999n, 'limite')).toBe('Use vírgula para decimais (ex.: 1,5).');
@@ -56,7 +66,7 @@ describe('edicao-wizard', () => {
 
   it('paraLinhaEditavel e lerLinha vão e voltam', () => {
     const l = editavel();
-    expect(l).toMatchObject({ quantidade: '1,5', preco: '1234,56', desconto: '12,5', meses: '' });
+    expect(l).toMatchObject({ quantidade: '1,5', preco: '1.234,56', desconto: '12,5', meses: '' });
     const lida = lerLinha(l, false);
     expect(lida.erros).toEqual({});
     expect(lida.linha).toMatchObject({ id: 'l1', quantidadeMilesimos: 1500, precoUnitarioCentavos: 123456, descontoCentesimos: 1250, meses: null });

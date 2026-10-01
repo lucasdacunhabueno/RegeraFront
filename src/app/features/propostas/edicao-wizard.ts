@@ -46,6 +46,12 @@ export function textoDecimal(valor: bigint, casas: number, fixo: boolean): strin
   return deEscalado(valor, casas, fixo).replace('.', ',');
 }
 
+/** Centavos para o campo de preço, com milhar pt-BR (`1.250,50`): `lerDecimalEstrito` relê igual (a vírgula desfaz a ambiguidade). */
+export function textoMoeda(centavos: bigint): string {
+  const [inteiro, fracao] = deEscalado(centavos, 2, true).split('.');
+  return `${inteiro.replace(/\B(?=(\d{3})+(?!\d))/g, '.')},${fracao}`;
+}
+
 /** O texto digitado como inteiro escalado por 10^casas, ou a mensagem do erro (digitação ou fora de `min`..`max`). */
 export function lerCampoDecimal(texto: string, casas: number, min: bigint, max: bigint, foraDoLimite: string): bigint | string {
   const v = lerDecimalEstrito(texto, casas);
@@ -91,7 +97,7 @@ export function paraLinhaEditavel(l: ItemPropostaLocal): LinhaEditavel {
     natureza: l.natureza,
     precoCustoCentavos: l.precoCustoCentavos,
     quantidade: textoDecimal(BigInt(l.quantidadeMilesimos), 3, false),
-    preco: textoDecimal(BigInt(l.precoUnitarioCentavos ?? 0), 2, true),
+    preco: textoMoeda(BigInt(l.precoUnitarioCentavos ?? 0)),
     desconto: textoDecimal(BigInt(l.descontoCentesimos ?? 0), 2, false),
     meses: l.meses === null ? '' : String(l.meses),
     mesesAoCarregar: l.meses,

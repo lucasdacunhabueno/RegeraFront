@@ -1,4 +1,8 @@
-import { Route } from '@angular/router';
+import { signal } from '@angular/core';
+import { TestBed } from '@angular/core/testing';
+import { CanMatchFn, provideRouter, Route, UrlTree } from '@angular/router';
+import type { Perfil } from './core/auth/auth-models';
+import { AuthService } from './core/auth/auth-service';
 import { routes } from './app.routes';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 import { PropostasPage } from './features/propostas/propostas-page';
@@ -36,6 +40,21 @@ describe('app.routes', () => {
     expect(r.canDeactivate).toContain(alteracoesGuard);
     expect(r.data?.['modo']).toBe('rascunho');
     expect(await (r.loadComponent as () => Promise<unknown>)()).toBe(WizardPropostaPage);
+  });
+
+  it.each(['propostas/nova', 'propostas/:id/editar'])('%s: entram ADMIN e COMERCIAL; o técnico e sem sessão, não', (path) => {
+    const guard = rota(path)!.canMatch![0] as CanMatchFn;
+    const passa = (perfil: Perfil | null) => {
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        providers: [provideRouter([]), { provide: AuthService, useValue: { usuario: signal(perfil ? { id: 'u', perfil } : null) } }],
+      });
+      return TestBed.runInInjectionContext(() => guard({} as Route, [], {} as never));
+    };
+    expect(passa('ADMIN')).toBe(true);
+    expect(passa('COMERCIAL')).toBe(true);
+    expect(passa('TECNICO')).toBeInstanceOf(UrlTree);
+    expect(passa(null)).toBeInstanceOf(UrlTree);
   });
 
   it('propostas/nova antes de propostas/:id/editar (a ordem do P4c)', () => {

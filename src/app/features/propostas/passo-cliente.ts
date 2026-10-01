@@ -72,7 +72,9 @@ const MAX_RESULTADOS = 20;
         }
         @if (erros().clienteId; as erro) { <p id="cliente-erro" role="alert" class="text-sm text-red-600">{{ erro }}</p> }
         <button type="button" data-testid="cadastrar-cliente" (click)="cadastrar.emit()"
-                class="inline-flex min-h-12 items-center text-sm font-semibold text-blue-700 underline">Cadastrar cliente</button>
+                class="inline-flex h-12 items-center rounded-lg border border-blue-600 px-4 text-sm font-semibold text-blue-700">
+          Cadastrar cliente
+        </button>
       </div>
     </section>
   `,

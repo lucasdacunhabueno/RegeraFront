@@ -1,7 +1,7 @@
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
-import { of } from 'rxjs';
+import { BehaviorSubject, map, of } from 'rxjs';
 import { vi } from 'vitest';
 import type { UsuarioSessao } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
@@ -18,7 +18,7 @@ import { ClientesRepo } from '../clientes/clientes-repo';
 import { paraTemplateLocal, TemplateLocal, TipoProposta } from '../templates/template-models';
 import { TemplatesRepo } from '../templates/templates-repo';
 import casosTexto from './casos-calculo.json' with { loader: 'text' };
-import { ItemPropostaLocal, PropostaLocal } from './proposta-models';
+import { codigoExibido, ItemPropostaLocal, PropostaLocal } from './proposta-models';
 import { EdicaoRascunho, ErroProposta, PropostasRepo } from './propostas-repo';
 import { WizardPropostaPage } from './wizard-proposta-page';
 
@@ -83,14 +83,33 @@ function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
 function repoFalso(iniciais: PropostaLocal[]) {
   const store = new Map(iniciais.map((p) => [p.id, structuredClone(p)]));
   const ler = (id: string) => store.get(id)!;
+  /** Como o liveQuery: cada escrita reemite a proposta (depois, não no meio da escrita). */
+  const vivas = new Map<string, BehaviorSubject<PropostaLocal | undefined>>();
+  const viva = (id: string) => {
+    if (!vivas.has(id)) vivas.set(id, new BehaviorSubject(store.has(id) ? structuredClone(store.get(id)) : undefined));
+    return vivas.get(id)!;
+  };
+  const emitir = (id: string) => queueMicrotask(() => viva(id).next(store.has(id) ? structuredClone(store.get(id)) : undefined));
+  const documentos: { propostaId: string; codigoExibido: string }[] = [];
   return {
     store,
+    /** Edição que chega pelo pull (outro aparelho): muda o gravado, sobe a versão e reemite. */
+    foraDoAparelho(id: string, mudar: (p: PropostaLocal) => void, opcoes: { emitir?: boolean; versao?: boolean } = {}) {
+      const p = ler(id);
+      mudar(p);
+      if (opcoes.versao !== false) p.version = (p.version ?? 0) + 1;
+      if (opcoes.emitir !== false) emitir(id);
+    },
+    observarProposta: vi.fn((id: string) => viva(id).asObservable()),
+    observarDocumentos: vi.fn((id: string) =>
+      of(documentos.filter((d) => d.propostaId === id).reverse()).pipe(map((l) => l.map((d) => ({ ...d })))),
+    ),
     buscar: vi.fn(async (id: string) => (store.has(id) ? structuredClone(store.get(id)) : undefined)),
     criar: vi.fn(async (tipo: TipoProposta, clienteId?: string | null) => {
       store.set('nova-1', proposta({ id: 'nova-1', tipo, clienteId: clienteId ?? null, templateId: PADROES.get(tipo) ?? null, itens: [] }));
       return 'nova-1';
     }),
-    salvarRascunho: vi.fn(async (id: string, edicao: Partial<EdicaoRascunho>) => {
+    salvarRascunho: vi.fn(async (id: string, edicao: Partial<EdicaoRascunho>, versaoCarregada?: number | null) => {
       const p = ler(id);
       const { itens, ...resto } = edicao;
       Object.assign(p, resto);
@@ -98,9 +117,13 @@ function repoFalso(iniciais: PropostaLocal[]) {
         if (k in edicao) p[k] = edicao[k]?.trim() || null;
       }
       if (itens) p.itens = itens.map((l, i) => ({ ...l, ordem: i, subtotalCentavos: null }));
+      // como o repositório: a versão carregada vira a da cópia local (e a baseVersion da mutação)
+      if (versaoCarregada !== undefined) p.version = versaoCarregada;
+      emitir(id);
     }),
     atribuir: vi.fn(async (id: string, m: { responsavelId?: string; tecnicoId?: string | null }) => {
       Object.assign(ler(id), m);
+      emitir(id);
     }),
     adicionarItem: vi.fn(async (id: string, i: ItemLocal) => {
       const p = ler(id);
@@ -110,11 +133,15 @@ function repoFalso(iniciais: PropostaLocal[]) {
         precoUnitarioCentavos: Math.round(((mensal ? i.precoLocacaoMensal : i.precoVenda) ?? 0) * 100), meses: mensal ? 1 : null,
       });
       p.itens.push(nova);
+      emitir(id);
       return nova.id;
     }),
     enviar: vi.fn(async (id: string, gerar: (e: EntradaPdf) => Promise<Blob>) => {
       const blob = await gerar({ previa: false } as EntradaPdf);
-      ler(id).status = 'ENVIADA';
+      const p = ler(id);
+      p.status = 'ENVIADA';
+      documentos.push({ propostaId: id, codigoExibido: codigoExibido(p) });
+      emitir(id);
       return blob;
     }),
     entradaPrevia: vi.fn(async () => ({ previa: true }) as EntradaPdf),
@@ -258,10 +285,13 @@ describe('WizardPropostaPage', () => {
     });
 
     it('a volta do cadastro (?tipo=&clienteId=) já vem com o cliente novo escolhido', async () => {
-      const { el, repo } = await montar({ tipo: 'LOCACAO', clienteId: 'c2' });
+      const { el, repo, navegar } = await montar({ tipo: 'LOCACAO', clienteId: 'c2' });
       expect(el.querySelector('[data-testid=cliente-selecionado]')?.textContent).toContain('Maria Souza');
       expect(el.querySelector<HTMLSelectElement>('#tipo-proposta')!.value).toBe('LOCACAO');
       expect(repo.criar).not.toHaveBeenCalled();
+      expect(navegar).toHaveBeenCalledWith([], expect.objectContaining({
+        queryParams: { tipo: null, clienteId: null }, queryParamsHandling: 'merge', replaceUrl: true,
+      }));
     });
   });
 
@@ -333,6 +363,8 @@ describe('WizardPropostaPage', () => {
       el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
       await ate(fixture, () => expect(el.querySelector('#itens-erro')?.textContent).toContain('Inclua pelo menos um item.'));
       expect(repo.salvarRascunho).not.toHaveBeenCalled();
+      expect(el.querySelector('#itens-erro')!.getAttribute('tabindex')).toBe('-1');
+      await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('#itens-erro')));
     });
 
     it('busca no catálogo ativo e "Adicionar" chama adicionarItem; a linha nova entra com o foco', async () => {
@@ -346,6 +378,9 @@ describe('WizardPropostaPage', () => {
       await ate(fixture, () => expect(campoDaLinha(el, 'l-i2', 'quantidade')).not.toBeNull());
       expect(repo.adicionarItem).toHaveBeenCalledWith('p1', ITENS[1]);
       await vi.waitFor(() => expect(document.activeElement).toBe(campoDaLinha(el, 'l-i2', 'quantidade')));
+      // a busca fecha (u1)
+      expect(el.querySelector<HTMLInputElement>('#busca-catalogo')!.value).toBe('');
+      expect(el.querySelector('[data-testid=adicionar-item]')).toBeNull();
       expect(el.querySelector('[role=status]')?.textContent).toContain('Gerador adicionado.');
     });
 
@@ -425,6 +460,7 @@ describe('WizardPropostaPage', () => {
       await ate(fixture, () => expect(campoDaLinha(el, 'l1', 'quantidade')!.getAttribute('aria-invalid')).toBe('true'));
       expect(toastErro).toHaveBeenCalledWith('A quantidade vai de 0,001 a 999.999,999.');
       expect(titulo(el)).toBe('Itens');
+      await vi.waitFor(() => expect(document.activeElement).toBe(campoDaLinha(el, 'l1', 'quantidade')));
     });
   });
 
@@ -447,7 +483,7 @@ describe('WizardPropostaPage', () => {
       expect(repo.salvarRascunho).toHaveBeenCalledWith('p1', {
         templateId: 't-venda2', validadeAte: '2026-11-30', condicoesPagamento: '  À vista  ', prazoExecucao: '30 dias',
         observacoes: 'Obs.', descontoGeralCentesimos: 1250, tecnicoId: 'u-tec',
-      });
+      }, 1);
       expect(repo.atribuir).not.toHaveBeenCalled();
     });
 
@@ -608,6 +644,7 @@ describe('WizardPropostaPage', () => {
         expect(el.querySelector('[data-testid=faltas]')?.textContent).toContain('Inclua pelo menos um item.');
         expect(el.querySelector('[data-testid=faltas]')?.textContent).toContain('Informe o template.');
         expect(repo.enviar).not.toHaveBeenCalled();
+        expect(botao(el, 'Corrigir')!.getAttribute('aria-label')).toBe('Corrigir: Informe o cliente.');
         botao(el, 'Corrigir')!.click();
         await ate(fixture, () => expect(titulo(el)).toBe('Tipo e cliente'));
       });
@@ -702,6 +739,9 @@ describe('WizardPropostaPage', () => {
       expect(edicao.itens!.map((l) => l.meses)).toEqual([null, 1]);
       expect(campoDaLinha(el, 'l2', 'meses')!.value).toBe('1');
       expect(campoDaLinha(el, 'l1', 'meses')).toBeNull();
+      // M-1: os preços não foram recalculados (aviso) e o template mudou (anúncio)
+      expect(el.querySelector('[data-testid=aviso-tipo]')?.textContent).toContain('O tipo mudou: os preços das linhas não foram recalculados. Confira.');
+      expect(el.querySelector('[role=status]')?.textContent).toContain('O template passou a ser o padrão do novo tipo.');
     });
 
     it('"Cadastrar cliente" na edição volta ao passo 1 desta proposta', async () => {
@@ -716,6 +756,285 @@ describe('WizardPropostaPage', () => {
       const { el, pagina } = await montar({ id: 'p1', passo: '1', tipo: 'VENDA', clienteId: 'c2' });
       expect(el.querySelector('[data-testid=cliente-selecionado]')?.textContent).toContain('Maria Souza');
       expect(pagina.temAlteracoes()).toBe(true);
+    });
+  });
+
+  describe('edição em outro aparelho (P4c-R7)', () => {
+    const banner = (el: HTMLElement) => el.querySelector('#aviso-colisao');
+
+    it('passo limpo mudado lá: recarrega em silêncio, não grava de volta e a revisão mostra o novo', async () => {
+      const { fixture, el, repo, pagina } = await montar({ id: 'p1', passo: '3' });
+      repo.foraDoAparelho('p1', (p) => {
+        p.itens[0].precoUnitarioCentavos = 200000;
+        p.tecnicoId = null;
+      });
+      await ate(fixture, () => expect(repo.store.get('p1')!.version).toBe(2));
+      fixture.detectChanges();
+      expect(banner(el)).toBeNull();
+      expect(pagina.temAlteracoes()).toBe(false);
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'Minha obs.');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
+      expect(repo.salvarRascunho).toHaveBeenCalledTimes(1);
+      const [, edicao, versao] = repo.salvarRascunho.mock.calls[0];
+      expect(edicao).not.toHaveProperty('itens');
+      expect(versao).toBe(2);
+      expect(el.querySelector('[data-testid=total-total]')?.textContent).toBe('R$ 2.000,00');
+      expect(repo.store.get('p1')!.itens[0].precoUnitarioCentavos).toBe(200000);
+    });
+
+    it('passo alterado aqui e lá: faixa; Continuar espera a escolha; "Recarregar" fica com a de lá', async () => {
+      const { fixture, el, repo, pagina } = await montar({ id: 'p1', passo: '3' });
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'Minha obs.');
+      repo.foraDoAparelho('p1', (p) => (p.observacoes = 'Obs. de lá'));
+      await ate(fixture, () => expect(banner(el)?.textContent).toContain('Esta proposta foi alterada em outro aparelho.'));
+      expect(banner(el)!.getAttribute('role')).toBe('alert');
+      // a tela continua com o digitado
+      expect(el.querySelector<HTMLTextAreaElement>('#observacoes')!.value).toBe('Minha obs.');
+
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await fixture.whenStable();
+      expect(repo.salvarRascunho).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(document.activeElement).toBe(banner(el)));
+
+      botao(el, 'Recarregar')!.click();
+      fixture.detectChanges();
+      expect(banner(el)).toBeNull();
+      expect(el.querySelector<HTMLTextAreaElement>('#observacoes')!.value).toBe('Obs. de lá');
+      expect(pagina.temAlteracoes()).toBe(false);
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
+      expect(repo.salvarRascunho).not.toHaveBeenCalled();
+    });
+
+    it('"Manter as minhas" grava com a versão base antiga: o servidor responde CONFLITO (Pendências)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3' });
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'Minha obs.');
+      repo.foraDoAparelho('p1', (p) => (p.observacoes = 'Obs. de lá'));
+      await ate(fixture, () => expect(banner(el)).not.toBeNull());
+      botao(el, 'Manter as minhas')!.click();
+      fixture.detectChanges();
+      expect(banner(el)).toBeNull();
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
+      const [, edicao, versao] = repo.salvarRascunho.mock.calls[0];
+      expect(edicao.observacoes).toBe('Minha obs.');
+      expect(versao).toBe(1);
+    });
+
+    it('ack do próprio push (versão e número, nenhum campo): sem faixa, a base e o código avançam', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3', propostas: [proposta({ version: null })] });
+      repo.foraDoAparelho('p1', (p) => {
+        p.version = 1;
+        p.numero = 281;
+        p.atualizadoEm = '2026-10-01T12:00:00Z';
+        p.itens[0].subtotalCentavos = 123456;
+      }, { versao: false });
+      await ate(fixture, () => expect(el.textContent).toContain('000281'));
+      expect(banner(el)).toBeNull();
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'x');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
+      expect(repo.salvarRascunho.mock.calls[0][2]).toBe(1);
+    });
+
+    it('ack que chega sem reemissão ainda é visto antes de gravar (a gravação relê)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3', propostas: [proposta({ version: null })] });
+      repo.foraDoAparelho('p1', (p) => (p.version = 1), { emitir: false, versao: false });
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'x');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
+      expect(repo.salvarRascunho.mock.calls[0][2]).toBe(1);
+    });
+
+    it('a própria gravação não vira colisão (o passo 2 sujo e a linha adicionada)', async () => {
+      const { fixture, el } = await montar({ id: 'p1', passo: '2' });
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '3');
+      digitar(fixture, el.querySelector<HTMLInputElement>('#busca-catalogo')!, 'ger');
+      el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!.click();
+      await ate(fixture, () => expect(campoDaLinha(el, 'l-i2', 'quantidade')).not.toBeNull());
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(banner(el)).toBeNull();
+      expect(campoDaLinha(el, 'l1', 'quantidade')!.value).toBe('3');
+    });
+  });
+
+  describe('compartilhamento depois do envio (P4c-R8)', () => {
+    const nav = navigator as Navigator & { share?: unknown; canShare?: unknown };
+    const originais = { share: nav.share, canShare: nav.canShare, criar: URL.createObjectURL, revogar: URL.revokeObjectURL };
+    afterEach(() => {
+      Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: originais.share });
+      Object.defineProperty(navigator, 'canShare', { configurable: true, writable: true, value: originais.canShare });
+      URL.createObjectURL = originais.criar;
+      URL.revokeObjectURL = originais.revogar;
+    });
+
+    it('share recusado por falta de gesto: painel "PDF pronto"; o toque chama share de novo com o mesmo File', async () => {
+      const share = vi.fn()
+        .mockRejectedValueOnce(new DOMException('sem gesto', 'NotAllowedError'))
+        .mockResolvedValueOnce(undefined);
+      Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: share });
+      Object.defineProperty(navigator, 'canShare', { configurable: true, writable: true, value: () => true });
+      const { fixture, el, navegar } = await montar({ id: 'p1', passo: '4' });
+      el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
+      await ate(fixture, () => expect(el.querySelector('[role=dialog]')?.textContent).toContain('PDF pronto'));
+      expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+      await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('[role=dialog]')));
+
+      botao(el, 'Compartilhar')!.click();
+      expect(share).toHaveBeenCalledTimes(2);
+      const [primeira, segunda] = share.mock.calls.map((c) => (c[0] as { files: File[] }).files[0]);
+      expect(segunda).toBe(primeira);
+      expect(segunda.name).toBe('Proposta-PROV-ABC123.pdf');
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+    });
+
+    it('fechar o painel também vai ao detalhe', async () => {
+      Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: vi.fn().mockRejectedValue(new DOMException('x', 'NotAllowedError')) });
+      Object.defineProperty(navigator, 'canShare', { configurable: true, writable: true, value: () => true });
+      const { fixture, el, navegar } = await montar({ id: 'p1', passo: '4' });
+      el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
+      await ate(fixture, () => expect(el.querySelector('[role=dialog]')).not.toBeNull());
+      botao(el, 'Fechar')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+    });
+
+    it('sem Web Share: baixa e avisa "PDF baixado: <nome>"; anuncia a geração', async () => {
+      Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: undefined });
+      URL.createObjectURL = vi.fn(() => 'blob:x');
+      URL.revokeObjectURL = vi.fn();
+      vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+      const { fixture, el, pdf, navegar, toast } = await montar({ id: 'p1', passo: '4' });
+      let liberar!: (b: Blob) => void;
+      pdf.gerarBlob.mockReturnValue(new Promise<Blob>((r) => (liberar = r)));
+      el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
+      await ate(fixture, () => expect(el.querySelector('[role=status]')?.textContent).toBe('Gerando o PDF da proposta…'));
+      liberar(new Blob(['%PDF']));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      expect(toast).toHaveBeenCalledWith('PDF baixado: Proposta-PROV-ABC123.pdf');
+    });
+
+    it('o nome do arquivo é o código impresso no PDF, mesmo se o número chegar logo depois', async () => {
+      const share = vi.fn().mockResolvedValue(undefined);
+      Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: share });
+      Object.defineProperty(navigator, 'canShare', { configurable: true, writable: true, value: () => true });
+      const { el, repo, navegar } = await montar({ id: 'p1', passo: '4', online: true });
+      const enviarOriginal = repo.enviar.getMockImplementation()!;
+      repo.enviar.mockImplementationOnce(async (id, gerar) => {
+        const blob = await enviarOriginal(id, gerar);
+        repo.store.get(id)!.numero = 281; // o ack do push chegou antes da tela reler
+        return blob;
+      });
+      el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      expect((share.mock.calls[0][0] as { files: File[] }).files[0].name).toBe('Proposta-PROV-ABC123.pdf');
+    });
+  });
+
+  describe('Salvar rascunho, foco e anúncios', () => {
+    it('com passos alterados: grava em ordem e depois vai ao detalhe', async () => {
+      const { fixture, el, repo, navegar } = await montar({ id: 'p1', passo: '3' });
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'Obs.');
+      botao(el, 'Voltar')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Itens'));
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '2');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      expect(repo.salvarRascunho.mock.calls.map((c) => Object.keys(c[1]).includes('itens'))).toEqual([true, false]);
+      expect(repo.salvarRascunho.mock.calls[1][1].observacoes).toBe('Obs.');
+      expect(repo.salvarRascunho.mock.invocationCallOrder[0]).toBeLessThan(navegar.mock.invocationCallOrder.at(-1)!);
+    });
+
+    it('campo inválido: não sai, vai ao passo dele e foca o campo', async () => {
+      const { fixture, el, repo, navegar } = await montar({ id: 'p1', passo: '3' });
+      digitar(fixture, el.querySelector<HTMLInputElement>('#desconto-geral')!, '1.234');
+      botao(el, 'Voltar')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Itens'));
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Condições'));
+      await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('#desconto-geral')));
+      expect(repo.salvarRascunho).not.toHaveBeenCalled();
+      expect(navegar).not.toHaveBeenCalled();
+    });
+
+    it('sem alteração: não grava nada e vai ao detalhe', async () => {
+      const { el, repo, navegar } = await montar({ id: 'p1', passo: '2' });
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      expect(repo.salvarRascunho).not.toHaveBeenCalled();
+    });
+
+    it('trocar de passo foca o título e anuncia; abrir com ?passo também (a volta do /nova)', async () => {
+      const { fixture, el } = await montar({ id: 'p1', passo: '2' });
+      await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('#titulo-passo')));
+      expect(el.querySelector('[role=status]')?.textContent).toBe('Passo 2 de 4: Itens.');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Condições'));
+      await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('#titulo-passo')));
+      expect(el.querySelector('[role=status]')?.textContent).toBe('Passo 3 de 4: Condições.');
+    });
+  });
+
+  describe('detalhes de acessibilidade e exibição', () => {
+    it('os totais correntes não são regiões aria-live (M-6)', async () => {
+      const passo2 = await montar({ id: 'p1', passo: '2' });
+      expect(passo2.el.querySelector('[data-testid=total-itens]')!.closest('[aria-live]')).toBeNull();
+      TestBed.resetTestingModule();
+      const passo3 = await montar({ id: 'p1', passo: '3' });
+      expect(passo3.el.querySelector('[data-testid=total-condicoes]')!.closest('[aria-live]')).toBeNull();
+    });
+
+    it('os rótulos do progresso existem para o leitor de tela também no celular (M-7)', async () => {
+      const { el } = await montar();
+      const rotulos = [...el.querySelectorAll('nav ol li span:last-child')];
+      expect(rotulos.map((r) => r.textContent?.trim())).toEqual(['Tipo e cliente', 'Itens', 'Condições', 'Revisão']);
+      for (const r of rotulos) {
+        expect(r.classList).toContain('sr-only');
+        expect(r.classList).not.toContain('hidden');
+      }
+    });
+
+    it('locação: o ADMIN vê o custo, sem margem, na linha com meses (M-8)', async () => {
+      const p = proposta({
+        tipo: 'LOCACAO', templateId: 't-loc',
+        itens: [linha('l2', { itemCatalogoId: 'i2', nome: 'Gerador', precoUnitarioCentavos: 30000, meses: 3, precoCustoCentavos: 400000 })],
+      });
+      const { el } = await montar({ id: 'p1', passo: '2', propostas: [p], usuario: ADMIN });
+      expect(el.querySelector('[data-testid=custo]')?.textContent?.replace(/\s+/g, ' ').trim()).toBe('Custo: R$ 4.000,00');
+    });
+
+    it('preço com milhar ao carregar e ao sair do campo; continua aceitando sem milhar (u2)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '2' });
+      const preco = campoDaLinha(el, 'l1', 'preco')!;
+      expect(preco.value).toBe('1.234,56');
+      digitar(fixture, preco, '1250,5');
+      preco.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+      expect(campoDaLinha(el, 'l1', 'preco')!.value).toBe('1.250,50');
+      digitar(fixture, campoDaLinha(el, 'l1', 'preco')!, 'x');
+      campoDaLinha(el, 'l1', 'preco')!.dispatchEvent(new Event('blur'));
+      fixture.detectChanges();
+      // inválido fica como digitado, com o erro
+      expect(campoDaLinha(el, 'l1', 'preco')!.value).toBe('x');
+      digitar(fixture, campoDaLinha(el, 'l1', 'preco')!, '1250,5');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Condições'));
+      expect(repo.salvarRascunho.mock.calls[0][1].itens![0].precoUnitarioCentavos).toBe(125050);
+    });
+
+    it('"Cadastrar cliente" tem alvo de 48 px (u3)', async () => {
+      const { el } = await montar();
+      expect(el.querySelector('[data-testid=cadastrar-cliente]')!.classList).toContain('h-12');
+    });
+
+    it('erro do servidor num campo das condições marca aria-invalid (M-5)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3' });
+      repo.salvarRascunho.mockRejectedValueOnce(new ErroProposta('VALIDACAO', 'validadeAte', 'Data inválida.', { validadeAte: 'Data inválida.' }));
+      digitar(fixture, el.querySelector<HTMLInputElement>('#validade')!, '2026-11-30');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(el.querySelector('#validade')!.getAttribute('aria-invalid')).toBe('true'));
+      await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('#validade')));
     });
   });
 });

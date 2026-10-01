@@ -72,7 +72,8 @@ import { EstadoWizard } from './wizard-estado';
             @for (f of faltas(); track f.passo) {
               <li class="flex items-center justify-between gap-2">
                 <span>{{ f.mensagem }}</span>
-                <button type="button" (click)="irPara.emit(f.passo)" class="min-h-12 px-2 font-semibold text-blue-700 underline">Corrigir</button>
+                <button type="button" (click)="irPara.emit(f.passo)" [attr.aria-label]="'Corrigir: ' + f.mensagem"
+                        class="min-h-12 px-2 font-semibold text-blue-700 underline">Corrigir</button>
               </li>
             }
           </ul>

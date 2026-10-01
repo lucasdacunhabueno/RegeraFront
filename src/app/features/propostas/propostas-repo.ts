@@ -410,6 +410,11 @@ export class PropostasRepo {
     return observar(() => this.db.usuarios.toArray());
   }
 
+  /** A proposta, reemitida a cada escrita (local ou do pull); undefined se ela sai do aparelho. */
+  observarProposta(id: string): Observable<PropostaLocal | undefined> {
+    return observar(() => this.db.propostas.get(id));
+  }
+
   buscar(id: string): Promise<PropostaLocal | undefined> {
     return this.db.propostas.get(id);
   }

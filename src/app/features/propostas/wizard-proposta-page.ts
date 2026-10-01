@@ -2,6 +2,7 @@ import {
   afterNextRender,
   Component,
   computed,
+  DestroyRef,
   effect,
   ElementRef,
   inject,
@@ -11,21 +12,23 @@ import {
   untracked,
   viewChild,
 } from '@angular/core';
-import { Router, RouterLink } from '@angular/router';
+import { ActivatedRoute, Router, RouterLink } from '@angular/router';
+import { firstValueFrom, Subscription } from 'rxjs';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { avisarAoSairDaPagina, ComAlteracoes } from '../../core/navegacao/alteracoes-guard';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { Toasts } from '../../shared/ui/toasts';
 import type { ItemLocal } from '../catalogo/item-models';
 import { TIPOS_PROPOSTA, TipoProposta } from '../templates/template-models';
-import { compartilharPdf } from './compartilhar';
+import { arquivoPdf, compartilharArquivo, ResultadoCompartilhar } from './compartilhar';
 import { Passo, ROTULO_PASSO } from './edicao-wizard';
 import { mensagemErroProposta } from './formatos-proposta';
 import { PassoCliente } from './passo-cliente';
 import { PassoCondicoes } from './passo-condicoes';
 import { PassoItens } from './passo-itens';
 import { PassoRevisao } from './passo-revisao';
-import { codigoExibido, ItemPropostaLocal, PropostaLocal } from './proposta-models';
+import { PdfPronto } from './pdf-pronto';
+import { codigoExibido, ItemPropostaLocal, podeEditar, PropostaLocal } from './proposta-models';
 import { ErroProposta, PropostasRepo } from './propostas-repo';
 import { EdicaoWizard, EstadoWizard } from './wizard-estado';
 
@@ -41,8 +44,11 @@ export interface ModoWizard {
   rotuloSalvar: string;
   /** null = a proposta pode ser aberta neste modo; senão, o toast (e a tela volta para o detalhe). */
   recusar(p: PropostaLocal): string | null;
-  /** Grava a edição de um passo e devolve a proposta como ficou no aparelho. */
-  salvar(injector: Injector, id: string, edicao: EdicaoWizard): Promise<PropostaLocal>;
+  /**
+   * Grava a edição de um passo e devolve a proposta como ficou no aparelho. `versaoBase`: a versão que a tela
+   * representa (P4c-R7), a base para o servidor detectar a edição de outro aparelho.
+   */
+  salvar(injector: Injector, id: string, edicao: EdicaoWizard, versaoBase: number | null): Promise<PropostaLocal>;
   /** Acrescenta o item do catálogo e devolve a linha nova e a proposta como ficou. */
   adicionarItem(injector: Injector, id: string, item: ItemLocal): Promise<{ linha: ItemPropostaLocal; proposta: PropostaLocal }>;
 }
@@ -57,12 +63,11 @@ export const MODOS_WIZARD: Readonly<Record<string, ModoWizard>> = {
   rascunho: {
     passos: [1, 2, 3, 4],
     rotuloSalvar: 'Salvar rascunho',
-    recusar: (p) => (p.status === 'RASCUNHO' ? null : 'Só rascunhos podem ser editados.'),
-    async salvar(injector, id, edicao) {
+    recusar: (p) => (podeEditar(p.status) ? null : 'Só rascunhos podem ser editados.'),
+    async salvar(injector, id, edicao, versaoBase) {
       const repo = injector.get(PropostasRepo);
       const { responsavelId, ...resto } = edicao;
-      // a versão: a que está no aparelho (o retorno do push da criação muda a local enquanto o wizard está aberto)
-      if (Object.keys(resto).length > 0) await repo.salvarRascunho(id, resto);
+      if (Object.keys(resto).length > 0) await repo.salvarRascunho(id, resto, versaoBase);
       // o responsável não é campo do rascunho: só o ADMIN troca, por `atribuir` (P4b-R3)
       if (responsavelId !== undefined) await repo.atribuir(id, { responsavelId });
       return recarregar(repo, id);
@@ -88,11 +93,12 @@ const ENVIADA_SEM_NUMERO = 'Proposta enviada. O número chega quando sincronizar
  * criado ao sair do passo 1 com tipo e cliente (nada de lixo); a URL passa a `/propostas/:id/editar?passo=2` (recarregar
  * retoma). Cada "Continuar" valida e grava o passo; "Salvar rascunho" grava o que mudou e vai ao detalhe. `?passo=4`
  * abre direto na revisão (P4c-R5). Enviar gera o PDF oficial, compartilha e vai ao detalhe. Sair com alterações não
- * gravadas pede confirmação (P4a-R12).
+ * gravadas pede confirmação (P4a-R12). A proposta é observada ao vivo (P4c-R7): a edição de outro aparelho recarrega
+ * os passos limpos e, num passo com alteração daqui, mostra a faixa de colisão.
  */
 @Component({
   selector: 'app-wizard-proposta-page',
-  imports: [RouterLink, PassoCliente, PassoItens, PassoCondicoes, PassoRevisao],
+  imports: [RouterLink, PassoCliente, PassoItens, PassoCondicoes, PassoRevisao, PdfPronto],
   providers: [EstadoWizard],
   template: `
     <a [routerLink]="e.id() ? ['/propostas', e.id()] : '/propostas'" class="text-sm text-blue-700">
@@ -104,18 +110,36 @@ const ENVIADA_SEM_NUMERO = 'Proposta enviada. O número chega quando sincronizar
     </div>
 
     <nav aria-label="Passos da proposta" class="mb-4">
-      <p class="mb-2 text-sm text-slate-600">Passo {{ indice() + 1 }} de {{ passos().length }}: {{ rotulo(atual()) }}</p>
+      <p class="mb-2 text-sm text-slate-600" aria-hidden="true">Passo {{ indice() + 1 }} de {{ passos().length }}: {{ rotulo(atual()) }}</p>
       <ol class="flex gap-1">
         @for (n of passos(); track n; let i = $index) {
           <li class="min-w-0 flex-1" [attr.aria-current]="n === atual() ? 'step' : null">
-            <span class="block h-2 rounded-full" [class.bg-blue-600]="i <= indice()" [class.bg-slate-200]="i > indice()"></span>
-            <span class="mt-1 hidden truncate text-xs sm:block" [class.font-semibold]="n === atual()">{{ rotulo(n) }}</span>
+            <span class="block h-2 rounded-full" aria-hidden="true" [class.bg-blue-600]="i <= indice()" [class.bg-slate-200]="i > indice()"></span>
+            <!-- no celular só para o leitor de tela; do sm para cima, visível -->
+            <span class="sr-only sm:not-sr-only sm:mt-1 sm:block sm:truncate sm:text-xs" [class.font-semibold]="n === atual()">{{ rotulo(n) }}</span>
           </li>
         }
       </ol>
     </nav>
 
     <p role="status" aria-live="polite" class="sr-only">{{ anuncio() }}</p>
+
+    @if (e.colisao().size > 0) {
+      <div id="aviso-colisao" role="alert" tabindex="-1" aria-labelledby="aviso-colisao-titulo"
+           class="mb-4 space-y-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-amber-950 outline-none">
+        <p id="aviso-colisao-titulo" class="font-semibold">Esta proposta foi alterada em outro aparelho.</p>
+        <p class="text-sm">
+          {{ passosEmColisao() }}: "Recarregar" traz o que foi gravado lá; "Manter as minhas" grava as suas, e a
+          diferença vai para Pendências.
+        </p>
+        <div class="flex flex-col gap-2 sm:flex-row">
+          <button type="button" (click)="recarregarColisoes()"
+                  class="h-12 flex-1 rounded-lg bg-amber-700 px-4 font-semibold text-white">Recarregar</button>
+          <button type="button" (click)="manterMinhas()"
+                  class="h-12 flex-1 rounded-lg border border-amber-700 px-4 font-semibold text-amber-900">Manter as minhas</button>
+        </div>
+      </div>
+    }
 
     @if (carregando()) {
       <p class="py-8 text-center text-slate-500">Carregando…</p>
@@ -127,29 +151,35 @@ const ENVIADA_SEM_NUMERO = 'Proposta enviada. O número chega quando sincronizar
         @case (4) { <app-passo-revisao (irPara)="irPara($event)" /> }
       }
 
-      <div class="mt-4 space-y-3">
-        <div class="flex gap-3">
-          @if (indice() > 0) {
-            <button type="button" (click)="voltar()" [disabled]="ocupado()"
-                    class="h-12 flex-1 rounded-lg border border-slate-300 bg-white font-semibold disabled:opacity-60">Voltar</button>
-          }
-          @if (!ultimo()) {
-            <button type="button" data-testid="continuar" (click)="continuar()" [disabled]="ocupado()"
-                    class="h-12 flex-1 rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
-              {{ salvando() ? 'Salvando…' : 'Continuar' }}
-            </button>
-          } @else if (atual() === 4) {
-            <button type="button" data-testid="enviar" (click)="enviar()" [disabled]="ocupado()"
-                    class="h-12 flex-1 rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
-              {{ enviando() ? 'Gerando PDF…' : 'Enviar' }}
-            </button>
-          }
+      @if (pdfPronto(); as arquivo) {
+        <div class="fixed inset-x-0 bottom-0 z-40 p-4 sm:static sm:mt-4 sm:p-0">
+          <app-pdf-pronto [arquivo]="arquivo" (concluido)="aposCompartilhar($event, arquivo)" />
         </div>
-        <button type="button" data-testid="salvar-rascunho" (click)="salvarRascunho()" [disabled]="ocupado()"
-                class="h-12 w-full rounded-lg border border-blue-600 bg-white font-semibold text-blue-700 disabled:opacity-60">
-          {{ config().rotuloSalvar }}
-        </button>
-      </div>
+      } @else {
+        <div class="mt-4 space-y-3">
+          <div class="flex gap-3">
+            @if (indice() > 0) {
+              <button type="button" (click)="voltar()" [disabled]="ocupado()"
+                      class="h-12 flex-1 rounded-lg border border-slate-300 bg-white font-semibold disabled:opacity-60">Voltar</button>
+            }
+            @if (!ultimo()) {
+              <button type="button" data-testid="continuar" (click)="continuar()" [disabled]="ocupado()"
+                      class="h-12 flex-1 rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
+                {{ salvando() ? 'Salvando…' : 'Continuar' }}
+              </button>
+            } @else if (atual() === 4) {
+              <button type="button" data-testid="enviar" (click)="enviar()" [disabled]="ocupado()"
+                      class="h-12 flex-1 rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
+                {{ enviando() ? 'Gerando PDF…' : 'Enviar' }}
+              </button>
+            }
+          </div>
+          <button type="button" data-testid="salvar-rascunho" (click)="salvarRascunho()" [disabled]="ocupado()"
+                  class="h-12 w-full rounded-lg border border-blue-600 bg-white font-semibold text-blue-700 disabled:opacity-60">
+            {{ config().rotuloSalvar }}
+          </button>
+        </div>
+      }
     }
   `,
 })
@@ -168,6 +198,7 @@ export class WizardPropostaPage implements ComAlteracoes {
   private readonly repo = inject(PropostasRepo);
   private readonly pdf = inject(PdfService);
   private readonly router = inject(Router);
+  private readonly rota = inject(ActivatedRoute);
   private readonly toasts = inject(Toasts);
   private readonly online = inject(ConectividadeService).online;
   private readonly injector = inject(Injector);
@@ -181,6 +212,7 @@ export class WizardPropostaPage implements ComAlteracoes {
   protected readonly indice = computed(() => Math.max(0, this.passos().indexOf(this.atual())));
   protected readonly ultimo = computed(() => this.indice() === this.passos().length - 1);
   protected readonly rotulo = (n: Passo) => ROTULO_PASSO[n];
+  protected readonly passosEmColisao = computed(() => [...this.e.colisao()].sort().map((n) => ROTULO_PASSO[n]).join(', '));
 
   protected readonly carregando = signal(true);
   protected readonly salvando = signal(false);
@@ -188,6 +220,8 @@ export class WizardPropostaPage implements ComAlteracoes {
   protected readonly adicionando = signal(false);
   protected readonly ocupado = computed(() => this.salvando() || this.enviando() || this.adicionando());
   protected readonly anuncio = signal('');
+  /** P4c-R8: o PDF enviado esperando um toque para o compartilhamento (o navegador recusou sem gesto). */
+  protected readonly pdfPronto = signal<File | null>(null);
 
   /** Depois de gravar e sair (ou de recusar a abertura), sair não pergunta nada. */
   private readonly liberado = signal(false);
@@ -197,12 +231,19 @@ export class WizardPropostaPage implements ComAlteracoes {
     () => !this.liberado() && !this.carregando() && ([1, 2, 3] as const).some((n) => this.e.sujo(n)),
   );
 
+  /** A observação ao vivo da proposta (P4c-R7). */
+  private observacao?: Subscription;
+  /** Gravações desta tela em andamento: as reemissões no meio delas esperam (a gravação relê no fim). */
+  private gravando = 0;
+  private reemitiuGravando = false;
+
   constructor() {
     avisarAoSairDaPagina(this.alterado);
     effect(() => {
       const id = this.id();
       untracked(() => void this.iniciar(id));
     });
+    inject(DestroyRef).onDestroy(() => this.observacao?.unsubscribe());
   }
 
   temAlteracoes(): boolean {
@@ -222,7 +263,16 @@ export class WizardPropostaPage implements ComAlteracoes {
       await this.criar(false);
       return;
     }
-    if (await this.gravar(n)) this.ir(this.passos()[this.indice() + 1]);
+    const trocaAntes = this.e.trocaDeTipo()?.seq;
+    if (!(await this.gravar(n))) return;
+    const troca = this.e.trocaDeTipo();
+    let extra = '';
+    if (troca && troca.seq !== trocaAntes) {
+      extra = troca.templateId
+        ? ' O template passou a ser o padrão do novo tipo.'
+        : ' O novo tipo não tem template padrão: escolha um nas condições.';
+    }
+    this.ir(this.passos()[this.indice() + 1], true, extra);
   }
 
   protected voltar(): void {
@@ -258,21 +308,35 @@ export class WizardPropostaPage implements ComAlteracoes {
     void this.router.navigate(['/clientes/novo'], { queryParams: { voltar } }).finally(() => (this.saindoParaCliente = false));
   }
 
+  // ---- colisão (P4c-R7) ----
+
+  protected recarregarColisoes(): void {
+    this.e.recarregarColisoes();
+    this.anuncio.set('Os passos foram recarregados com o que foi gravado no outro aparelho.');
+  }
+
+  protected manterMinhas(): void {
+    this.e.manterMinhas();
+    this.anuncio.set('Suas alterações serão gravadas; a diferença vai para Pendências.');
+  }
+
   // ---- itens ----
 
   protected async adicionarItem(item: ItemLocal): Promise<void> {
     const id = this.e.id();
     if (!id || this.ocupado()) return;
     this.adicionando.set(true);
+    this.gravando++;
     try {
       const { linha, proposta } = await this.config().adicionarItem(this.injector, id, item);
       this.e.anexarLinha(linha, proposta);
       this.anuncio.set(`${linha.nome ?? 'Item'} adicionado.`);
-      this.passoItens()?.focarLinha(linha.id);
+      this.passoItens()?.aposAdicionar(linha.id);
     } catch (err) {
       this.toasts.erro(mensagemErroProposta(err));
     } finally {
       this.adicionando.set(false);
+      this.fimDaGravacao(id);
     }
   }
 
@@ -280,7 +344,8 @@ export class WizardPropostaPage implements ComAlteracoes {
 
   /**
    * Enviar (§9.3): exige item, cliente e template; `repo.enviar` gera o PDF oficial (PROV offline) e grava tudo no
-   * aparelho; depois o compartilhamento (ou o download) e o detalhe.
+   * aparelho; depois o compartilhamento (ou o download) e o detalhe. Se o navegador recusar a folha por falta de gesto
+   * (a geração demorou), o painel "PDF pronto" pede um toque (P4c-R8).
    */
   protected async enviar(): Promise<void> {
     const id = this.e.id();
@@ -292,13 +357,20 @@ export class WizardPropostaPage implements ComAlteracoes {
     }
     if (!(await this.gravarAlterados())) return;
     this.enviando.set(true);
+    this.gravando++;
+    this.anuncio.set('Gerando o PDF da proposta…');
     try {
       const blob = await this.repo.enviar(id, (entrada) => this.pdf.gerarBlob(entrada));
       this.liberado.set(true);
+      const arquivo = arquivoPdf(blob, `Proposta-${await this.codigoDoDocumento(id)}.pdf`);
       const p = await this.repo.buscar(id);
-      await compartilharPdf(blob, `Proposta-${p ? codigoExibido(p) : (this.e.codigo() ?? id)}.pdf`);
       this.toasts.mostrar(!this.online() || !p || p.numero === null ? ENVIADA_SEM_NUMERO : 'Proposta enviada.');
-      await this.router.navigate(['/propostas', id]);
+      const resultado = await compartilharArquivo(arquivo, blob);
+      if (resultado === 'precisa-toque') {
+        this.pdfPronto.set(arquivo);
+        return;
+      }
+      await this.aposCompartilhar(resultado, arquivo);
     } catch (err) {
       if (err instanceof ErroProposta && err.codigo === 'PROPOSTA_JA_ENVIADA') {
         this.liberado.set(true);
@@ -309,7 +381,15 @@ export class WizardPropostaPage implements ComAlteracoes {
       this.falhou(err);
     } finally {
       this.enviando.set(false);
+      this.fimDaGravacao(id);
     }
+  }
+
+  /** Depois do compartilhamento (direto ou pelo painel): o aviso do download e o detalhe da proposta. */
+  protected async aposCompartilhar(r: Exclude<ResultadoCompartilhar, 'precisa-toque'> | 'fechado', arquivo: File): Promise<void> {
+    this.pdfPronto.set(null);
+    if (r === 'baixado') this.toasts.mostrar(`PDF baixado: ${arquivo.name}`);
+    await this.router.navigate(['/propostas', this.e.id()]);
   }
 
   // ---- internos ----
@@ -319,10 +399,13 @@ export class WizardPropostaPage implements ComAlteracoes {
     this.liberado.set(false);
     this.e.tentou.set(new Set());
     this.e.errosServidor.set({});
+    this.observacao?.unsubscribe();
+    const veioDoCadastro = !!this.tipo() || !!this.clienteId();
     if (!id) {
       this.e.iniciarNovo(tipoDaUrl(this.tipo()), this.clienteId() || null);
       this.atual.set(this.passos()[0]);
       this.carregando.set(false);
+      if (veioDoCadastro) this.limparParametrosDoCadastro();
       return;
     }
     let p: PropostaLocal | undefined;
@@ -337,22 +420,83 @@ export class WizardPropostaPage implements ComAlteracoes {
     }
     // o id mudou durante a leitura: a carga do id novo é que preenche a tela
     if (this.id() !== id) return;
-    const recusa = p ? this.config().recusar(p) : 'Proposta não encontrada neste aparelho.';
-    if (!p || recusa) {
-      this.liberado.set(true);
-      this.toasts.erro(recusa!);
-      await this.router.navigate(p ? ['/propostas', id] : ['/propostas'], { replaceUrl: true });
-      return;
-    }
-    this.e.carregar(p);
+    if (await this.recusou(id, p)) return;
+    this.e.carregar(p!);
     // a volta do "Cadastrar cliente" traz o passo 1 que ainda não foi gravado
     const tipo = tipoDaUrl(this.tipo());
     if (tipo) this.e.tipo.set(tipo);
     if (this.clienteId()) this.e.clienteId.set(this.clienteId()!);
     const pedido = Number(this.passo()) as Passo;
-    this.atual.set(this.passos().includes(pedido) ? pedido : this.passos()[0]);
-    this.preparar(this.atual());
+    const passo = this.passos().includes(pedido) ? pedido : this.passos()[0];
+    this.atual.set(passo);
+    this.preparar(passo);
     this.carregando.set(false);
+    // aberto num passo (a passagem do /nova, o kanban): o leitor de tela sabe onde está
+    if (this.passo() !== undefined) this.anunciarPasso(passo, true);
+    if (veioDoCadastro) this.limparParametrosDoCadastro();
+    this.observar(id);
+  }
+
+  /** Sem a proposta, ou num status que o modo não edita: avisa e sai. true = saiu. */
+  private async recusou(id: string, p: PropostaLocal | undefined): Promise<boolean> {
+    const recusa = p ? this.config().recusar(p) : 'Proposta não encontrada neste aparelho.';
+    if (!recusa) return false;
+    this.liberado.set(true);
+    this.toasts.erro(recusa);
+    await this.router.navigate(p ? ['/propostas', id] : ['/propostas'], { replaceUrl: true });
+    return true;
+  }
+
+  /** P4c-R7: cada escrita na proposta (ack do push, pull de outro aparelho) passa por `reconciliar`. */
+  private observar(id: string): void {
+    this.observacao = this.repo.observarProposta(id).subscribe((p) => {
+      if (this.id() !== id || this.liberado()) return;
+      if (this.gravando > 0) {
+        this.reemitiuGravando = true;
+        return;
+      }
+      void this.aoMudarNaBase(id, p);
+    });
+  }
+
+  private async aoMudarNaBase(id: string, p: PropostaLocal | undefined): Promise<void> {
+    if (!p || this.config().recusar(p)) {
+      // excluída, enviada ou cancelada em outro lugar: nada mais a editar aqui
+      await this.recusou(id, p);
+      return;
+    }
+    const tinhaColisao = this.e.colisao().size > 0;
+    this.e.reconciliar(p);
+    if (!tinhaColisao && this.e.colisao().size > 0) this.focar('#aviso-colisao');
+  }
+
+  /** Fim de uma gravação desta tela: uma reemissão que chegou no meio é relida agora (pode ser de outro aparelho). */
+  private fimDaGravacao(id: string): void {
+    this.gravando--;
+    if (this.gravando > 0 || !this.reemitiuGravando) return;
+    this.reemitiuGravando = false;
+    void this.repo.buscar(id).then((p) => {
+      if (this.gravando === 0 && !this.liberado()) return this.aoMudarNaBase(id, p);
+      return undefined;
+    });
+  }
+
+  /** M-2: o tipo e o cliente da volta do cadastro já estão na tela; a URL não os reaplica num recarregamento. */
+  private limparParametrosDoCadastro(): void {
+    void this.router.navigate([], {
+      relativeTo: this.rota,
+      queryParams: { tipo: null, clienteId: null },
+      queryParamsHandling: 'merge',
+      replaceUrl: true,
+    });
+  }
+
+  /** O código impresso no PDF que acabou de ser gerado (o número pode ter chegado logo depois, num ack). */
+  private async codigoDoDocumento(id: string): Promise<string> {
+    const [ultimo] = await firstValueFrom(this.repo.observarDocumentos(id));
+    if (ultimo) return ultimo.codigoExibido;
+    const p = await this.repo.buscar(id);
+    return p ? codigoExibido(p) : (this.e.codigo() ?? id);
   }
 
   /** Cria o rascunho com o passo 1 (só aqui: sair do passo 1 com tipo e cliente). */
@@ -375,23 +519,36 @@ export class WizardPropostaPage implements ComAlteracoes {
     }
   }
 
-  /** Grava o passo `n` se ele mudou; false se a gravação foi recusada (os erros ficam nos campos). */
+  /**
+   * Grava o passo `n` se ele mudou; false se não gravou. Antes, relê a proposta e reconcilia (um ack ou uma edição de
+   * outro aparelho que ainda não chegou pela observação): com colisão, não grava e mostra a faixa.
+   */
   private async gravar(n: Passo): Promise<boolean> {
     const id = this.e.id();
     if (!id || !this.e.sujo(n)) return true;
     this.salvando.set(true);
+    this.gravando++;
     try {
-      const edicao = this.e.edicaoDoPasso(n, await this.repo.buscar(id));
+      const atual = await this.repo.buscar(id);
+      if (atual) this.e.reconciliar(atual);
+      if (this.e.colisao().size > 0) {
+        this.focar('#aviso-colisao');
+        return false;
+      }
+      if (!this.e.sujo(n)) return true;
+      const edicao = this.e.edicaoDoPasso(n, atual);
       if (!edicao) return false;
+      const tocouOutros = n === 1 && !!atual && atual.tipo !== this.e.tipo();
       this.e.errosServidor.set({});
-      const p = await this.config().salvar(this.injector, id, edicao);
-      this.e.aposSalvar(n, p);
+      const p = await this.config().salvar(this.injector, id, edicao, this.e.versaoBase());
+      this.e.aposSalvar(n, p, tocouOutros);
       return true;
     } catch (err) {
       this.falhou(err);
       return false;
     } finally {
       this.salvando.set(false);
+      this.fimDaGravacao(id);
     }
   }
 
@@ -413,22 +570,27 @@ export class WizardPropostaPage implements ComAlteracoes {
     if (this.e.valido(n, paraAvancar)) return true;
     if (this.atual() !== n) this.ir(n, false);
     this.anuncio.set('Corrija os campos destacados.');
-    this.focar('[aria-invalid="true"], [role="alert"]');
+    this.focarPrimeiroErro();
     return false;
   }
 
-  /** Recusa do repositório: os erros vão para os campos (e para o passo deles) e a mensagem para o toast. */
+  /** Recusa do repositório: os erros vão para os campos (e para o passo deles), o foco para o campo e a mensagem para o toast. */
   private falhou(err: unknown): void {
     const passo = this.e.registrarErro(err);
     this.toasts.erro(mensagemErroProposta(err));
     if (passo !== null && passo !== this.atual() && this.passos().includes(passo)) this.ir(passo, false);
+    if (passo !== null) this.focarPrimeiroErro();
   }
 
-  private ir(n: Passo, focarTitulo = true): void {
+  private ir(n: Passo, focarTitulo = true, extra = ''): void {
     this.atual.set(n);
     this.preparar(n);
+    this.anunciarPasso(n, focarTitulo, extra);
+  }
+
+  private anunciarPasso(n: Passo, focarTitulo: boolean, extra = ''): void {
     const i = this.passos().indexOf(n);
-    this.anuncio.set(`Passo ${i + 1} de ${this.passos().length}: ${ROTULO_PASSO[n]}.`);
+    this.anuncio.set(`Passo ${i + 1} de ${this.passos().length}: ${ROTULO_PASSO[n]}.${extra}`);
     if (focarTitulo) this.focar('#titulo-passo');
   }
 
@@ -437,6 +599,10 @@ export class WizardPropostaPage implements ComAlteracoes {
     if (n !== 3 || this.e.templateId()) return;
     const padrao = this.e.padroes().get(this.e.tipo());
     if (padrao) this.e.templateId.set(padrao);
+  }
+
+  private focarPrimeiroErro(): void {
+    this.focar('[aria-invalid="true"], [role="alert"][tabindex]');
   }
 
   private focar(seletor: string): void {

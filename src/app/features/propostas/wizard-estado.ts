@@ -12,6 +12,7 @@ import type { TotaisCalculo } from './calculo';
 import {
   campoDaLinha,
   ERRO_DESCONTO,
+  ERRO_PRECO,
   ErrosLinha,
   lerCampoDecimal,
   lerLinha,
@@ -22,7 +23,9 @@ import {
   Passo,
   passoDoCampo,
   PERCENTUAL_MAX,
+  PRECO_MAX,
   textoDecimal,
+  textoMoeda,
   totaisDe,
 } from './edicao-wizard';
 import { codigoExibido, podeAlterarTecnico, PropostaLocal, StatusProposta } from './proposta-models';
@@ -69,6 +72,23 @@ function camposCliente(p: PropostaLocal): CamposCliente {
   return { tipo: p.tipo, clienteId: p.clienteId };
 }
 
+/** Os campos do passo `n` como estão na proposta gravada `p` (a mesma forma que a tela compara). */
+function camposDe(p: PropostaLocal, n: 1 | 2 | 3): unknown {
+  if (n === 1) return camposCliente(p);
+  if (n === 2) return p.itens.map(paraLinhaEditavel);
+  return camposCondicoes(p);
+}
+
+const PASSOS_EDITAVEIS = [1, 2, 3] as const;
+
+/** O que o próprio wizard acabou de gravar, para `reconciliar` não confundir com edição de outro aparelho. */
+export interface GravacaoPropria {
+  /** Passos gravados agora: voltam a mostrar o gravado (texto normalizado). */
+  gravados?: readonly Passo[];
+  /** Passos que a gravação também mudou (troca de tipo, item adicionado): o gravado vira a nova base deles. */
+  tocados?: readonly Passo[];
+}
+
 function camposCondicoes(p: PropostaLocal): CamposCondicoes {
   return {
     templateId: p.templateId,
@@ -107,7 +127,26 @@ export class EstadoWizard {
   readonly codigo = signal<string | null>(null);
   readonly status = signal<StatusProposta>('RASCUNHO');
   readonly responsavelSalvo = signal<string | null>(null);
+  /**
+   * P4c-R7: a versão da proposta que os campos da tela representam, passada como `versaoCarregada` em toda gravação.
+   * Avança com o ack do próprio push e quando um passo limpo é recarregado; fica parada enquanto um passo alterado
+   * aqui foi editado em outro aparelho e, depois de "Manter as minhas", de vez: o servidor responde CONFLITO.
+   */
+  readonly versaoBase = signal<number | null>(null);
+  /** Passos alterados aqui (não gravados) que outro aparelho também mudou: a faixa pede Recarregar ou Manter. */
+  readonly colisao = signal<ReadonlySet<Passo>>(new Set());
+  /** Depois de uma troca de tipo com itens: os preços das linhas não foram recalculados (aviso no passo 2). */
+  readonly tipoMudou = signal(false);
+  /** A última troca de tipo gravada (a página anuncia o template que entrou): `seq` sobe a cada troca. */
+  readonly trocaDeTipo = signal<{ seq: number; templateId: string | null } | null>(null);
+  /** O que está gravado de cada passo: a base do "sujo". Só muda junto com o passo (P4c-R7), salvo se ele está sujo. */
   private readonly salvo = signal<Readonly<Record<Passo, string>>>({ 1: '', 2: '', 3: '', 4: '' });
+  /** A última versão gravada lida (o "Recarregar" pega dela). */
+  private fresca: PropostaLocal | null = null;
+  /** "Manter as minhas": a versão base não avança mais (as próximas gravações dão CONFLITO no servidor). */
+  private mantidas = false;
+  /** O que o usuário escolheu sobrescrever com "Manter as minhas", por passo: não acusa de novo. */
+  private readonly ignoradas = new Map<Passo, string>();
 
   // ---- campos ----
   readonly tipo = signal<TipoProposta>('VENDA');
@@ -241,23 +280,89 @@ export class EstadoWizard {
     if (clienteId) this.clienteId.set(clienteId);
   }
 
-  /** Preenche todos os passos com a proposta gravada. */
+  /** Preenche todos os passos com a proposta gravada; ela é a base de tudo. */
   carregar(p: PropostaLocal): void {
-    for (const n of [1, 2, 3] as const) this.preencher(n, p);
-    this.rebasear(p);
+    for (const n of PASSOS_EDITAVEIS) this.preencher(n, p);
+    this.salvo.set({ 1: instantaneo(camposDe(p, 1)), 2: instantaneo(camposDe(p, 2)), 3: instantaneo(camposDe(p, 3)), 4: '' });
+    this.colisao.set(new Set());
+    this.ignoradas.clear();
+    this.mantidas = false;
+    this.fresca = p;
+    this.versaoBase.set(p.version);
+    this.dadosGravados(p);
   }
 
-  /** Depois de gravar o passo `n`: o passo volta a mostrar o que ficou gravado (texto normalizado) e tudo é rebaseado. */
-  aposSalvar(n: Passo, p: PropostaLocal): void {
-    if (n === 1 || n === 2 || n === 3) this.preencher(n, p);
-    if (n === 1) {
-      // a troca de tipo também gravou o template padrão do tipo e os meses das linhas
-      if (this.sujo(2)) this.alinharMeses(p);
-      else this.preencher(2, p);
-      if (this.sujo(3)) this.templateId.set(p.templateId);
-      else this.preencher(3, p);
+  /**
+   * P4c-R7: a proposta gravada mudou (o próprio push voltou, o pull trouxe a edição de outro aparelho, ou esta tela
+   * gravou: `proprio`). Para cada passo:
+   * - os campos dele não mudaram (ack: version, número, atualizadoEm, ordem, subtotal): nada;
+   * - mudaram e o passo não tem alteração daqui: recarrega o passo em silêncio;
+   * - mudaram e o passo tem alteração daqui: colisão (a faixa), e a tela continua com o que o usuário digitou.
+   * Sem colisão (e sem "Manter as minhas"), a versão base avança para a lida.
+   */
+  reconciliar(p: PropostaLocal, proprio: GravacaoPropria = {}): void {
+    this.fresca = p;
+    const salvo = { ...this.salvo() };
+    const colisao = new Set<Passo>();
+    for (const n of PASSOS_EDITAVEIS) {
+      const gravado = instantaneo(camposDe(p, n));
+      if (proprio.gravados?.includes(n)) {
+        this.preencher(n, p);
+        salvo[n] = gravado;
+        this.ignoradas.delete(n);
+        continue;
+      }
+      if (gravado === salvo[n]) continue;
+      const tela = this.instantaneoPasso(n);
+      if (tela === salvo[n]) {
+        // limpo: recarrega em silêncio
+        this.preencher(n, p);
+        salvo[n] = gravado;
+      } else if (tela === gravado || proprio.tocados?.includes(n)) {
+        // a mesma mudança dos dois lados, ou mudança desta tela num passo com alteração ainda não gravada
+        salvo[n] = gravado;
+      } else if (this.ignoradas.get(n) !== gravado) {
+        colisao.add(n);
+      }
     }
-    this.rebasear(p);
+    this.salvo.set(salvo);
+    this.colisao.set(colisao);
+    this.dadosGravados(p);
+    if (colisao.size === 0 && !this.mantidas) this.versaoBase.set(p.version);
+  }
+
+  /**
+   * Depois de gravar o passo `n`: ele volta a mostrar o gravado. A troca de tipo também gravou o template padrão do
+   * tipo e os meses das linhas (`tocouOutros`): nos passos 2 e 3 com alteração daqui, só isso entra na tela.
+   */
+  aposSalvar(n: Passo, p: PropostaLocal, tocouOutros = false): void {
+    const tocados: Passo[] = [];
+    if (n === 1 && tocouOutros) {
+      if (this.sujo(2)) this.alinharMeses(p);
+      if (this.sujo(3)) this.templateId.set(p.templateId);
+      tocados.push(2, 3);
+      this.tipoMudou.set(p.itens.length > 0);
+      this.trocaDeTipo.update((t) => ({ seq: (t?.seq ?? 0) + 1, templateId: p.templateId }));
+    }
+    this.reconciliar(p, { gravados: n === 4 ? [] : [n], tocados });
+  }
+
+  /** "Recarregar" da faixa: os passos em colisão passam a mostrar a versão gravada (a de outro aparelho). */
+  recarregarColisoes(): void {
+    const p = this.fresca;
+    if (!p) return;
+    const passos = [...this.colisao()].filter((n): n is 1 | 2 | 3 => n !== 4);
+    for (const n of passos) this.ignoradas.delete(n);
+    this.reconciliar(p, { gravados: passos });
+  }
+
+  /** "Manter as minhas": a tela fica com o que o usuário digitou; gravar com a versão base antiga dá CONFLITO. */
+  manterMinhas(): void {
+    const p = this.fresca;
+    if (!p) return;
+    for (const n of this.colisao()) if (n !== 4) this.ignoradas.set(n, instantaneo(camposDe(p, n)));
+    this.mantidas = true;
+    this.colisao.set(new Set());
   }
 
   sujo(n: Passo): boolean {
@@ -317,12 +422,22 @@ export class EstadoWizard {
   /** A linha que `adicionarItem` gravou, no fim da lista da tela (as outras linhas da tela ficam como estão). */
   anexarLinha(linha: PropostaLocal['itens'][number], p: PropostaLocal): void {
     this.linhas.update((l) => [...l.filter((x) => x.id !== linha.id), paraLinhaEditavel(linha)]);
-    this.salvo.update((s) => ({ ...s, 2: instantaneo(p.itens.map(paraLinhaEditavel)) }));
+    this.reconciliar(p, { tocados: [2] });
   }
 
   alterarLinha(id: string, campo: 'quantidade' | 'preco' | 'desconto' | 'meses', valor: string): void {
     this.linhas.update((lista) => lista.map((l) => (l.id === id ? { ...l, [campo]: valor } : l)));
     this.limparErroServidor((c) => c.startsWith('itens'));
+  }
+
+  /** Ao sair do campo de preço: um valor válido volta formatado com milhar (`1.250,50`); o inválido fica como está. */
+  formatarPreco(id: string): void {
+    const l = this.linhas().find((x) => x.id === id);
+    if (!l) return;
+    const v = lerCampoDecimal(l.preco, 2, 0n, PRECO_MAX, ERRO_PRECO);
+    if (typeof v !== 'bigint') return;
+    const texto = textoMoeda(v);
+    if (texto !== l.preco) this.linhas.update((lista) => lista.map((x) => (x.id === id ? { ...x, preco: texto } : x)));
   }
 
   removerLinha(id: string): void {
@@ -385,18 +500,12 @@ export class EstadoWizard {
     }
   }
 
-  /** O gravado passa a ser `p`: base do "sujo" de cada passo e os dados que não se editam aqui. */
-  private rebasear(p: PropostaLocal): void {
+  /** O que não se edita aqui, sempre como está gravado (o número chega com o ack do push). */
+  private dadosGravados(p: PropostaLocal): void {
     this.id.set(p.id);
     this.codigo.set(codigoExibido(p));
     this.status.set(p.status);
     this.responsavelSalvo.set(p.responsavelId);
-    this.salvo.set({
-      1: instantaneo(camposCliente(p)),
-      2: instantaneo(p.itens.map(paraLinhaEditavel)),
-      3: instantaneo(camposCondicoes(p)),
-      4: '',
-    });
   }
 
   private camposCondicoesAtuais(): CamposCondicoes {

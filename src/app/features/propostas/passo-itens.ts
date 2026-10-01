@@ -55,7 +55,15 @@ const CAMPOS: readonly CampoDaTela[] = [
         }
       </div>
 
-      @if (erros().itens; as erro) { <p id="itens-erro" role="alert" class="text-sm text-red-600">{{ erro }}</p> }
+      @if (e.tipoMudou()) {
+        <p data-testid="aviso-tipo" class="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900">
+          O tipo mudou: os preços das linhas não foram recalculados. Confira.
+        </p>
+      }
+
+      @if (erros().itens; as erro) {
+        <p id="itens-erro" role="alert" tabindex="-1" class="text-sm text-red-600 outline-none">{{ erro }}</p>
+      }
 
       <ul class="space-y-3" aria-label="Itens da proposta">
         @for (l of e.linhas(); track l.id; let i = $index, primeiro = $first, ultimo = $last) {
@@ -83,6 +91,7 @@ const CAMPOS: readonly CampoDaTela[] = [
                     <label [for]="c.campo + '-' + l.id" class="text-sm font-medium">{{ c.rotulo }}</label>
                     <input [id]="c.campo + '-' + l.id" [attr.data-campo]="c.campo" [attr.inputmode]="c.modo" autocomplete="off"
                            [value]="l[c.campo]" (input)="e.alterarLinha(l.id, c.campo, $any($event.target).value)"
+                           (blur)="c.campo === 'preco' && e.formatarPreco(l.id)"
                            [attr.aria-invalid]="erro ? 'true' : 'false'"
                            [attr.aria-describedby]="erro ? c.campo + '-' + l.id + '-erro' : null"
                            class="h-12 w-full rounded-lg border px-3 text-right" [class.border-slate-300]="!erro" [class.border-red-600]="erro" />
@@ -97,7 +106,10 @@ const CAMPOS: readonly CampoDaTela[] = [
               @if (e.admin() && l.precoCustoCentavos !== null) {
                 <p data-testid="custo" class="text-slate-600">
                   Custo: {{ moeda(l.precoCustoCentavos) }}
-                  @if (margem(i, l); as m) { · Margem: {{ m }}% }
+                  <!-- locação: o custo é do equipamento, a receita é mensal; a margem não é comparável -->
+                  @if (!e.comMeses(l)) {
+                    @if (margem(i, l); as m) { · Margem: {{ m }}% }
+                  }
                 </p>
               }
               <p class="ml-auto">Subtotal: <strong data-testid="subtotal">{{ subtotal(i) }}</strong></p>
@@ -110,7 +122,7 @@ const CAMPOS: readonly CampoDaTela[] = [
         }
       </ul>
 
-      <p class="flex items-baseline justify-between border-t border-slate-200 pt-3 font-semibold" aria-live="polite">
+      <p class="flex items-baseline justify-between border-t border-slate-200 pt-3 font-semibold">
         <span>Total dos itens</span>
         <span data-testid="total-itens">{{ totalItens() }}</span>
       </p>
@@ -152,8 +164,9 @@ export class PassoItens {
     return margemPercentual((l.precoCustoCentavos * linha.quantidadeMilesimos) / 1000, subtotal);
   }
 
-  /** Depois de "Adicionar": o foco vai para a quantidade da linha nova. */
-  focarLinha(id: string): void {
+  /** Depois de "Adicionar": a busca fecha e o foco vai para a quantidade da linha nova. */
+  aposAdicionar(id: string): void {
+    this.busca.set('');
     this.focar(`li[data-linha-id="${id}"] input[data-campo=quantidade]`);
   }
 
