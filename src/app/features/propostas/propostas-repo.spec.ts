@@ -1002,5 +1002,23 @@ describe('PropostasRepo', () => {
       expect(await repo.temPendencia('p1')).toBe(true);
       expect([...(await firstValueFrom(repo.observarNaoSincronizados()))]).toEqual(['p1']);
     });
+
+    it('observarEstadoSync separa a outbox (inclusive o upload do PDF) das pendências (selos do P4c)', async () => {
+      await db.outbox.clear();
+      expect(await firstValueFrom(repo.observarEstadoSync())).toEqual({ naOutbox: new Set(), comPendencia: new Set() });
+      await db.outbox.bulkAdd([
+        { mutationId: 'm1', entidade: 'proposta', agregadoId: 'p-out', op: 'UPSERT', baseVersion: 1, dados: null, criadaEm: '' },
+        { mutationId: 'm2', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p-pdf', op: 'UPLOAD', baseVersion: null, dados: null, criadaEm: '' },
+      ]);
+      await db.pendencias.put(pendencia('proposta', 'p-pend'));
+      const estado = await firstValueFrom(repo.observarEstadoSync());
+      expect([...estado.naOutbox].sort()).toEqual(['p-out', 'p-pdf']);
+      expect([...estado.comPendencia]).toEqual(['p-pend']);
+    });
+
+    it('observarUsuarios: os usuários do sync (nomes de responsável e técnico)', async () => {
+      const usuarios = await firstValueFrom(repo.observarUsuarios());
+      expect(usuarios.map((u) => u.nome).sort()).toEqual([ADMIN.nome, OUTRO_COMERCIAL.nome, COMERCIAL.nome, TECNICO.nome].sort());
+    });
   });
 });

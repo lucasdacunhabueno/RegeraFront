@@ -8,7 +8,7 @@ import { RegeraDb } from '../../core/db/regera-db';
 import type { ClientePdf, EmpresaPdf, EntradaPdf, ItemPdf } from '../../core/pdf/pdf-models';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { observarNaoSincronizados } from '../../core/sync/nao-sincronizados';
-import type { ErroMutacao, Pendencia } from '../../core/sync/sync-models';
+import type { ErroMutacao, Pendencia, UsuarioResumo } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { formatarCep } from '../../core/util/formatos';
@@ -244,6 +244,12 @@ export interface DocumentoDaProposta {
 }
 
 /** `duplicar`: o rascunho novo e quantas linhas ficaram de fora (item do catálogo inativo ou fora do aparelho). */
+/** Ids com mutação na outbox e ids com pendência (`observarEstadoSync`). */
+export interface EstadoSync {
+  naOutbox: ReadonlySet<string>;
+  comPendencia: ReadonlySet<string>;
+}
+
 export interface Duplicada {
   id: string;
   linhasDescartadas: number;
@@ -368,6 +374,22 @@ export class PropostasRepo {
 
   observarNaoSincronizados(): Observable<Set<string>> {
     return observarNaoSincronizados(this.db);
+  }
+
+  /**
+   * Os dois selos de sync do P4c, separados: `naOutbox` = agregados com mutação esperando envio (inclusive o upload do
+   * PDF, que leva o id da proposta); `comPendencia` = agregados com conflito ou rejeição.
+   */
+  observarEstadoSync(): Observable<EstadoSync> {
+    return observar(async () => ({
+      naOutbox: new Set((await this.db.outbox.toArray()).map((m) => m.agregadoId)),
+      comPendencia: new Set((await this.db.pendencias.toArray()).map((p) => p.agregadoId)),
+    }));
+  }
+
+  /** Os usuários que vieram no sync (nome do responsável e do técnico nas telas). */
+  observarUsuarios(): Observable<UsuarioResumo[]> {
+    return observar(() => this.db.usuarios.toArray());
   }
 
   buscar(id: string): Promise<PropostaLocal | undefined> {
