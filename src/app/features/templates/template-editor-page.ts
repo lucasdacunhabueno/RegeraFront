@@ -13,7 +13,6 @@ import {
   untracked,
   viewChild,
 } from '@angular/core';
-import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
 import { Router, RouterLink } from '@angular/router';
 import { RegeraDb } from '../../core/db/regera-db';
 import { avisarAoSairDaPagina, ComAlteracoes, instantaneo } from '../../core/navegacao/alteracoes-guard';
@@ -21,6 +20,7 @@ import { entradaFicticia } from '../../core/pdf/dados-ficticios';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { Toasts } from '../../shared/ui/toasts';
+import { VisorPdf } from '../../shared/ui/visor-pdf';
 import { ID_EMPRESA } from '../empresa/empresa-models';
 import { BlocoConfig, resumoBloco, rotuloBloco } from './bloco-config';
 import {
@@ -37,32 +37,16 @@ import {
 import { TemplatesRepo } from './templates-repo';
 
 const MAX_NOME = 120;
-/** Mesmo ponto do `lg:` do Tailwind: daqui para cima, em aparelho de mouse, a prévia fica num iframe ao lado do editor. */
-const LARGURA_DESKTOP = 1024;
 const CORRIJA = 'Corrija os campos destacados.';
 const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
-/** Uma prévia aberta em outra aba ainda pode estar lendo o blob: a revogação espera. */
-const ESPERA_REVOGAR_MS = 60_000;
 /** Validação dos blocos e "sujo" (JSON do template inteiro) só depois de uma pausa na edição: templates grandes. */
 const ESPERA_EDICAO_MS = 300;
 
 type AcaoMover = 'subir' | 'descer';
 
-/**
- * Iframe só em tela larga com mouse: tablet (ponteiro grosso) e iOS — inclusive o iPad, que se apresenta como Mac —
- * costumam não mostrar PDF dentro de iframe, então vão para a aba, mesmo com 1024 px ou mais.
- */
-function previaNoIframe(): boolean {
-  if (window.innerWidth < LARGURA_DESKTOP) return false;
-  const toque = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
-  const ua = navigator.userAgent;
-  const ios = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
-  return !toque && !ios;
-}
-
 @Component({
   selector: 'app-template-editor-page',
-  imports: [RouterLink, CdkDropList, CdkDrag, CdkDragHandle, BlocoConfig],
+  imports: [RouterLink, CdkDropList, CdkDrag, CdkDragHandle, BlocoConfig, VisorPdf],
   host: { '(document:pointerdown)': 'pointerFora($event)' },
   styles: `
     .cdk-drag-preview { box-shadow: 0 8px 24px rgb(15 23 42 / 0.2); border-radius: 0.75rem; background: white; }
@@ -215,21 +199,7 @@ function previaNoIframe(): boolean {
           </button>
         </div>
         <p id="previa-ajuda" class="text-sm text-slate-500">PDF com dados de exemplo e a marca "PRÉVIA". Não precisa de internet.</p>
-        @if (iframeUrl(); as url) {
-          <iframe title="Prévia do PDF" [src]="url" class="h-[80vh] w-full rounded-lg border border-slate-200"></iframe>
-        } @else if (linkPrevia(); as url) {
-          <p class="text-sm" role="status">
-            O navegador bloqueou a nova aba.
-            <a [href]="url" target="_blank" rel="noopener" class="font-semibold text-blue-700 underline">Abrir prévia</a>
-          </p>
-        } @else if (abertaEmAba()) {
-          <p class="text-sm text-slate-600">A prévia foi aberta em uma nova aba.</p>
-        }
-        @if (urlBaixar(); as url) {
-          <!-- o celular pode não mostrar o PDF na aba: baixar sempre funciona -->
-          <a [href]="url" [attr.download]="nomeArquivoPrevia()"
-             class="inline-flex min-h-12 items-center text-sm font-semibold text-blue-700 underline">Baixar PDF</a>
-        }
+        <app-visor-pdf [nomeArquivo]="nomeArquivoPrevia()" />
       </section>
       }
     </div>
@@ -243,10 +213,10 @@ export class TemplateEditorPage implements ComAlteracoes {
   private readonly db = inject(RegeraDb);
   private readonly router = inject(Router);
   private readonly toasts = inject(Toasts);
-  private readonly sanitizer = inject(DomSanitizer);
   private readonly injector = inject(Injector);
   private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly areaMenu = viewChild<ElementRef<HTMLElement>>('areaMenu');
+  private readonly visor = viewChild(VisorPdf);
 
   protected readonly tiposProposta = TIPOS_PROPOSTA;
   protected readonly tiposBloco = TIPOS_BLOCO;
@@ -329,24 +299,9 @@ export class TemplateEditorPage implements ComAlteracoes {
 
   // ---- prévia ----
   protected readonly gerando = signal(false);
-  private readonly urlPrevia = signal<string | null>(null);
-  private readonly modoPrevia = signal<'iframe' | 'aba' | 'bloqueada' | null>(null);
-  protected readonly iframeUrl = computed((): SafeResourceUrl | null => {
-    const url = this.urlPrevia();
-    // blob: criado aqui mesmo, a partir do PDF gerado no aparelho
-    return url && this.modoPrevia() === 'iframe' ? this.sanitizer.bypassSecurityTrustResourceUrl(url) : null;
-  });
-  protected readonly linkPrevia = computed(() => (this.modoPrevia() === 'bloqueada' ? this.urlPrevia() : null));
-  protected readonly abertaEmAba = computed(() => this.modoPrevia() === 'aba');
-  protected readonly urlBaixar = computed(() => {
-    const modo = this.modoPrevia();
-    return modo === 'aba' || modo === 'bloqueada' ? this.urlPrevia() : null;
-  });
   protected readonly nomeArquivoPrevia = computed(
     () => `previa-${this.nome().trim().replace(/[\\/:*?"<>|]+/g, '-') || 'template'}.pdf`,
   );
-
-  private destruido = false;
 
   constructor() {
     this.estadoSalvo.set(this.estadoAtual());
@@ -365,11 +320,8 @@ export class TemplateEditorPage implements ComAlteracoes {
     });
     // o aviso do navegador (fechar a aba) segue o estado com debounce
     avisarAoSairDaPagina(this.alterado);
-    inject(DestroyRef).onDestroy(() => {
-      this.destruido = true;
-      clearTimeout(this.timerEdicao);
-      this.descartarPrevia();
-    });
+    // a prévia (URLs de blob) é do VisorPdf, que a descarta no destroy dele
+    inject(DestroyRef).onDestroy(() => clearTimeout(this.timerEdicao));
   }
 
   /** Guard de rota: compara o estado de agora, sem esperar o debounce (é uma chamada só, na navegação). */
@@ -526,74 +478,24 @@ export class TemplateEditorPage implements ComAlteracoes {
   }
 
   /**
-   * PDF com dados fictícios e a empresa local; tudo no aparelho (funciona offline). No celular (P4a-R1), a aba é aberta
-   * aqui, de forma síncrona, ainda dentro do gesto do usuário — o iOS/Safari bloqueia `window.open` depois de um
-   * `await` — e só recebe o blob quando ele fica pronto.
+   * PDF com dados fictícios e a empresa local; tudo no aparelho (funciona offline). O `VisorPdf` decide iframe ou aba
+   * (P4a-R1) e, no celular, abre a aba aqui, de forma síncrona, ainda dentro do gesto do usuário.
    */
   protected async gerarPrevia(): Promise<void> {
-    if (this.gerando()) return;
+    const visor = this.visor();
+    if (this.gerando() || !visor) return;
     this.gerando.set(true);
-    const desktop = previaNoIframe();
-    const janela = desktop ? null : this.abrirJanelaDePrevia();
     try {
-      const empresa = (await this.db.empresa.get(ID_EMPRESA)) ?? null;
-      const logo = await this.pdf.logoDataUrl(empresa);
-      const blob = await this.pdf.gerarBlob(entradaFicticia(this.blocos(), empresa, logo, this.tipo()));
-      if (this.destruido) {
-        // saiu do editor durante a geração: só a aba já aberta ainda quer o PDF; nada de URL sem dono
-        if (janela) {
-          const url = URL.createObjectURL(blob);
-          janela.location.href = url;
-          this.revogar(url, true);
-        }
-        return;
-      }
-      this.descartarPrevia();
-      const url = URL.createObjectURL(blob);
-      this.urlPrevia.set(url);
-      if (desktop) {
-        this.modoPrevia.set('iframe');
-      } else if (janela) {
-        janela.location.href = url;
-        this.modoPrevia.set('aba');
-      } else {
-        // popup bloqueado: fica o link
-        this.modoPrevia.set('bloqueada');
-      }
+      await visor.abrir(async () => {
+        const empresa = (await this.db.empresa.get(ID_EMPRESA)) ?? null;
+        const logo = await this.pdf.logoDataUrl(empresa);
+        return this.pdf.gerarBlob(entradaFicticia(this.blocos(), empresa, logo, this.tipo()));
+      });
     } catch {
-      janela?.close();
       this.toasts.erro('Não foi possível gerar a prévia.');
     } finally {
       this.gerando.set(false);
     }
-  }
-
-  /** Aba em branco com "Gerando prévia…"; null se o navegador bloquear o popup. */
-  private abrirJanelaDePrevia(): Window | null {
-    const janela = window.open('', '_blank');
-    if (!janela) return null;
-    try {
-      janela.opener = null;
-      janela.document.title = 'Prévia do PDF';
-      janela.document.body.textContent = 'Gerando prévia…';
-    } catch {
-      // só cosmético: sem acesso ao documento da aba, ela fica em branco até o PDF chegar
-    }
-    return janela;
-  }
-
-  /** Tira a prévia atual. No iframe, revoga já; em outra aba (ou no link), só depois de um tempo. */
-  private descartarPrevia(): void {
-    const url = this.urlPrevia();
-    const modo = this.modoPrevia();
-    this.urlPrevia.set(null);
-    this.modoPrevia.set(null);
-    if (url) this.revogar(url, modo !== 'iframe');
-  }
-
-  private revogar(url: string, adiar: boolean): void {
-    if (adiar) window.setTimeout(() => URL.revokeObjectURL(url), ESPERA_REVOGAR_MS);
-    else URL.revokeObjectURL(url);
   }
 
   /** Nome inválido: foco no #nome. Senão abre o primeiro bloco com erro e foca o card dele. */
