@@ -4,6 +4,7 @@ import {
   correspondeABusca,
   dataHoraBr,
   expirada,
+  rotuloDoCampo,
   mensagemErroProposta,
   moedaCentavos,
   rotuloCodigo,
@@ -166,6 +167,19 @@ describe('formatos-proposta', () => {
       expect(dataHoraBr(null)).toBe('');
       expect(dataHoraBr('')).toBe('');
       expect(dataHoraBr('ontem')).toBe('');
+    });
+  });
+
+  describe('rotuloDoCampo', () => {
+    it('os campos da proposta pelos nomes do servidor; as linhas como "Item N" (1 em diante), com o campo', () => {
+      expect(rotuloDoCampo('prazoExecucao')).toBe('Prazo de execução');
+      expect(rotuloDoCampo('descontoGeralPercentual')).toBe('Desconto geral');
+      expect(rotuloDoCampo('clienteId')).toBe('Cliente');
+      expect(rotuloDoCampo('itens')).toBe('Itens');
+      expect(rotuloDoCampo('itens[0].quantidade')).toBe('Item 1, quantidade');
+      expect(rotuloDoCampo('itens[11].itemCatalogoId')).toBe('Item 12, item do catálogo');
+      expect(rotuloDoCampo('itens[2].outro')).toBe('Item 3');
+      expect(rotuloDoCampo('desconhecido')).toBeNull();
     });
   });
 });

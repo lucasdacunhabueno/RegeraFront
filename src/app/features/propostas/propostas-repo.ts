@@ -605,24 +605,19 @@ export class PropostasRepo {
     mudanca: { responsavelId?: string; tecnicoId?: string | null },
     versaoCarregada?: number | null,
   ): Promise<void> {
-    const u = this.usuario();
-    const atual = await this.carregar(id);
-    const ehResponsavel = atual.responsavelId === u.id;
-    const responsavelId = mudanca.responsavelId ?? atual.responsavelId;
-    const tecnicoId = mudanca.tecnicoId !== undefined ? mudanca.tecnicoId : atual.tecnicoId;
-    if (responsavelId === atual.responsavelId && tecnicoId === atual.tecnicoId) return;
-    this.checar(validarTransicao(atual.status, atual.status, u.perfil, ehResponsavel, contexto(atual, { alteraAtribuicao: true })));
-    if (responsavelId !== atual.responsavelId) {
-      if (!podeAlterarResponsavel(atual.status, u.perfil)) {
-        throw new ErroProposta('ACESSO_NEGADO', 'responsavelId', 'Só o administrador troca o responsável.');
-      }
-      if (!(await this.usuarioAtivo(responsavelId, ['ADMIN', 'COMERCIAL']))) {
-        validacao({ responsavelId: 'O responsável tem de ser um administrador ou comercial ativo.' });
-      }
-    }
-    if (tecnicoId !== atual.tecnicoId) await this.conferirTecnico(atual, u, tecnicoId);
+    const conferida = await this.atribuicaoConferida(id, mudanca);
+    if (!conferida) return;
+    const { atual, responsavelId, tecnicoId } = conferida;
     const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
     await this.gravar({ ...atual, responsavelId, tecnicoId, version }, version);
+  }
+
+  /**
+   * As regras do `atribuir`, sem gravar (P4c-R10): a correção confere a troca do responsável antes de corrigir a fila,
+   * para uma recusa não deixar a correção feita pela metade. Recusa com os mesmos erros.
+   */
+  async conferirAtribuicao(id: string, mudanca: { responsavelId?: string; tecnicoId?: string | null }): Promise<void> {
+    await this.atribuicaoConferida(id, mudanca);
   }
 
   /**
@@ -748,9 +743,13 @@ export class PropostasRepo {
    *    deles na fila e nas pendências (a pendência sai e a proposta volta a sincronizar);
    * 2. grava o documento novo e enfileira o UPLOAD dele, atrás do que já está na fila da proposta.
    * A proposta não muda. Se ela mudou durante a geração (o ack traz o número), gera de novo, até 3 vezes, como o
-   * `enviar` (P4b-R21). Com o upload antigo em voo, recusa (`PROPOSTA_SINCRONIZANDO`). Devolve o Blob para compartilhar.
+   * `enviar` (P4b-R21). Com o upload antigo em voo, recusa (`PROPOSTA_SINCRONIZANDO`). Devolve o Blob para compartilhar
+   * e o código impresso nele (o nome do arquivo; o número pode chegar logo depois, num ack).
    */
-  async regerarDocumento(id: string, gerarPdf: (entrada: EntradaPdf) => Promise<Blob>): Promise<Blob> {
+  async regerarDocumento(
+    id: string,
+    gerarPdf: (entrada: EntradaPdf) => Promise<Blob>,
+  ): Promise<{ blob: Blob; codigoExibido: string }> {
     const u = this.usuario();
     for (let tentativa = 1; ; tentativa++) {
       const p = comTotais(await this.carregar(id));
@@ -783,7 +782,7 @@ export class PropostasRepo {
       });
       if (gravou) {
         void this.sync.sincronizar();
-        return blob;
+        return { blob, codigoExibido: documento.codigoExibido };
       }
       if (tentativa >= TENTATIVAS_ENVIO) {
         throw new ErroProposta('PROPOSTA_ALTERADA', 'proposta', 'A proposta mudou enquanto o PDF era gerado. Tente de novo.');
@@ -991,6 +990,30 @@ export class PropostasRepo {
       else if (!exige && l.meses !== null) campos[pre + 'meses'] = 'Meses só em proposta de locação com item locável.';
     }
     return campos;
+  }
+
+  /** As regras do `atribuir` (P4b-R3); null = nada muda. */
+  private async atribuicaoConferida(
+    id: string,
+    mudanca: { responsavelId?: string; tecnicoId?: string | null },
+  ): Promise<{ atual: PropostaLocal; responsavelId: string; tecnicoId: string | null } | null> {
+    const u = this.usuario();
+    const atual = await this.carregar(id);
+    const ehResponsavel = atual.responsavelId === u.id;
+    const responsavelId = mudanca.responsavelId ?? atual.responsavelId;
+    const tecnicoId = mudanca.tecnicoId !== undefined ? mudanca.tecnicoId : atual.tecnicoId;
+    if (responsavelId === atual.responsavelId && tecnicoId === atual.tecnicoId) return null;
+    this.checar(validarTransicao(atual.status, atual.status, u.perfil, ehResponsavel, contexto(atual, { alteraAtribuicao: true })));
+    if (responsavelId !== atual.responsavelId) {
+      if (!podeAlterarResponsavel(atual.status, u.perfil)) {
+        throw new ErroProposta('ACESSO_NEGADO', 'responsavelId', 'Só o administrador troca o responsável.');
+      }
+      if (!(await this.usuarioAtivo(responsavelId, ['ADMIN', 'COMERCIAL']))) {
+        validacao({ responsavelId: 'O responsável tem de ser um administrador ou comercial ativo.' });
+      }
+    }
+    if (tecnicoId !== atual.tecnicoId) await this.conferirTecnico(atual, u, tecnicoId);
+    return { atual, responsavelId, tecnicoId };
   }
 
   /** Recusa (`DOCUMENTO_EM_DIA`) quando `motivoParaRegerar` não vale para `p`; devolve as pendências dela. */

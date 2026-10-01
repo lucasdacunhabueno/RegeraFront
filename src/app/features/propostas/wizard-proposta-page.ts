@@ -66,9 +66,23 @@ export interface ModoWizard {
    * minhas", toda escrita leva essa base (P4c-R9), inclusive a da atribuição.
    */
   salvar(injector: Injector, id: string, edicao: EdicaoWizard, versao: { base: number | null; manter: boolean }): Promise<PropostaLocal>;
-  /** Acrescenta o item do catálogo e devolve a linha nova e a proposta como ficou. */
-  adicionarItem(injector: Injector, id: string, item: ItemLocal): Promise<{ linha: ItemPropostaLocal; proposta: PropostaLocal }>;
+  /**
+   * Acrescenta o item do catálogo e devolve a linha nova e a proposta como ficou. `tela`: o tipo e as linhas como estão
+   * na tela (gravando no fim, podem não estar gravados: o preço e os meses seguem o tipo da tela, I1).
+   */
+  adicionarItem(
+    injector: Injector,
+    id: string,
+    item: ItemLocal,
+    tela: { tipo: TipoProposta; linhas: number },
+  ): Promise<{ linha: ItemPropostaLocal; proposta: PropostaLocal }>;
 }
+
+/**
+ * `salvar` gravou, mas uma parte depois falhou (a troca do responsável depois da correção): a tela sai, com este
+ * aviso no lugar do de sucesso.
+ */
+export class GravadoComAviso extends Error {}
 
 async function recarregar(repo: PropostasRepo, id: string): Promise<PropostaLocal> {
   const p = await repo.buscar(id);
@@ -136,15 +150,26 @@ export const MODOS_WIZARD: Readonly<Record<string, ModoWizard>> = {
       const recusa = await repo.recusaCorrigivel(id);
       if (!recusa) throw new ErroProposta('PENDENCIA_INEXISTENTE', 'proposta', 'Esta pendência já foi resolvida.');
       const { responsavelId, resto } = separarResponsavel(edicao);
+      // P4c-R10: o responsável é conferido antes, para a recusa dele não deixar a correção feita pela metade
+      if (responsavelId !== undefined) await repo.conferirAtribuicao(id, { responsavelId });
       await injector.get(PendenciasService).corrigirProposta(recusa.mutationId, resto);
       // a troca do responsável é outra mutação, atrás das que voltaram à fila
-      if (responsavelId !== undefined) await repo.atribuir(id, { responsavelId });
+      if (responsavelId !== undefined) {
+        try {
+          await repo.atribuir(id, { responsavelId });
+        } catch (e) {
+          throw new GravadoComAviso(`Correção gravada; o responsável não foi trocado: ${mensagemErroProposta(e)}`);
+        }
+      }
       return recarregar(repo, id);
     },
-    /** Sem gravar: a linha só existe na tela até o "Salvar e reenviar" (gravar agora consumiria a pendência). */
-    async adicionarItem(injector, id, item) {
+    /**
+     * Sem gravar: a linha só existe na tela até o "Salvar e reenviar" (gravar agora consumiria a pendência). Pelo tipo
+     * e pelas linhas da tela, que podem ainda não estar gravados (I1).
+     */
+    async adicionarItem(injector, id, item, tela) {
       const proposta = await recarregar(injector.get(PropostasRepo), id);
-      const linha = linhaDoCatalogo(proposta.tipo, proposta.itens.length, item);
+      const linha = linhaDoCatalogo(tela.tipo, tela.linhas, item);
       return { linha, proposta };
     },
   },
@@ -308,6 +333,8 @@ export class WizardPropostaPage implements ComAlteracoes {
   /** Gravações desta tela em andamento: as reemissões no meio delas esperam (a gravação relê no fim). */
   private gravando = 0;
   private reemitiuGravando = false;
+  /** `GravadoComAviso`: o toast da saída no lugar do de sucesso. */
+  private avisoAoSair: string | null = null;
 
   constructor() {
     avisarAoSairDaPagina(this.alterado);
@@ -373,7 +400,10 @@ export class WizardPropostaPage implements ComAlteracoes {
     }
     if (!(await (this.config().gravaNoFim ? this.gravarJuntos() : this.gravarAlterados()))) return;
     this.liberado.set(true);
-    this.toasts.mostrar(this.config().mensagemSalvo);
+    const aviso = this.avisoAoSair;
+    this.avisoAoSair = null;
+    if (aviso) this.toasts.erro(aviso);
+    else this.toasts.mostrar(this.config().mensagemSalvo);
     await this.router.navigate(['/propostas', this.e.id()]);
   }
 
@@ -436,7 +466,8 @@ export class WizardPropostaPage implements ComAlteracoes {
         this.focar('#aviso-colisao');
         return;
       }
-      const { linha, proposta } = await this.config().adicionarItem(this.injector, id, item);
+      const tela = { tipo: this.e.tipo(), linhas: this.e.linhas().length };
+      const { linha, proposta } = await this.config().adicionarItem(this.injector, id, item, tela);
       this.e.anexarLinha(linha, proposta);
       this.anuncio.set(`${linha.nome ?? 'Item'} adicionado.`);
       this.passoItens()?.aposAdicionar(linha.id);
@@ -584,6 +615,11 @@ export class WizardPropostaPage implements ComAlteracoes {
     // excluída, enviada ou cancelada em outro lugar (ou a correção já feita): nada mais a editar aqui
     // (sem a proposta, `recusou` sempre sai)
     if ((await this.recusou(id, p)) || !p) return;
+    // uma gravação começou durante o `recusar` (assíncrono): ela relê no fim
+    if (this.gravando > 0) {
+      this.reemitiuGravando = true;
+      return;
+    }
     const tinhaColisao = this.e.colisao().size > 0;
     this.e.reconciliar(p);
     if (!tinhaColisao && this.e.colisao().size > 0) this.focar('#aviso-colisao');
@@ -680,6 +716,13 @@ export class WizardPropostaPage implements ComAlteracoes {
     const id = this.e.id();
     if (!id) return false;
     const alterados = this.passos().filter((n) => this.e.sujo(n));
+    if (alterados.length === 0) {
+      // P4c-R10: reenviar o que o servidor recusou voltaria recusado
+      this.anuncio.set('Corrija os campos destacados.');
+      this.toasts.erro('Corrija os campos destacados.');
+      this.focarPrimeiroErro();
+      return false;
+    }
     for (const n of alterados) if (!this.validar(n, false)) return false;
     this.salvando.set(true);
     this.gravando++;
@@ -698,6 +741,18 @@ export class WizardPropostaPage implements ComAlteracoes {
       this.liberado.set(true);
       return true;
     } catch (err) {
+      if (err instanceof GravadoComAviso) {
+        this.liberado.set(true);
+        this.avisoAoSair = err.message;
+        return true;
+      }
+      if (err instanceof ErroProposta && err.codigo === 'PENDENCIA_INEXISTENTE') {
+        // P4c-R10: resolvida em outro lugar (outra aba, Pendências): nada mais a corrigir aqui
+        this.liberado.set(true);
+        this.toasts.erro(mensagemErroProposta(err));
+        void this.router.navigate(['/propostas', id], { replaceUrl: true });
+        return false;
+      }
       this.falhou(err);
       return false;
     } finally {

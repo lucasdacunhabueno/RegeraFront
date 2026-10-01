@@ -78,6 +78,20 @@ describe('VisorPdf', () => {
     expect(link(el, 'Baixar PDF')?.getAttribute('download')).toBe('previa-x.pdf');
   });
 
+  it('celular: o título da aba pode vir no abrir (o input ainda não mudou no mesmo clique)', async () => {
+    largura(390);
+    const janela = janelaFalsa();
+    vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+    const { visor } = montar();
+    const feito = visor.abrir(async () => pdf(), 'PDF 000277-R2');
+    expect(janela.document.title).toBe('PDF 000277-R2');
+    await feito;
+    const outra = janelaFalsa();
+    vi.spyOn(window, 'open').mockReturnValue(outra as unknown as Window);
+    await visor.abrir(async () => pdf());
+    expect(outra.document.title).toBe('Prévia do PDF');
+  });
+
   it('popup bloqueado: link "Abrir prévia" e "Baixar PDF"', async () => {
     largura(390);
     vi.spyOn(window, 'open').mockReturnValue(null);

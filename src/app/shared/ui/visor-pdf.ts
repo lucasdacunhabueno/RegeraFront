@@ -67,10 +67,11 @@ export class VisorPdf {
   /**
    * Gera o PDF com `gerar` e o mostra. No celular, a aba é aberta aqui, de forma síncrona (ainda no gesto de quem
    * chamou), e só recebe o blob quando ele fica pronto. Se `gerar` falhar, a aba fecha e o erro segue para quem chamou.
+   * `titulo`: o da aba, quando quem chama acabou de mudar o input no mesmo clique (o input só muda na próxima detecção).
    */
-  async abrir(gerar: () => Promise<Blob>): Promise<void> {
+  async abrir(gerar: () => Promise<Blob>, titulo?: string): Promise<void> {
     const desktop = previaNoIframe();
-    const janela = desktop ? null : abrirJanelaEmBranco(this.titulo(), this.textoGerando());
+    const janela = desktop ? null : abrirJanelaEmBranco(titulo ?? this.titulo(), this.textoGerando());
     let blob: Blob;
     try {
       blob = await gerar();

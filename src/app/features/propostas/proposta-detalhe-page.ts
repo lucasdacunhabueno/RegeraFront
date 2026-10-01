@@ -2,8 +2,7 @@ import { afterNextRender, Component, computed, effect, ElementRef, inject, Injec
 import { toSignal } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
 import { LucideDynamicIcon } from '@lucide/angular';
-import { firstValueFrom } from 'rxjs';
-import { ArquivosService } from '../../core/arquivos/arquivos-service';
+import { ArquivosService, ErroDownload } from '../../core/arquivos/arquivos-service';
 import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { dataBr, linhasDeTotais, percentualBr, quantidadeBr } from '../../core/pdf/formatos-pdf';
@@ -16,7 +15,9 @@ import { ClientesRepo } from '../clientes/clientes-repo';
 import { deCentesimos, deMilesimos } from './calculo';
 import { arquivoPdf, compartilharArquivo, ResultadoCompartilhar } from './compartilhar';
 import { DialogoMotivo } from './dialogo-motivo';
-import { dataHoraBr, mensagemErroProposta, moedaCentavos, rotuloCodigo, rotuloTipo, Selo, selosDaProposta } from './formatos-proposta';
+import {
+  dataHoraBr, mensagemErroProposta, moedaCentavos, rotuloCodigo, rotuloDoCampo, rotuloTipo, Selo, selosDaProposta,
+} from './formatos-proposta';
 import { hojeReativo } from './hoje-reativo';
 import { PdfPronto } from './pdf-pronto';
 import { ESTILO_SELO } from './proposta-card';
@@ -54,6 +55,7 @@ const AVISO_TRANSICAO: Readonly<Record<StatusProposta, string>> = {
 };
 
 const SEM_INTERNET = 'Sem internet: este PDF não está no aparelho.';
+const FALHA_DOWNLOAD = 'Não foi possível baixar o PDF. Tente de novo.';
 
 interface LinhaItem {
   id: string;
@@ -110,16 +112,6 @@ interface LinhaItem {
           <div class="flex flex-wrap items-center gap-2 text-sm">
             <span data-status [attr.class]="'rounded-full px-2 py-0.5 text-xs font-medium ' + status().cor">{{ status().rotulo }}</span>
             <span class="text-slate-600">{{ tipo() }}</span>
-            @if (selos().length > 0) {
-              <ul class="flex flex-wrap gap-1.5" aria-label="Avisos">
-                @for (s of selos(); track s.tipo) {
-                  <li [attr.data-selo]="s.tipo" [attr.class]="'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ' + estilo(s).cor">
-                    <svg [lucideIcon]="estilo(s).icone" [size]="12" aria-hidden="true"></svg>
-                    {{ s.rotulo }}
-                  </li>
-                }
-              </ul>
-            }
           </div>
         </header>
 
@@ -134,6 +126,11 @@ interface LinhaItem {
                     <p>Conflito: esta proposta mudou em outro lugar depois que você a alterou aqui.</p>
                   } @else if (x.entidade === uploadDocumento) {
                     <p>{{ x.erro?.mensagem }}</p>
+                    @if (x.erro?.codigo === 'CODIGO_EXIBIDO_INVALIDO' && p.status === 'RASCUNHO') {
+                      <!-- o PDF é da revisão que a "Nova revisão" já deixou para trás: não há o que gerar de novo -->
+                      <a data-testid="descartar-pendencia" routerLink="/pendencias"
+                         class="inline-flex min-h-12 items-center font-semibold text-amber-900 underline">Descarte esta pendência em Pendências.</a>
+                    }
                   } @else {
                     <p>O servidor recusou: {{ x.erro?.mensagem }}</p>
                     @if (camposDa(x).length > 0) {
@@ -159,7 +156,7 @@ interface LinhaItem {
           <section data-testid="regerar" class="space-y-3 rounded-xl border border-amber-300 bg-amber-50 p-4 text-sm text-amber-950">
             <p>
               {{ motivo === 'SEM_DOCUMENTO'
-                ? 'O PDF desta revisão não está no aparelho nem no servidor.'
+                ? 'O PDF desta revisão não está no aparelho nem no servidor. Se ele foi gerado em outro aparelho, sincronize esse aparelho antes.'
                 : 'Gere o PDF de novo com o código atual: ele substitui o que foi recusado e vai na próxima sincronização.' }}
             </p>
             <button type="button" (click)="regerar()" [disabled]="ocupado()"
@@ -169,23 +166,65 @@ interface LinhaItem {
           </section>
         }
 
+        <!-- v1: o resumo primeiro (cliente, total, validade, selos); as ações logo abaixo -->
+        <section data-testid="resumo" aria-label="Resumo" class="space-y-2 rounded-xl bg-white p-4">
+          <p class="text-lg font-semibold">
+            @if (cliente(); as c) {
+              @if (restrito()) {
+                {{ c.nome }}
+              } @else {
+                <a data-testid="cliente" [routerLink]="['/clientes', c.id]"
+                   class="inline-flex min-h-12 items-center text-blue-700 underline lg:min-h-0">{{ c.nome }}</a>
+              }
+            } @else {
+              {{ p.clienteId ? 'Cliente não encontrado neste aparelho.' : 'Sem cliente' }}
+            }
+          </p>
+          <div class="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 text-sm text-slate-600">
+            @if (totalResumo(); as t) {
+              <p>Total <strong data-testid="total-resumo" class="text-lg text-slate-900">{{ t }}</strong></p>
+            }
+            <p>Validade: {{ data(p.validadeAte) || '—' }}</p>
+          </div>
+          @if (selos().length > 0) {
+            <ul class="flex flex-wrap gap-1.5" aria-label="Avisos">
+              @for (s of selos(); track s.tipo) {
+                <li [attr.data-selo]="s.tipo" [attr.class]="'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ' + estilo(s).cor">
+                  <svg [lucideIcon]="estilo(s).icone" [size]="12" aria-hidden="true"></svg>
+                  {{ s.rotulo }}
+                </li>
+              }
+            </ul>
+          }
+        </section>
+
         @if (!restrito()) {
           <section aria-labelledby="acoes-titulo" class="space-y-3 rounded-xl bg-white p-4">
             <h2 id="acoes-titulo" class="sr-only">Ações</h2>
             @if (conflito() && temTransicao()) {
               <p id="dica-pendencia" class="text-sm text-amber-800">Resolva a pendência primeiro.</p>
             }
-            <div data-testid="acoes" class="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:flex lg:flex-wrap">
-              @for (a of acoes(); track a.acao) {
-                <button type="button" (click)="executar(a.acao)" [disabled]="ocupado() || (a.transicao && conflito())"
+            <!-- celular: a principal em largura total, as outras em duas colunas; desktop: todas numa linha -->
+            <div data-testid="acoes" class="space-y-2 lg:flex lg:flex-wrap lg:gap-2 lg:space-y-0">
+              @for (a of principais(); track a.acao) {
+                <button type="button" data-principal (click)="executar(a.acao, $any($event.currentTarget))"
+                        [disabled]="ocupado() || (a.transicao && conflito())"
                         [attr.aria-describedby]="a.transicao && conflito() ? 'dica-pendencia' : null"
-                        class="h-12 rounded-lg px-4 font-semibold disabled:opacity-60"
-                        [class.bg-blue-600]="a.principal" [class.text-white]="a.principal"
-                        [class.border]="!a.principal" [class.border-slate-300]="!a.principal && !a.perigo"
-                        [class.border-red-300]="a.perigo" [class.text-red-700]="a.perigo">
-                  {{ a.acao === 'previa' && gerandoPrevia() ? 'Gerando prévia…' : a.rotulo }}
+                        class="h-12 w-full rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 lg:w-auto">
+                  {{ a.rotulo }}
                 </button>
               }
+              <div data-testid="acoes-secundarias" class="grid grid-cols-2 gap-2 lg:contents">
+                @for (a of secundarias(); track a.acao) {
+                  <button type="button" (click)="executar(a.acao, $any($event.currentTarget))"
+                          [disabled]="ocupado() || (a.transicao && conflito())"
+                          [attr.aria-describedby]="a.transicao && conflito() ? 'dica-pendencia' : null"
+                          class="min-h-12 rounded-lg border px-3 text-sm font-semibold disabled:opacity-60 lg:px-4"
+                          [class.border-slate-300]="!a.perigo" [class.border-red-300]="a.perigo" [class.text-red-700]="a.perigo">
+                    {{ a.acao === 'previa' && gerandoPrevia() ? 'Gerando prévia…' : a.rotulo }}
+                  </button>
+                }
+              </div>
             </div>
             <app-visor-pdf #visorPrevia [nomeArquivo]="'previa-' + codigo() + '.pdf'" />
           </section>
@@ -197,12 +236,8 @@ interface LinhaItem {
             <dt class="text-slate-500">Cliente</dt>
             <dd class="space-y-0.5">
               @if (cliente(); as c) {
-                @if (restrito()) {
-                  <span class="block font-medium">{{ c.nome }}</span>
-                } @else {
-                  <a data-testid="cliente" [routerLink]="['/clientes', c.id]" class="inline-flex min-h-12 items-center font-medium text-blue-700 underline sm:min-h-0">{{ c.nome }}</a>
-                  <span class="block text-slate-600">{{ documento(c.documento) }}</span>
-                }
+                <span class="block font-medium">{{ c.nome }}</span>
+                @if (!restrito()) { <span class="block text-slate-600">{{ documento(c.documento) }}</span> }
                 @if (endereco(); as e) { <span class="block text-slate-600">{{ e }}</span> }
                 @if (c.telefone) { <span class="block text-slate-600">{{ telefone(c.telefone) }}</span> }
               } @else {
@@ -405,18 +440,18 @@ interface LinhaItem {
 
       @switch (dialogo()) {
         @case ('RECUSADA') {
-          <app-dialogo-motivo titulo="Recusar proposta" texto="O motivo fica no histórico da proposta." rotuloConfirmar="Recusar"
+          <app-dialogo-motivo [gatilho]="gatilho()" titulo="Recusar proposta" texto="O motivo fica no histórico da proposta." rotuloConfirmar="Recusar"
                               [perigo]="true" [ocupado]="ocupado()" (confirmado)="transicionar('RECUSADA', $event)"
                               (cancelado)="dialogo.set(null)" />
         }
         @case ('CANCELADA') {
-          <app-dialogo-motivo titulo="Cancelar proposta"
+          <app-dialogo-motivo [gatilho]="gatilho()" titulo="Cancelar proposta"
                               texto="Uma proposta cancelada não volta atrás. Para refazê-la, use Duplicar."
                               rotuloConfirmar="Cancelar proposta" rotuloCancelar="Voltar" [perigo]="true" [ocupado]="ocupado()"
                               (confirmado)="transicionar('CANCELADA', $event)" (cancelado)="dialogo.set(null)" />
         }
         @case ('excluir') {
-          <app-dialogo-motivo titulo="Excluir rascunho" texto="O rascunho sai deste aparelho e do servidor. Não dá para desfazer."
+          <app-dialogo-motivo [gatilho]="gatilho()" titulo="Excluir rascunho" texto="O rascunho sai deste aparelho e do servidor. Não dá para desfazer."
                               rotuloConfirmar="Excluir" [pedirMotivo]="false" [perigo]="true" [ocupado]="ocupado()"
                               (confirmado)="excluir()" (cancelado)="dialogo.set(null)" />
         }
@@ -467,6 +502,8 @@ export class PropostaDetalhePage {
   protected readonly editandoTecnico = signal(false);
   protected readonly tecnicoEscolhido = signal('');
   protected readonly documentoAberto = signal<DocumentoDaProposta | null>(null);
+  /** O botão que abriu o diálogo: recebe o foco de volta (o Safari não foca o botão no clique). */
+  protected readonly gatilho = signal<HTMLElement | null>(null);
   /** P4c-R8: o PDF esperando um toque para o compartilhamento (o navegador recusou sem gesto). */
   protected readonly pdfPronto = signal<File | null>(null);
 
@@ -565,8 +602,9 @@ export class PropostaDetalhePage {
     const destinos = transicoesPermitidas(p.status, u.perfil, this.ehResponsavel());
     const pode = this.pode();
     const lista: BotaoAcao[] = [];
-    if (pode && podeEditar(p.status)) lista.push({ acao: 'editar', rotulo: 'Editar', transicao: false, principal: true });
-    if (p.status === 'RASCUNHO' && destinos.includes('ENVIADA')) lista.push({ acao: 'enviar', rotulo: 'Enviar', transicao: true });
+    const enviar = p.status === 'RASCUNHO' && destinos.includes('ENVIADA');
+    if (enviar) lista.push({ acao: 'enviar', rotulo: 'Enviar', transicao: true, principal: true });
+    if (pode && podeEditar(p.status)) lista.push({ acao: 'editar', rotulo: 'Editar', transicao: false, principal: !enviar });
     if (destinos.includes('APROVADA')) lista.push({ acao: 'aprovar', rotulo: 'Aprovar', transicao: true, principal: true });
     if (destinos.includes('EM_EXECUCAO')) lista.push({ acao: 'iniciar', rotulo: 'Iniciar execução', transicao: true, principal: true });
     if (destinos.includes('FINALIZADA')) lista.push({ acao: 'finalizar', rotulo: 'Finalizar', transicao: true, principal: true });
@@ -579,6 +617,13 @@ export class PropostaDetalhePage {
       lista.push({ acao: 'excluir', rotulo: 'Excluir rascunho', transicao: false, perigo: true });
     }
     return lista;
+  });
+  /** v1: a ação principal do status (largura total no celular) e as outras (grade de duas colunas). */
+  protected readonly principais = computed(() => this.acoes().filter((a) => a.principal));
+  protected readonly secundarias = computed(() => this.acoes().filter((a) => !a.principal));
+  protected readonly totalResumo = computed(() => {
+    const p = this.proposta();
+    return p && !this.restrito() ? moedaCentavos(p.totalCentavos ?? 0) : null;
   });
   protected readonly temTransicao = computed(() => this.acoes().some((a) => a.transicao) || this.podeAtribuir());
 
@@ -618,15 +663,19 @@ export class PropostaDetalhePage {
     return STATUS_PROPOSTA[s].rotulo;
   }
 
-  /** As mensagens dos campos recusados (a lista da faixa). */
+  /** As mensagens dos campos recusados (a lista da faixa), com o rótulo do campo: "Prazo de execução: …". */
   protected camposDa(x: Pendencia): string[] {
-    return Object.values(x.erro?.campos ?? {});
+    return Object.entries(x.erro?.campos ?? {}).map(([campo, mensagem]) => {
+      const rotulo = rotuloDoCampo(campo);
+      return rotulo ? `${rotulo}: ${mensagem}` : mensagem;
+    });
   }
 
   // ---- ações ----
 
-  protected executar(acao: Acao): void {
+  protected executar(acao: Acao, gatilho: HTMLElement | null = null): void {
     const id = this.id();
+    this.gatilho.set(gatilho);
     switch (acao) {
       case 'editar':
         void this.router.navigate(['/propostas', id, 'editar']);
@@ -769,7 +818,8 @@ export class PropostaDetalhePage {
     const visor = this.visorDocumento();
     if (!visor) return;
     this.documentoAberto.set(d);
-    visor.abrir(() => this.bytesDe(d)).catch(() => this.toasts.erro(SEM_INTERNET));
+    // o título vai no abrir: o input do visor só muda na próxima detecção, depois que a aba já abriu (M8)
+    visor.abrir(() => this.bytesDe(d), `PDF ${d.codigoExibido}`).catch((e: unknown) => this.toasts.erro(this.erroDoDownload(e)));
   }
 
   protected async compartilharDocumento(d: DocumentoDaProposta): Promise<void> {
@@ -782,8 +832,8 @@ export class PropostaDetalhePage {
     try {
       const blob = await this.bytesDe(d);
       await this.compartilhar(arquivoPdf(blob, `Proposta-${d.codigoExibido}.pdf`), blob);
-    } catch {
-      this.toasts.erro(SEM_INTERNET);
+    } catch (e) {
+      this.toasts.erro(this.erroDoDownload(e));
     } finally {
       this.ocupado.set(false);
     }
@@ -800,10 +850,9 @@ export class PropostaDetalhePage {
     this.regerando.set(true);
     this.anuncio.set('Gerando o PDF da proposta…');
     try {
-      const blob = await this.repo.regerarDocumento(id, (entrada) => this.pdf.gerarBlob(entrada));
-      // o código impresso no PDF que acabou de ser gerado (o número pode chegar logo depois, num ack)
-      const [ultimo] = await firstValueFrom(this.repo.observarDocumentos(id));
-      const arquivo = arquivoPdf(blob, `Proposta-${ultimo?.codigoExibido ?? this.codigo()}.pdf`);
+      // o nome leva o código impresso no PDF (o número pode chegar logo depois, num ack)
+      const { blob, codigoExibido } = await this.repo.regerarDocumento(id, (entrada) => this.pdf.gerarBlob(entrada));
+      const arquivo = arquivoPdf(blob, `Proposta-${codigoExibido}.pdf`);
       this.avisar('PDF gerado de novo. Ele vai para o servidor na próxima sincronização.');
       await this.compartilhar(arquivo, blob);
     } catch (e) {
@@ -824,6 +873,13 @@ export class PropostaDetalhePage {
     const r = await compartilharArquivo(arquivo, blob);
     if (r === 'precisa-toque') this.pdfPronto.set(arquivo);
     else this.aposCompartilhar(r, arquivo);
+  }
+
+  /** M1: "Sem internet" só sem internet; a sessão vencida diz para entrar de novo; o resto, tentar de novo. */
+  private erroDoDownload(e: unknown): string {
+    if (!this.online()) return SEM_INTERNET;
+    if (e instanceof ErroDownload && e.motivo === 'SEM_SESSAO') return e.message;
+    return FALHA_DOWNLOAD;
   }
 
   /** Os bytes estão aqui, ou dá para baixá-los agora. */

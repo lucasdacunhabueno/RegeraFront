@@ -8,13 +8,14 @@ import { DialogoMotivo } from './dialogo-motivo';
   template: `
     <button type="button" id="gatilho" (click)="aberto.set(true)">Recusar</button>
     @if (aberto()) {
-      <app-dialogo-motivo [titulo]="'Recusar proposta'" [texto]="texto()" [rotuloConfirmar]="'Recusar'" [pedirMotivo]="pedirMotivo()"
+      <app-dialogo-motivo [gatilho]="gatilho()" [titulo]="'Recusar proposta'" [texto]="texto()" [rotuloConfirmar]="'Recusar'" [pedirMotivo]="pedirMotivo()"
                           (confirmado)="confirmado($event)" (cancelado)="cancelado()" />
     }
   `,
 })
 class Hospedeiro {
   readonly aberto = signal(false);
+  readonly gatilho = signal<HTMLElement | null>(null);
   readonly pedirMotivo = signal(true);
   readonly texto = signal<string | null>('O cliente recebe a proposta como recusada.');
   readonly confirmado = vi.fn<(motivo: string | null) => void>(() => this.aberto.set(false));
@@ -103,6 +104,21 @@ describe('DialogoMotivo', () => {
     fixture.detectChanges();
     expect(host.cancelado).toHaveBeenCalledTimes(1);
     expect(host.confirmado).not.toHaveBeenCalled();
+    await vi.waitFor(() => expect(document.activeElement).toBe(gatilho));
+  });
+
+  it('Safari (o clique não foca o botão): o foco volta para o gatilho recebido, não para o body', async () => {
+    const fixture = TestBed.createComponent(Hospedeiro);
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    const gatilho = el.querySelector<HTMLButtonElement>('#gatilho')!;
+    (document.activeElement as HTMLElement | null)?.blur();
+    fixture.componentInstance.gatilho.set(gatilho);
+    gatilho.click();
+    fixture.detectChanges();
+    expect(document.activeElement).not.toBe(gatilho);
+    botao(el, 'Cancelar').click();
+    fixture.detectChanges();
     await vi.waitFor(() => expect(document.activeElement).toBe(gatilho));
   });
 

@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
-import { ArquivosService } from './arquivos-service';
+import { ArquivosService, ErroDownload } from './arquivos-service';
 
 describe('ArquivosService', () => {
   let svc: ArquivosService;
@@ -251,10 +251,12 @@ describe('ArquivosService', () => {
 
     it('offline ou sem sessão falha sem pedir nada; erro do servidor propaga', async () => {
       online.set(false);
-      await expect(svc.baixarSemCache('pdf-3')).rejects.toThrow('Sem internet');
+      await expect(svc.baixarSemCache('pdf-3')).rejects.toMatchObject({ motivo: 'SEM_INTERNET' });
       online.set(true);
       autenticado.set(false);
-      await expect(svc.baixarSemCache('pdf-3')).rejects.toThrow();
+      const semSessao = await svc.baixarSemCache('pdf-3').then(() => null, (e: unknown) => e);
+      expect(semSessao).toBeInstanceOf(ErroDownload);
+      expect(semSessao).toMatchObject({ motivo: 'SEM_SESSAO', message: 'Entre de novo para baixar o arquivo.' });
       http.expectNone('/api/arquivos/pdf-3');
       autenticado.set(true);
       const p = svc.baixarSemCache('pdf-4');

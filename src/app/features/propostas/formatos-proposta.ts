@@ -50,6 +50,30 @@ export function dataHoraBr(iso: string | null | undefined): string {
   return `${p.get('day')}/${p.get('month')}/${p.get('year')} ${p.get('hour')}:${p.get('minute')}`;
 }
 
+/** Os campos da proposta pelos nomes do servidor (`campos` das recusas), como a tela os chama. */
+const ROTULO_CAMPO: Readonly<Record<string, string>> = {
+  tipo: 'Tipo', clienteId: 'Cliente', templateId: 'Template', tecnicoId: 'Técnico', responsavelId: 'Responsável',
+  dataEmissao: 'Emissão', validadeAte: 'Validade', condicoesPagamento: 'Condições de pagamento',
+  prazoExecucao: 'Prazo de execução', observacoes: 'Observações', descontoGeralPercentual: 'Desconto geral',
+  motivoEncerramento: 'Motivo', itens: 'Itens',
+};
+
+const ROTULO_CAMPO_DA_LINHA: Readonly<Record<string, string>> = {
+  quantidade: 'quantidade', precoUnitario: 'preço', descontoPercentual: 'desconto', meses: 'meses',
+  itemCatalogoId: 'item do catálogo', id: 'linha',
+};
+
+/** O rótulo de um campo de recusa: `prazoExecucao` → "Prazo de execução", `itens[0].quantidade` → "Item 1, quantidade". */
+export function rotuloDoCampo(campo: string): string | null {
+  const linha = /^itens\[(\d+)\](?:\.(\w+))?/.exec(campo);
+  if (linha) {
+    const item = `Item ${Number(linha[1]) + 1}`;
+    const doCampo = linha[2] ? ROTULO_CAMPO_DA_LINHA[linha[2]] : undefined;
+    return doCampo ? `${item}, ${doCampo}` : item;
+  }
+  return Object.hasOwn(ROTULO_CAMPO, campo) ? ROTULO_CAMPO[campo] : null;
+}
+
 const ROTULO_TIPO = new Map<TipoProposta, string>(TIPOS_PROPOSTA.map((t) => [t.valor, t.rotulo]));
 
 export function rotuloTipo(tipo: TipoProposta): string {

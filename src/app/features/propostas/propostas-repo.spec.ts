@@ -544,6 +544,19 @@ describe('PropostasRepo', () => {
       expect((await erroDe(repo.atribuir('p1', { tecnicoId: TECNICO.id }))).codigo).toBe('PROPOSTA_NAO_EDITAVEL');
       expect(await db.outbox.count()).toBe(0);
     });
+
+    it('conferirAtribuicao (P4c-R10): as mesmas recusas do atribuir, sem gravar nada', async () => {
+      await existente('ENVIADA');
+      await db.usuarios.put({ id: 'u-com-inativo', nome: 'Ex C', email: null, perfil: 'COMERCIAL', ativo: false });
+      // o comercial não troca o responsável
+      expect((await erroDe(repo.conferirAtribuicao('p1', { responsavelId: OUTRO_COMERCIAL.id }))).codigo).toBe('ACESSO_NEGADO');
+      usuario.set(ADMIN);
+      expect((await erroDe(repo.conferirAtribuicao('p1', { responsavelId: 'u-com-inativo' }))).campo).toBe('responsavelId');
+      expect((await erroDe(repo.conferirAtribuicao('p1', { responsavelId: TECNICO.id }))).campo).toBe('responsavelId');
+      await repo.conferirAtribuicao('p1', { responsavelId: OUTRO_COMERCIAL.id });
+      expect(await db.outbox.count()).toBe(0);
+      expect((await db.propostas.get('p1'))!.responsavelId).toBe(COMERCIAL.id);
+    });
   });
 
   describe('"Manter as minhas" do wizard e depois Adicionar (P4c-R9, outbox real)', () => {
@@ -901,7 +914,8 @@ describe('PropostasRepo', () => {
       const antes = (await db.propostas.get(id))!;
       const g = gerar();
 
-      const blob = await repo.regerarDocumento(id, g);
+      const { blob, codigoExibido } = await repo.regerarDocumento(id, g);
+      expect(codigoExibido).toBe('000277');
 
       expect(g).toHaveBeenCalledTimes(1);
       const entrada = g.mock.calls[0][0];
@@ -999,6 +1013,45 @@ describe('PropostasRepo', () => {
       expect(g.mock.calls.map((c) => c[0].proposta.codigoExibido)).toEqual(['PROV-BBBBBB', '000300']);
       expect((await db.documentos.toArray()).map((d) => d.codigoExibido)).toEqual(['000300']);
       expect((await fila()).map((x) => x.op)).toEqual(['UPLOAD']);
+    });
+
+    it('o documento de uma recusa CODIGO_EXIBIDO_INVALIDO de revisão anterior sai; outro não enviado dela fica', async () => {
+      await existente('ENVIADA', { numero: 40, revisao: 2 });
+      const doc = (id: string): DocumentoLocal => ({
+        id, propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-ZZZZZZ', sha256: 'x', geradoEm: '', geradoPor: null,
+        bytes: ABC.buffer as ArrayBuffer, enviado: false, arquivoId: null,
+      });
+      await db.documentos.bulkPut([doc('d-recusado'), doc('d-outro')]);
+      await db.pendencias.put({
+        ...pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1', 'up-r'),
+        erro: { codigo: 'CODIGO_EXIBIDO_INVALIDO', mensagem: '' },
+        mutacao: { mutationId: 'up-r', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null,
+          dados: { documentoId: 'd-recusado' }, criadaEm: '' },
+      });
+      const { codigoExibido } = await repo.regerarDocumento('p1', gerar());
+      expect(codigoExibido).toBe('000040-R2');
+      const ids = (await db.documentos.toArray()).map((d) => [d.id.startsWith('d-') ? d.id : 'novo', d.revisao]).sort();
+      expect(ids).toEqual([['d-outro', 1], ['novo', 2]]);
+      expect(await db.pendencias.count()).toBe(0);
+    });
+
+    it('o documento não enviado da revisão atual com o UPLOAD ainda na fila (fora de voo): sai junto com esse UPLOAD', async () => {
+      const { id, antigo } = await uploadRecusado();
+      // um segundo PDF da mesma revisão, com o upload esperando na fila
+      const segundo: DocumentoLocal = { ...antigo, id: 'd-fila', codigoExibido: 'PROV-AAAAAA' };
+      await db.documentos.put(segundo);
+      await db.outbox.add({
+        mutationId: 'up-fila', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: id, op: 'UPLOAD', baseVersion: null,
+        dados: { documentoId: 'd-fila' }, separada: true, criadaEm: '',
+      });
+      // e uma mutação de dados da proposta, que fica
+      await db.outbox.add({ mutationId: 'm-dados', entidade: 'proposta', agregadoId: id, op: 'UPSERT', baseVersion: 2, dados: null, criadaEm: '' });
+      await repo.regerarDocumento(id, gerar());
+      expect((await db.documentos.toArray()).map((d) => d.id)).not.toContain('d-fila');
+      expect(await db.documentos.count()).toBe(1);
+      const m = await fila();
+      expect(m.map((x) => x.mutationId === 'm-dados' ? 'm-dados' : x.op)).toEqual(['m-dados', 'UPLOAD']);
+      expect((m[1].dados as { documentoId: string }).documentoId).not.toBe('d-fila');
     });
 
     it('com o upload antigo em voo, recusa (PROPOSTA_SINCRONIZANDO) sem trocar nada', async () => {

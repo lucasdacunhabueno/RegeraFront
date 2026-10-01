@@ -59,6 +59,11 @@ export class DialogoMotivo {
   readonly pedirMotivo = input(true);
   /** Ação destrutiva: o botão de confirmar em vermelho. */
   readonly perigo = input(false);
+  /**
+   * Quem abriu (o botão da ação): recebe o foco de volta ao fechar. Sem ele, o elemento focado ao abrir — que no
+   * Safari não é o botão (ele não foca botões no clique).
+   */
+  readonly gatilho = input<HTMLElement | null>(null);
   /** A ação está gravando: os botões ficam desabilitados. */
   readonly ocupado = input(false);
   /** O motivo sem os espaços das pontas (`stripJava`), ou null sem `pedirMotivo`. */
@@ -80,7 +85,8 @@ export class DialogoMotivo {
     const anterior = documento.activeElement instanceof HTMLElement ? documento.activeElement : null;
     afterNextRender(() => (this.campo() ?? this.botaoCancelar()).nativeElement.focus());
     inject(DestroyRef).onDestroy(() => {
-      if (anterior?.isConnected) anterior.focus();
+      const alvo = this.gatilho() ?? anterior;
+      if (alvo?.isConnected) alvo.focus();
     });
   }
 

@@ -98,6 +98,7 @@ function repoFalso(iniciais: PropostaLocal[]) {
     store,
     recusas,
     recusaCorrigivel: vi.fn(async (id: string) => recusas.get(id)),
+    conferirAtribuicao: vi.fn<(id: string, m: { responsavelId?: string }) => Promise<void>>(async () => undefined),
     /** Como `corrigirPendencia`: a edição entra na cópia local (o status otimista fica) e a recusa sai. */
     corrigir(pendenciaId: string, edicao: Partial<EdicaoRascunho>) {
       const [id] = [...recusas].find(([, x]) => x.mutationId === pendenciaId) ?? [];
@@ -1202,10 +1203,81 @@ describe('WizardPropostaPage', () => {
       pendencias.corrigirProposta.mockRejectedValueOnce(
         new ErroProposta('VALIDACAO', 'validadeAte', 'Data inválida.', { validadeAte: 'Data inválida.' }),
       );
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '2');
       el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
       await ate(fixture, () => expect(el.querySelector('#validade')?.getAttribute('aria-invalid')).toBe('true'));
       expect(titulo(el)).toBe('Condições');
       expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+    });
+
+    it('sem nenhum passo alterado, "Salvar e reenviar" não reenvia: anuncia e mostra "Corrija os campos destacados." (P4c-R10)', async () => {
+      const { fixture, el, pendencias, navegar, toastErro } = await corrigir();
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await ate(fixture, () => expect(el.querySelector('[role=status]')?.textContent).toContain('Corrija os campos destacados.'));
+      expect(toastErro).toHaveBeenCalledWith('Corrija os campos destacados.');
+      expect(pendencias.corrigirProposta).not.toHaveBeenCalled();
+      expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+    });
+
+    it('a recusa já resolvida (PENDENCIA_INEXISTENTE) no salvar: libera, avisa e volta ao detalhe (P4c-R10)', async () => {
+      const { fixture, el, pendencias, navegar, toastErro, pagina } = await corrigir();
+      pendencias.corrigirProposta.mockRejectedValueOnce(
+        new ErroProposta('PENDENCIA_INEXISTENTE', 'proposta', 'Esta pendência já foi resolvida.'),
+      );
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '2');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
+      expect(toastErro).toHaveBeenCalledWith('Esta pendência já foi resolvida.');
+      expect(pagina.temAlteracoes()).toBe(false);
+    });
+
+    it('item novo com o tipo trocado na tela (sem gravar): preço e meses do tipo novo, nos dois sentidos (I1)', async () => {
+      for (const [de, para, esperado] of [
+        ['VENDA', 'LOCACAO', ['i2', 30000, 1]],
+        ['LOCACAO', 'VENDA', ['i2', 500000, null]],
+      ] as const) {
+        TestBed.resetTestingModule();
+        const { fixture, el, pendencias } = await corrigir({ passo: '1', propostas: [proposta({ status: 'ENVIADA', tipo: de })] });
+        escolher(fixture, el.querySelector<HTMLSelectElement>('#tipo-proposta')!, para);
+        el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+        await ate(fixture, () => expect(titulo(el)).toBe('Itens'));
+        digitar(fixture, el.querySelector<HTMLInputElement>('#busca-catalogo')!, 'ger');
+        el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!.click();
+        await ate(fixture, () => expect(el.querySelectorAll('li[data-linha-id]').length).toBe(2));
+        el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+        await vi.waitFor(() => expect(pendencias.corrigirProposta).toHaveBeenCalled());
+        const [, edicao] = pendencias.corrigirProposta.mock.calls[0];
+        expect(edicao.tipo).toBe(para);
+        const nova = edicao.itens!.find((l) => l.itemCatalogoId === 'i2')!;
+        expect([nova.itemCatalogoId, nova.precoUnitarioCentavos, nova.meses]).toEqual(esperado);
+      }
+    });
+
+    it('o responsável inválido é recusado antes da correção: nada muda (P4c-R10)', async () => {
+      const { fixture, el, repo, pendencias, navegar, toastErro } = await corrigir({ usuario: ADMIN, passo: '3' });
+      repo.conferirAtribuicao.mockRejectedValueOnce(
+        new ErroProposta('VALIDACAO', 'responsavelId', 'O responsável tem de ser um administrador ou comercial ativo.', {
+          responsavelId: 'O responsável tem de ser um administrador ou comercial ativo.',
+        }),
+      );
+      escolher(fixture, el.querySelector<HTMLSelectElement>('#responsavel')!, 'u-com2');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('O responsável tem de ser um administrador ou comercial ativo.'));
+      expect(repo.conferirAtribuicao).toHaveBeenCalledWith('p1', { responsavelId: 'u-com2' });
+      expect(pendencias.corrigirProposta).not.toHaveBeenCalled();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+    });
+
+    it('a correção gravou e o atribuir falhou depois: avisa que o responsável não foi trocado e vai ao detalhe', async () => {
+      const { fixture, el, repo, pendencias, navegar, toast, toastErro } = await corrigir({ usuario: ADMIN, passo: '3' });
+      repo.atribuir.mockRejectedValueOnce(new ErroProposta('ACESSO_NEGADO', 'responsavelId', 'Só o administrador troca o responsável.'));
+      escolher(fixture, el.querySelector<HTMLSelectElement>('#responsavel')!, 'u-com2');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      expect(pendencias.corrigirProposta).toHaveBeenCalled();
+      expect(toastErro).toHaveBeenCalledWith('Correção gravada; o responsável não foi trocado: Só o administrador troca o responsável.');
+      expect(toast).not.toHaveBeenCalledWith('Correção gravada. A proposta volta a sincronizar.');
     });
 
     it('o ADMIN troca o responsável: a correção primeiro, depois atribuir', async () => {

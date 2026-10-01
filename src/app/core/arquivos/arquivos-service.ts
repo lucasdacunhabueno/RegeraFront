@@ -35,6 +35,16 @@ function base64(bytes: ArrayBuffer): string {
   return btoa(binario);
 }
 
+/** `baixarSemCache` recusou sem fazer o pedido: sem internet ou sem sessão (a mensagem já é para o usuário). */
+export class ErroDownload extends Error {
+  constructor(
+    readonly motivo: 'SEM_INTERNET' | 'SEM_SESSAO',
+    mensagem: string,
+  ) {
+    super(mensagem);
+  }
+}
+
 /** Upload (só online) e exibição de arquivos com cache local dos bytes, para mostrar offline. */
 @Injectable({ providedIn: 'root' })
 export class ArquivosService {
@@ -118,10 +128,11 @@ export class ArquivosService {
    * erro do servidor propaga.
    */
   async baixarSemCache(id: string): Promise<Blob> {
-    if (!this.conectividade.online()) throw new Error('Sem internet: o arquivo não está neste aparelho.');
-    if (!this.auth.autenticado()) throw new Error('Entre de novo para baixar o arquivo.');
+    if (!this.conectividade.online()) throw new ErroDownload('SEM_INTERNET', 'Sem internet: o arquivo não está neste aparelho.');
+    if (!this.auth.autenticado()) throw new ErroDownload('SEM_SESSAO', 'Entre de novo para baixar o arquivo.');
+    // o mesmo prazo do upload: o PDF chega a 10 MB numa rede móvel lenta
     return firstValueFrom(
-      this.http.get(`/api/arquivos/${encodeURIComponent(id)}`, { responseType: 'blob' }).pipe(timeout(30_000)),
+      this.http.get(`/api/arquivos/${encodeURIComponent(id)}`, { responseType: 'blob' }).pipe(timeout(60_000)),
     );
   }
 

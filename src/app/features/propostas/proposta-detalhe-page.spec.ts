@@ -3,7 +3,7 @@ import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
 import { BehaviorSubject, of } from 'rxjs';
 import { vi } from 'vitest';
-import { ArquivosService } from '../../core/arquivos/arquivos-service';
+import { ArquivosService, ErroDownload } from '../../core/arquivos/arquivos-service';
 import type { UsuarioSessao } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
@@ -117,8 +117,8 @@ async function montar(o: Opcoes = {}) {
     excluir: vi.fn<(id: string) => Promise<void>>(async () => undefined),
     entradaPrevia: vi.fn<(id: string) => Promise<EntradaPdf>>(async () => ({ previa: true }) as EntradaPdf),
     blobDoDocumento: vi.fn<(id: string) => Promise<Blob | null>>(async () => pdfBlob),
-    regerarDocumento: vi.fn<(id: string, gerar: (e: EntradaPdf) => Promise<Blob>) => Promise<Blob>>(
-      async (_, gerar) => gerar({ previa: false } as EntradaPdf),
+    regerarDocumento: vi.fn<(id: string, gerar: (e: EntradaPdf) => Promise<Blob>) => Promise<{ blob: Blob; codigoExibido: string }>>(
+      async (_, gerar) => ({ blob: await gerar({ previa: false } as EntradaPdf), codigoExibido: '000277' }),
     ),
   };
   const gerado = new Blob(['%PDF-gerado'], { type: 'application/pdf' });
@@ -189,10 +189,12 @@ function semShare() {
   Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: undefined });
   Object.defineProperty(navigator, 'canShare', { configurable: true, writable: true, value: undefined });
   const criar = URL.createObjectURL;
-  URL.createObjectURL = vi.fn(() => 'blob:baixar');
+  const criarUrl = vi.fn<(b: Blob) => string>(() => 'blob:baixar');
+  URL.createObjectURL = criarUrl;
   const clique = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
   return {
     clique,
+    criarUrl,
     restaurar() {
       URL.createObjectURL = criar;
       Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: originais.share });
@@ -323,7 +325,8 @@ describe('PropostaDetalhePage', () => {
 
   describe('ações por status e perfil (§8, §10, P4b-R3)', () => {
     const TODAS: Record<StatusProposta, string[]> = {
-      RASCUNHO: ['Editar', 'Enviar', 'Cancelar proposta', 'Ver prévia', 'Duplicar', 'Excluir rascunho'],
+      // v1: a principal primeiro (Enviar, no rascunho), as outras na ordem de sempre
+      RASCUNHO: ['Enviar', 'Editar', 'Cancelar proposta', 'Ver prévia', 'Duplicar', 'Excluir rascunho'],
       ENVIADA: ['Aprovar', 'Recusar', 'Nova revisão', 'Cancelar proposta', 'Ver prévia', 'Duplicar'],
       APROVADA: ['Iniciar execução', 'Cancelar proposta', 'Ver prévia', 'Duplicar'],
       EM_EXECUCAO: ['Finalizar', 'Cancelar proposta', 'Ver prévia', 'Duplicar'],
@@ -345,6 +348,35 @@ describe('PropostaDetalhePage', () => {
       const { el } = await montar({ usuario: usuario as UsuarioSessao, proposta: proposta({ status: status as StatusProposta, numero: null }) });
       expect(acoes(el)).toEqual(esperadas);
       expect(!!botao(el, 'Trocar técnico')).toBe(atribui);
+    });
+
+    it('v1: resumo (cliente, total, validade, selos) antes das ações; a principal em largura total, as outras em duas colunas', async () => {
+      const { el } = await montar({ estado: { naOutbox: new Set(['p1']), comPendencia: new Set() } });
+      const resumo = el.querySelector<HTMLElement>('[data-testid=resumo]')!;
+      const acoesEl = el.querySelector<HTMLElement>('[data-testid=acoes]')!;
+      expect(resumo.compareDocumentPosition(acoesEl) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(resumo.querySelector('a[data-testid=cliente]')?.textContent?.trim()).toBe('Padaria São João');
+      expect(resumo.querySelector('[data-testid=total-resumo]')?.textContent?.trim()).toBe('R$ 1.666,66');
+      expect(texto(resumo)).toContain('Validade: 05/10/2026');
+      expect(resumo.querySelector('[data-selo=nao-sincronizada]')).not.toBeNull();
+      const principal = acoesEl.querySelector<HTMLButtonElement>('button[data-principal]')!;
+      expect(principal.textContent?.trim()).toBe('Aprovar');
+      expect(principal.className).toContain('w-full');
+      expect(principal.className).toContain('bg-blue-600');
+      const grade = acoesEl.querySelector<HTMLElement>('[data-testid=acoes-secundarias]')!;
+      expect(grade.className).toContain('grid-cols-2');
+      expect([...grade.querySelectorAll('button')].map((b) => b.textContent?.trim())).toEqual([
+        'Recusar', 'Nova revisão', 'Cancelar proposta', 'Ver prévia', 'Duplicar',
+      ]);
+      for (const b of acoesEl.querySelectorAll('button')) expect(b.className).toMatch(/\b(min-)?h-12\b/);
+      expect(botao(el, 'Cancelar proposta')!.className).toContain('text-red-700');
+    });
+
+    it('v1: o técnico tem o resumo sem o total', async () => {
+      const { el } = await montar({ usuario: TECNICO });
+      const resumo = el.querySelector<HTMLElement>('[data-testid=resumo]')!;
+      expect(texto(resumo)).toContain('Padaria São João');
+      expect(resumo.querySelector('[data-testid=total-resumo]')).toBeNull();
     });
 
     it('rascunho numerado não se exclui (cancela-se)', async () => {
@@ -495,7 +527,8 @@ describe('PropostaDetalhePage', () => {
       const { el, navegar } = await montar({ pendencias: [recusaDeDados()] });
       const faixa = texto(el.querySelector('[data-testid=pendencia]')!);
       expect(faixa).toContain('O servidor recusou: Dados inválidos.');
-      expect(faixa).toContain('Máximo de 200 caracteres.');
+      // o campo pelo rótulo da tela
+      expect(faixa).toContain('Prazo de execução: Máximo de 200 caracteres.');
       botao(el, 'Corrigir e reenviar')!.click();
       expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1', 'corrigir']);
       // as transições continuam (vão atrás e entram na correção)
@@ -520,7 +553,8 @@ describe('PropostaDetalhePage', () => {
         expect(repo.regerarDocumento).toHaveBeenCalledWith('p1', expect.any(Function));
         expect(pdf.gerarBlob).toHaveBeenCalledWith({ previa: false });
         expect(share.clique).toHaveBeenCalled();
-        expect(gerado).toBeDefined();
+        // o que baixou é o PDF que o regerarDocumento acabou de gerar
+        expect(share.criarUrl).toHaveBeenCalledWith(gerado);
       } finally {
         share.restaurar();
       }
@@ -550,9 +584,22 @@ describe('PropostaDetalhePage', () => {
       let { el } = await montar({ documentos: [] });
       expect(botao(el, 'Gerar PDF novamente')).toBeDefined();
       expect(texto(el)).toContain('O PDF desta revisão não está no aparelho nem no servidor.');
+      expect(texto(el)).toContain('Se ele foi gerado em outro aparelho, sincronize esse aparelho antes.');
       TestBed.resetTestingModule();
       ({ el } = await montar());
       expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+    });
+
+    it('rascunho com a recusa CODIGO_EXIBIDO_INVALIDO que sobrou (Nova revisão): manda descartar em Pendências, sem gerar', async () => {
+      const { el } = await montar({ proposta: proposta({ status: 'RASCUNHO', revisao: 2 }), pendencias: [recusaDoUpload()] });
+      const link = el.querySelector<HTMLAnchorElement>('[data-testid=descartar-pendencia]')!;
+      expect(link.textContent?.trim()).toBe('Descarte esta pendência em Pendências.');
+      expect(link.getAttribute('href')).toBe('/pendencias');
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      TestBed.resetTestingModule();
+      // enviada: o caminho é gerar de novo, não descartar
+      const outra = await montar({ pendencias: [recusaDoUpload()] });
+      expect(outra.el.querySelector('[data-testid=descartar-pendencia]')).toBeNull();
     });
 
     it('a recusa do regerarDocumento aparece no toast', async () => {
@@ -608,14 +655,80 @@ describe('PropostaDetalhePage', () => {
 
       const restaurar = comoDesktop();
       try {
+        // online: a falha não é "sem internet" (M1)
         online.set(true);
         arquivos.baixarSemCache.mockRejectedValueOnce(new Error('rede'));
         toastErro.mockClear();
         el.querySelector<HTMLButtonElement>('button[aria-label="Abrir 000277"]')!.click();
-        await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Sem internet: este PDF não está no aparelho.'));
+        await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Não foi possível baixar o PDF. Tente de novo.'));
+        // a sessão vencida diz para entrar de novo
+        arquivos.baixarSemCache.mockRejectedValueOnce(new ErroDownload('SEM_SESSAO', 'Entre de novo para baixar o arquivo.'));
+        el.querySelector<HTMLButtonElement>('button[aria-label="Compartilhar 000277"]')!.click();
+        await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Entre de novo para baixar o arquivo.'));
       } finally {
         restaurar();
       }
+    });
+
+    describe('celular (aba aberta no gesto, antes de qualquer espera)', () => {
+      const janelaFalsa = () => ({ location: { href: '' }, close: vi.fn(), opener: {} as unknown, document: { title: '', body: { textContent: '' } } });
+      let largura: number;
+      let criar: typeof URL.createObjectURL;
+      beforeEach(() => {
+        largura = window.innerWidth;
+        criar = URL.createObjectURL;
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+        URL.createObjectURL = vi.fn(() => 'blob:aba');
+      });
+      afterEach(() => {
+        URL.createObjectURL = criar;
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: largura });
+      });
+
+      function adiado<T>() {
+        let liberar!: (v: T) => void;
+        const promessa = new Promise<T>((r) => (liberar = r));
+        return { promessa, liberar };
+      }
+
+      it('Abrir local e remoto: window.open no clique, antes do blobDoDocumento / baixarSemCache; a aba leva o título do PDF', async () => {
+        const { el, repo, arquivos, pdfBlob, remoto } = await montar({ documentos: DOCS, proposta: proposta({ revisao: 2 }) });
+        const local = adiado<Blob | null>();
+        repo.blobDoDocumento.mockReturnValueOnce(local.promessa);
+        let janela = janelaFalsa();
+        const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+        el.querySelector<HTMLButtonElement>('button[aria-label="Abrir 000277-R2"]')!.click();
+        expect(abrir).toHaveBeenCalledWith('', '_blank');
+        expect(janela.document.title).toBe('PDF 000277-R2');
+        expect(janela.location.href).toBe('');
+        local.liberar(pdfBlob);
+        await vi.waitFor(() => expect(janela.location.href).toBe('blob:aba'));
+
+        const baixado = adiado<Blob>();
+        arquivos.baixarSemCache.mockReturnValueOnce(baixado.promessa);
+        janela = janelaFalsa();
+        abrir.mockReturnValue(janela as unknown as Window);
+        el.querySelector<HTMLButtonElement>('button[aria-label="Abrir 000277"]')!.click();
+        expect(abrir).toHaveBeenCalledTimes(2);
+        expect(janela.document.title).toBe('PDF 000277');
+        await vi.waitFor(() => expect(arquivos.baixarSemCache).toHaveBeenCalledWith('a1'));
+        expect(janela.location.href).toBe('');
+        baixado.liberar(remoto);
+        await vi.waitFor(() => expect(janela.location.href).toBe('blob:aba'));
+      });
+
+      it('Ver prévia: window.open no clique, antes do entradaPrevia', async () => {
+        const { el, repo } = await montar();
+        const entrada = adiado<EntradaPdf>();
+        repo.entradaPrevia.mockReturnValueOnce(entrada.promessa);
+        const janela = janelaFalsa();
+        const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+        botao(el, 'Ver prévia')!.click();
+        expect(abrir).toHaveBeenCalledWith('', '_blank');
+        expect(janela.location.href).toBe('');
+        entrada.liberar({ previa: true } as EntradaPdf);
+        await vi.waitFor(() => expect(janela.location.href).toBe('blob:aba'));
+      });
     });
 
     it('"Compartilhar" o documento (sem Web Share: baixa Proposta-<código>.pdf)', async () => {
