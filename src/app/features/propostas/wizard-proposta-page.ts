@@ -327,8 +327,8 @@ export class WizardPropostaPage implements ComAlteracoes {
 
   /**
    * P4c-R9: grava na hora os passos em colisão, com a versão base antiga (a mutação dela fica primeira na fila e o
-   * servidor responde CONFLITO, resolvido em Pendências). Com erro num desses passos, nada muda: a faixa fica e o
-   * foco vai ao campo.
+   * servidor responde CONFLITO, resolvido em Pendências). Só depois que todos gravaram o "Manter" vale (N-4): com erro
+   * num desses passos (da tela ou do repositório), a faixa fica, o Adicionar segue bloqueado e o foco vai ao campo.
    */
   protected async manterMinhas(): Promise<void> {
     if (this.ocupado()) return;
@@ -339,9 +339,11 @@ export class WizardPropostaPage implements ComAlteracoes {
       this.focarPrimeiroErro();
       return;
     }
-    for (const n of this.e.manterMinhas()) {
-      if (!(await this.gravar(n))) return;
+    const passos = this.e.passosEmColisao();
+    for (const n of passos) {
+      if (!(await this.gravar(n, true))) return;
     }
+    this.e.confirmarManter(passos);
     this.anuncio.set('Suas alterações foram gravadas; a diferença vai para Pendências.');
   }
 
@@ -558,9 +560,10 @@ export class WizardPropostaPage implements ComAlteracoes {
 
   /**
    * Grava o passo `n` se ele mudou; false se não gravou. Antes, relê a proposta e reconcilia (um ack ou uma edição de
-   * outro aparelho que ainda não chegou pela observação): com colisão, não grava e mostra a faixa.
+   * outro aparelho que ainda não chegou pela observação): com colisão, não grava e mostra a faixa — salvo no "Manter
+   * as minhas" (`manter`), que grava por cima com a base antiga, de propósito.
    */
-  private async gravar(n: Passo): Promise<boolean> {
+  private async gravar(n: Passo, manter = false): Promise<boolean> {
     const id = this.e.id();
     if (!id || !this.e.sujo(n)) return true;
     this.salvando.set(true);
@@ -568,7 +571,7 @@ export class WizardPropostaPage implements ComAlteracoes {
     try {
       const atual = await this.repo.buscar(id);
       if (atual) this.e.reconciliar(atual);
-      if (this.e.colisao().size > 0) {
+      if (this.e.colisao().size > 0 && !manter) {
         this.focar('#aviso-colisao');
         return false;
       }
@@ -577,7 +580,7 @@ export class WizardPropostaPage implements ComAlteracoes {
       if (!edicao) return false;
       const tocouOutros = n === 1 && !!atual && atual.tipo !== this.e.tipo();
       this.e.errosServidor.set({});
-      const p = await this.config().salvar(this.injector, id, edicao, { base: this.e.versaoBase(), manter: this.e.mantendo() });
+      const p = await this.config().salvar(this.injector, id, edicao, { base: this.e.versaoBase(), manter: manter || this.e.mantendo() });
       this.e.aposSalvar(n, p, tocouOutros);
       return true;
     } catch (err) {

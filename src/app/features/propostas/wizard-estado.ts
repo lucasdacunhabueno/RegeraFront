@@ -357,18 +357,23 @@ export class EstadoWizard {
   }
 
   /**
-   * "Manter as minhas": a tela fica com o que o usuário digitou e a versão base para de avançar. Devolve os passos em
-   * colisão, que a página grava na hora com a base antiga (P4c-R9): essa mutação fica primeira na fila, as seguintes
-   * coalescem nela ou esperam atrás, e o servidor responde CONFLITO.
+   * "Manter as minhas", primeira parte: os passos em colisão, que a página grava na hora com a base antiga (P4c-R9) —
+   * essa mutação fica primeira na fila, as seguintes coalescem nela ou esperam atrás, e o servidor responde CONFLITO.
+   * Não muda nada: se uma gravação for recusada, a faixa e o bloqueio do Adicionar continuam (N-4).
    */
-  manterMinhas(): Passo[] {
+  passosEmColisao(): Passo[] {
+    return [...this.colisao()].sort();
+  }
+
+  /**
+   * "Manter as minhas", depois que todos os `passos` foram gravados com a base antiga: a versão base para de avançar
+   * e esses passos saem da faixa (uma colisão nova, de outro passo, continua nela).
+   */
+  confirmarManter(passos: readonly Passo[]): void {
     const p = this.fresca;
-    const passos = [...this.colisao()].sort();
-    if (!p) return [];
-    for (const n of passos) if (n !== 4) this.ignoradas.set(n, instantaneo(camposDe(p, n)));
+    for (const n of passos) if (p && n !== 4 && this.colisao().has(n)) this.ignoradas.set(n, instantaneo(camposDe(p, n)));
     this.mantidas = true;
-    this.colisao.set(new Set());
-    return passos;
+    this.colisao.set(new Set([...this.colisao()].filter((n) => !passos.includes(n))));
   }
 
   /** Depois de "Manter as minhas": as gravações seguem com a base antiga (inclusive a troca de responsável, N-3). */

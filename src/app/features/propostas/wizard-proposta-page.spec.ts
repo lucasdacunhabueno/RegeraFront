@@ -840,6 +840,42 @@ describe('WizardPropostaPage', () => {
       expect(repo.salvarRascunho).not.toHaveBeenCalled();
     });
 
+    it('"Manter as minhas" recusado pelo repositório: nada muda (faixa, Adicionar desabilitado); corrigido, mantém com a base antiga (N-4)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '2' });
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '3');
+      repo.foraDoAparelho('p1', (p) => (p.itens[0].precoUnitarioCentavos = 99900));
+      await ate(fixture, () => expect(banner(el)).not.toBeNull());
+      repo.salvarRascunho.mockRejectedValueOnce(
+        new ErroProposta('VALIDACAO', 'itens[0].quantidade', 'A quantidade vai de 0,001 a 999.999,999.', {
+          'itens[0].quantidade': 'A quantidade vai de 0,001 a 999.999,999.',
+        }),
+      );
+      botao(el, 'Manter as minhas')!.click();
+      await ate(fixture, () => expect(campoDaLinha(el, 'l1', 'quantidade')!.getAttribute('aria-invalid')).toBe('true'));
+      await vi.waitFor(() => expect(document.activeElement).toBe(campoDaLinha(el, 'l1', 'quantidade')));
+      fixture.detectChanges();
+      // nada gravado e nada liberado: a faixa fica e o Adicionar segue desabilitado
+      expect(banner(el)).not.toBeNull();
+      expect(repo.store.get('p1')!.itens.map((l) => l.quantidadeMilesimos)).toEqual([1000]);
+      expect(repo.store.get('p1')!.version).toBe(2);
+      digitar(fixture, el.querySelector<HTMLInputElement>('#busca-catalogo')!, 'ger');
+      expect(el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!.disabled).toBe(true);
+      el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!.click();
+      await fixture.whenStable();
+      expect(repo.adicionarItem).not.toHaveBeenCalled();
+
+      // corrigido, "Manter" de novo grava com a base antiga e libera
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '4');
+      botao(el, 'Manter as minhas')!.click();
+      await vi.waitFor(() => expect(repo.salvarRascunho).toHaveBeenCalledTimes(2));
+      await ate(fixture, () => expect(banner(el)).toBeNull());
+      const [, edicao, versao] = repo.salvarRascunho.mock.calls[1];
+      expect(versao).toBe(1);
+      expect(edicao.itens!.map((l) => l.quantidadeMilesimos)).toEqual([4000]);
+      expect(repo.store.get('p1')!.version).toBe(1);
+      expect(el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!.disabled).toBe(false);
+    });
+
     it('"Manter as minhas" com só o responsável trocado (ADMIN): atribuir com a versão base antiga (N-3)', async () => {
       const { fixture, el, repo } = await montar({ id: 'p1', passo: '3', usuario: ADMIN });
       escolher(fixture, el.querySelector<HTMLSelectElement>('#responsavel')!, 'u-com2');
