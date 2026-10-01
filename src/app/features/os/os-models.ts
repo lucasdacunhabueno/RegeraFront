@@ -17,14 +17,18 @@ type Decimal = number | string;
 /**
  * Formato da OS no sync (`OsDados` do servidor). O servidor não serializa nulos: chave ausente = null. A OS **não tem
  * preço nem custo** em lugar nenhum, então todos os perfis recebem o mesmo agregado.
- * - **[srv]** (ignorados na entrada, sempre o valor do servidor): `numero`, `revisao`, `iniciadaEm`, `concluidaEm`, a
- *   assinatura aceita (`assinaturaAnexoId`, `assinanteNome`, `assinantePapel`, `assinadaEm`), `anexos`, `historico`,
- *   `atualizadoEm`; nas linhas, `ordem`; nas notas, `autorId` e `criadaEm`.
+ * - **[srv]** (ignorados na entrada, sempre o valor do servidor): `numero`, `revisao`, `propostaNumero` e
+ *   `propostaCodigoExibido` (da proposta, para o PDF da OS offline, M2P1-R25: `000277`, `000277-R2` ou o `PROV-…`;
+ *   ausentes na avulsa), `iniciadaEm`, `concluidaEm`, a assinatura aceita (`assinaturaAnexoId`, `assinanteNome`,
+ *   `assinantePapel`, `assinadaEm`), `anexos`, `historico`, `atualizadoEm`; nas linhas, `ordem`; nas notas, `autorId` e
+ *   `criadaEm`.
  * - `responsavelId`: derivado na criação; ausente ou null na entrada mantém o atual. Na OS de proposta segue o da
  *   proposta (M2P1-R16/R18): o front manda null.
  * - `propostaId`, `clienteId` e `codigoProvisorio`: só na criação. Na edição, `clienteId` null mantém (M2P1-R17).
  * - Comandos de entrada, que nunca chegam no pull: `motivoReabertura` e `aceitarTrabalho` (só ADMIN, M2-R4).
  *   `motivoCancelamento` só é lido na transição para CANCELADA.
+ * - `concluiProposta` (Q17): obrigatório no push (padrão true). Em ABERTA pelo ADMIN e pelo COMERCIAL responsável; em
+ *   EM_ANDAMENTO pelo ADMIN e pelo TECNICO atribuído (Q21, "Precisa voltar"); sem efeito na OS avulsa.
  * - `notas`: só de acréscimo (M2-R1), união por id; no máximo 200 novas por envio.
  */
 export interface OsDados {
@@ -32,6 +36,10 @@ export interface OsDados {
   numero?: number | null;
   revisao?: number | null;
   propostaId?: string | null;
+  /** [srv] Número da proposta, para o cabeçalho do PDF da OS; ausente na avulsa e na proposta sem número. */
+  propostaNumero?: number | null;
+  /** [srv] Código da proposta como no PDF dela (`000277`, `000277-R2` ou `PROV-…`); ausente na avulsa. */
+  propostaCodigoExibido?: string | null;
   clienteId?: string | null;
   tipo: TipoOs;
   status: StatusOs;
@@ -40,6 +48,8 @@ export interface OsDados {
   /** `aaaa-mm-dd`. */
   dataPrevista?: string | null;
   urgente: boolean;
+  /** Q17: concluir esta OS pode finalizar a proposta. Obrigatório no push. */
+  concluiProposta: boolean;
   descricao?: string | null;
   enderecoCep?: string | null;
   enderecoLogradouro?: string | null;
@@ -208,6 +218,10 @@ export interface OsLocal {
   numero: number | null;
   revisao: number | null;
   propostaId: string | null;
+  /** [srv] null na avulsa. */
+  propostaNumero: number | null;
+  /** [srv] null na avulsa. */
+  propostaCodigoExibido: string | null;
   clienteId: string | null;
   tipo: TipoOs;
   status: StatusOs;
@@ -215,6 +229,7 @@ export interface OsLocal {
   tecnicoId: string | null;
   dataPrevista: string | null;
   urgente: boolean;
+  concluiProposta: boolean;
   descricao: string | null;
   enderecoCep: string | null;
   enderecoLogradouro: string | null;
@@ -270,6 +285,8 @@ export function paraOsLocal(id: string, version: number | null, d: OsDados): OsL
     numero: d.numero ?? null,
     revisao: d.revisao ?? null,
     propostaId: d.propostaId ?? null,
+    propostaNumero: d.propostaNumero ?? null,
+    propostaCodigoExibido: d.propostaCodigoExibido ?? null,
     clienteId: d.clienteId ?? null,
     tipo: d.tipo,
     status: d.status,
@@ -277,6 +294,8 @@ export function paraOsLocal(id: string, version: number | null, d: OsDados): OsL
     tecnicoId: d.tecnicoId ?? null,
     dataPrevista: d.dataPrevista ?? null,
     urgente: d.urgente,
+    // o servidor sempre manda (boolean primitivo); ausente só num servidor anterior ao Q17, com o padrão dele
+    concluiProposta: d.concluiProposta ?? true,
     descricao: d.descricao ?? null,
     enderecoCep: d.enderecoCep ?? null,
     enderecoLogradouro: d.enderecoLogradouro ?? null,
@@ -329,6 +348,8 @@ export function dadosDaOs(os: OsLocal, comandos: ComandosOs = {}): OsDados {
     numero: os.numero,
     revisao: os.revisao,
     propostaId: os.propostaId,
+    propostaNumero: os.propostaNumero,
+    propostaCodigoExibido: os.propostaCodigoExibido,
     clienteId: os.clienteId,
     tipo: os.tipo,
     status: os.status,
@@ -336,6 +357,7 @@ export function dadosDaOs(os: OsLocal, comandos: ComandosOs = {}): OsDados {
     tecnicoId: os.tecnicoId,
     dataPrevista: os.dataPrevista,
     urgente: os.urgente,
+    concluiProposta: os.concluiProposta,
     descricao: os.descricao,
     enderecoCep: os.enderecoCep,
     enderecoLogradouro: os.enderecoLogradouro,
@@ -423,6 +445,16 @@ export function codigoOsExibido(os: Pick<OsLocal, 'numero' | 'revisao' | 'codigo
   return os.revisao !== null && os.revisao > 1 ? `${base}-R${os.revisao}` : base;
 }
 
+/**
+ * M2P1-R28 (o `AnexoOsService.concluidaPorOutro` do servidor): a última transição para CONCLUIDA do histórico foi de
+ * outro usuário. Os registros sem mudança de status (a evidência recebida depois do encerramento, R26) não contam. O
+ * histórico local está na ordem do pull (data e id), então a última é a do fim da lista.
+ */
+export function concluidaPorOutro(os: Pick<OsLocal, 'historico'>, usuarioId: string): boolean {
+  const ultima = os.historico.filter((h) => h.statusPara === 'CONCLUIDA' && h.statusDe !== 'CONCLUIDA').at(-1);
+  return ultima !== undefined && ultima.usuarioId !== usuarioId;
+}
+
 // --- textos (M2P1-R7) ---
 
 /** Tamanho em code points depois do `String.strip()` do Java, como o servidor (`char_length` do Postgres); null = 0. */
@@ -461,6 +493,7 @@ const ADMIN_E_COMERCIAL: readonly Perfil[] = ['ADMIN', 'COMERCIAL'];
 const ADMIN_E_TECNICO: readonly Perfil[] = ['ADMIN', 'TECNICO'];
 const TODOS: readonly Perfil[] = ['ADMIN', 'COMERCIAL', 'TECNICO'];
 const SO_ADMIN: readonly Perfil[] = ['ADMIN'];
+const SO_TECNICO: readonly Perfil[] = ['TECNICO'];
 
 interface RegraOs {
   /** null = criação. */
@@ -563,7 +596,7 @@ export function transicoesPermitidasOs(
  */
 export const CAMPOS_EDICAO_OS = [
   'propostaId', 'clienteId', 'tipo', 'descricao', 'dataPrevista', 'urgente', 'tecnicoId', 'endereco', 'itens',
-  'resumoExecucao', 'assinaturaRecusada', 'motivoRecusa', 'notas', 'responsavelId', 'aceitarTrabalho',
+  'concluiProposta', 'resumoExecucao', 'assinaturaRecusada', 'motivoRecusa', 'notas', 'responsavelId', 'aceitarTrabalho',
 ] as const;
 
 export type CampoEdicaoOs = (typeof CAMPOS_EDICAO_OS)[number];
@@ -585,10 +618,13 @@ const MATRIZ: Readonly<Record<CampoEdicaoOs, QuemPorStatus>> = {
   tecnicoId: em(ADMIN_E_COMERCIAL, 'ABERTA', 'EM_ANDAMENTO'),
   endereco: em(ADMIN_E_COMERCIAL, 'ABERTA'),
   itens: em(ADMIN_E_COMERCIAL, 'ABERTA'),
+  // Q17: em ABERTA pelo escritório; Q21 ("Precisa voltar", marcado na conclusão): em EM_ANDAMENTO pelo ADMIN e o técnico
+  concluiProposta: { ...em(ADMIN_E_COMERCIAL, 'ABERTA'), EM_ANDAMENTO: ADMIN_E_TECNICO },
   resumoExecucao: em(ADMIN_E_TECNICO, 'EM_ANDAMENTO'),
   assinaturaRecusada: em(ADMIN_E_TECNICO, 'EM_ANDAMENTO'),
   motivoRecusa: em(ADMIN_E_TECNICO, 'EM_ANDAMENTO'),
-  notas: { ...em(TODOS, 'ABERTA', 'EM_ANDAMENTO'), CONCLUIDA: SO_ADMIN },
+  // M2P1-R26: o técnico atribuído registra a evidência do campo também depois do encerramento
+  notas: { ...em(TODOS, 'ABERTA', 'EM_ANDAMENTO'), CONCLUIDA: ADMIN_E_TECNICO, CANCELADA: SO_TECNICO },
   responsavelId: em(SO_ADMIN, 'ABERTA', 'EM_ANDAMENTO'),
   aceitarTrabalho: em(SO_ADMIN, 'ABERTA', 'EM_ANDAMENTO', 'CONCLUIDA', 'CANCELADA'),
 };

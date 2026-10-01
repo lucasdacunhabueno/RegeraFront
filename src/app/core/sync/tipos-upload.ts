@@ -1,6 +1,6 @@
 import type { HttpErrorResponse } from '@angular/common/http';
 import type { Table } from 'dexie';
-import { AnexoOsLocal, OsLocal, paraAnexoOsServidor } from '../../features/os/os-models';
+import { AnexoOsLocal, concluidaPorOutro, OsLocal, paraAnexoOsServidor } from '../../features/os/os-models';
 import type { DocumentoLocal, PropostaLocal } from '../../features/propostas/proposta-models';
 import type { RegeraDb } from '../db/regera-db';
 import type { RegistroLocal } from './adaptadores';
@@ -16,6 +16,12 @@ export interface RegistroUpload {
   bytes: ArrayBuffer | null;
   enviado: boolean;
   arquivoId: string | null;
+}
+
+/** O que o aparelho sabe na hora da recusa: o agregado local (o pull não o sobrescreve com o upload na fila) e quem envia. */
+export interface ContextoRecusa {
+  agregado: RegistroLocal | undefined;
+  usuarioId: string | null;
 }
 
 /** As duas partes do multipart: `arquivo` e `metadados` (JSON). */
@@ -50,7 +56,7 @@ export interface TipoUpload<R extends RegistroUpload = RegistroUpload, S = unkno
   /** Os bytes não estão mais no aparelho: vira pendência sem chamar o servidor. */
   readonly ausente: ErroMutacao;
   /** Recusa definitiva (4xx) como erro da pendência, com mensagem em pt-BR. */
-  erro(e: HttpErrorResponse, r: R): ErroMutacao;
+  erro(e: HttpErrorResponse, r: R, ctx: ContextoRecusa): ErroMutacao;
   /** A versão do agregado depois do upload (que o "toca"). */
   versao(resp: S): number;
   /** O registro depois do upload aceito. */
@@ -141,12 +147,13 @@ const DOCUMENTO_PROPOSTA: TipoUpload<DocumentoLocal, RespostaDocumento> = {
 
 /** 403 e 404 do upload: a OS não é mais deste usuário (técnico desatribuído, M2-R3/R22) ou não existe mais. */
 export const MENSAGEM_OS_NAO_ESTA_COM_VOCE = 'Esta OS não está mais com você.';
+/** 403 do PDF do técnico atribuído quando outro usuário concluiu a OS (M2P1-R28): o PDF do aparelho não vale. */
+export const MENSAGEM_OS_CONCLUIDA_PELO_ESCRITORIO = 'Esta OS foi concluída pelo escritório.';
 const DESCARTE_UPLOAD_OS = 'Descarte este envio para liberar a sincronização da OS.';
 const MOTIVO_ANEXO_POR_CODIGO: Readonly<Record<string, string>> = {
   LIMITE_FOTOS: 'Esta OS já tem o máximo de 20 fotos no servidor.',
   LIMITE_ASSINATURAS: 'Esta OS já tem o máximo de 10 assinaturas no servidor.',
-  // pendente no servidor: o código vem com a onda final do M2-P1 (o limite de PDFs por OS)
-  LIMITE_DOCUMENTOS: 'Esta OS já tem o máximo de PDFs no servidor.',
+  LIMITE_DOCUMENTOS: 'Esta OS já tem o máximo de 20 PDFs no servidor.',
   ARQUIVO_VAZIO: 'O arquivo do anexo está vazio.',
   SHA_DIVERGENTE: 'O arquivo chegou diferente do que foi gravado no aparelho (falha de integridade) e não foi aceito.',
   TIPO_NAO_SUPORTADO: 'O tipo do arquivo não é aceito para este anexo.',
@@ -195,6 +202,20 @@ function motivoDoAnexo(a: AnexoOsLocal, codigo: string | null, status: number, c
   return porCodigo(MOTIVO_ANEXO_POR_CODIGO, codigo) ?? MOTIVO_ANEXO_POR_STATUS[status] ?? 'O servidor recusou este anexo.';
 }
 
+/**
+ * 403/404 do anexo: o único caminho é descartar. O servidor responde `ACESSO_NEGADO` igual ao PDF do técnico que perdeu
+ * a atribuição e ao do técnico atribuído quando o escritório concluiu a OS (M2P1-R28); só o `detail` muda, e texto do
+ * servidor não é contrato. Quem distingue é o estado local: o push do `concluir` que vem antes do PDF na fila volta OK
+ * com o estado do servidor (R26), que o aparelho grava porque só o upload vem atrás. Se a OS segue com este técnico e a
+ * última conclusão do histórico é de outro usuário, foi o escritório; senão, ela não está mais com ele.
+ */
+function mensagemSemAcesso(e: HttpErrorResponse, a: AnexoOsLocal, ctx: ContextoRecusa): string {
+  const os = ctx.agregado as OsLocal | undefined;
+  const doEscritorio = e.status === 403 && a.tipo === 'DOCUMENTO' && os !== undefined && ctx.usuarioId !== null
+    && os.tecnicoId === ctx.usuarioId && concluidaPorOutro(os, ctx.usuarioId);
+  return doEscritorio ? MENSAGEM_OS_CONCLUIDA_PELO_ESCRITORIO : MENSAGEM_OS_NAO_ESTA_COM_VOCE;
+}
+
 /** O tipo do arquivo, a extensão e os metadados de cada tipo de anexo (os campos de outro tipo não vão). */
 function envioDoAnexo(a: AnexoOsLocal): EnvioUpload {
   const base = { anexoId: a.id, tipo: a.tipo, sha256: a.sha256 };
@@ -233,11 +254,11 @@ const ANEXO_OS: TipoUpload<AnexoOsLocal, RespostaAnexoOs> = {
   url: (osId) => `/api/os/${encodeURIComponent(osId)}/anexos`,
   montar: envioDoAnexo,
   ausente: { codigo: 'ANEXO_AUSENTE', mensagem: `O arquivo deste anexo não está mais neste aparelho. ${DESCARTE_UPLOAD_OS}` },
-  erro: (e, a) => comProblema(e, (codigo, campos) =>
+  erro: (e, a, ctx) => comProblema(e, (codigo, campos) =>
     // M2-R3/R22: o técnico que perdeu a atribuição (o PDF dele, ou tudo depois de 7 dias, inclusive a repetição de
-    // um upload já aceito) e a OS que sumiu: o único caminho é descartar
+    // um upload já aceito), a OS que sumiu e o PDF da OS concluída pelo escritório (R28)
     e.status === 403 || e.status === 404
-      ? MENSAGEM_OS_NAO_ESTA_COM_VOCE
+      ? mensagemSemAcesso(e, a, ctx)
       : `${motivoDoAnexo(a, codigo, e.status, campos)} ${DESCARTE_UPLOAD_OS}`),
   versao: (resp) => resp.versaoOs,
   // P4b-R26: depois do aceite fica só a miniatura (e os metadados); o PDF guarda os bytes da revisão atual

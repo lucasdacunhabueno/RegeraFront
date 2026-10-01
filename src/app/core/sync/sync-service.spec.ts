@@ -1185,8 +1185,8 @@ describe('SyncService', () => {
     const URL_OS = '/api/os/o1/anexos';
     const NAO_ESTA_COM_VOCE = 'Esta OS não está mais com você.';
     const os = (status: StatusOs, extra: Partial<OsDados> = {}): OsDados => ({
-      codigoProvisorio: 'OSP-0Z9XY7', tipo: 'INSTALACAO', status, urgente: false, assinaturaRecusada: false,
-      tecnicoId: 'u1', itens: [], notas: [], ...extra,
+      codigoProvisorio: 'OSP-0Z9XY7', tipo: 'INSTALACAO', status, urgente: false, concluiProposta: true,
+      assinaturaRecusada: false, tecnicoId: 'u1', itens: [], notas: [], ...extra,
     });
     const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).buffer as ArrayBuffer;
     const MINI = new Uint8Array([0xff, 0xd8, 9]).buffer as ArrayBuffer;
@@ -1447,7 +1447,7 @@ describe('SyncService', () => {
       [400, 'ARQUIVO_VAZIO', 'FOTO', 'vazio'],
       [422, 'LIMITE_FOTOS', 'FOTO', '20 fotos'],
       [422, 'LIMITE_ASSINATURAS', 'ASSINATURA', '10 assinaturas'],
-      [422, 'LIMITE_DOCUMENTOS', 'DOCUMENTO', 'PDFs'],
+      [422, 'LIMITE_DOCUMENTOS', 'DOCUMENTO', '20 PDFs'],
       [422, 'SHA_DIVERGENTE', 'FOTO', 'integridade'],
       [422, 'CODIGO_EXIBIDO_INVALIDO', 'DOCUMENTO', 'Gere o PDF de novo'],
       [415, 'TIPO_NAO_SUPORTADO', 'FOTO', 'tipo do arquivo'],
@@ -1520,6 +1520,65 @@ describe('SyncService', () => {
       expect(await db.anexosOs.get('f0')).toMatchObject({ enviado: true });
       expect((await fila()).map((m) => [m.entidade, m.op])).toEqual([['os', 'UPSERT']]);
       expect(await db.os.get('o1')).toBeDefined();
+    });
+
+    describe('403 do PDF do técnico (M2P1-R28): pelo estado local, "concluída pelo escritório" ou "não está mais com você"', () => {
+      const CONCLUIDA_PELO_ESCRITORIO = 'Esta OS foi concluída pelo escritório.';
+      const h = (statusDe: StatusOs | undefined, statusPara: StatusOs, usuarioId: string, observacao?: string) =>
+        ({ ...(statusDe ? { statusDe } : {}), statusPara, usuarioId, em: '2026-10-01T12:00:00Z', ...(observacao ? { observacao } : {}) });
+      const ATE_INICIAR = [h(undefined, 'ABERTA', 'u2'), h('ABERTA', 'EM_ANDAMENTO', 'u1')];
+
+      async function pdfRecusado(servidor: OsDados): Promise<string | undefined> {
+        await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { numero: 123, historico: ATE_INICIAR })));
+        await db.anexosOs.put(documentoOs('d1', 1));
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { numero: 123, resumoExecucao: 'Feito' }), 3, { separada: true });
+        await sync.registrarUploadAnexoOs('o1', 'd1');
+
+        const p = sync.sincronizar();
+        // a fila offline do técnico com a OS já encerrada (M2P1-R26): OK com o estado do servidor
+        ok(await push(), 5, servidor);
+        (await upload()).flush({ codigo: 'ACESSO_NEGADO', detail: 'x' }, { status: 403, statusText: 'Forbidden' });
+        await pullVazio();
+        await p;
+        const [pend] = await db.pendencias.toArray();
+        expect(pend).toMatchObject({ tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, erro: { codigo: 'ACESSO_NEGADO' } });
+        expect(await db.anexosOs.get('d1')).toMatchObject({ enviado: false });
+        return pend.erro?.mensagem;
+      }
+
+      it('o escritório concluiu (e a evidência do técnico depois disso não conta como conclusão dele)', async () => {
+        const servidor = os('CONCLUIDA', {
+          numero: 123, resumoExecucao: 'Concluída pelo escritório',
+          historico: [...ATE_INICIAR, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9'), h('CONCLUIDA', 'CONCLUIDA', 'u1', 'Execução recebida')],
+        });
+        expect(await pdfRecusado(servidor)).toBe(CONCLUIDA_PELO_ESCRITORIO);
+      });
+
+      it('a OS saiu do técnico (outro técnico, ou nenhum): "não está mais com você"', async () => {
+        const servidor = os('CONCLUIDA', { numero: 123, tecnicoId: 'u7', historico: [...ATE_INICIAR, h('EM_ANDAMENTO', 'CONCLUIDA', 'u7')] });
+        expect(await pdfRecusado(servidor)).toBe(NAO_ESTA_COM_VOCE);
+      });
+
+      it('a última conclusão é dele (o escritório concluiu, reabriu e ele concluiu de novo): "não está mais com você"', async () => {
+        const servidor = os('CONCLUIDA', {
+          numero: 123,
+          historico: [
+            ...ATE_INICIAR, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9'), h('CONCLUIDA', 'EM_ANDAMENTO', 'u9'), h('EM_ANDAMENTO', 'CONCLUIDA', 'u1'),
+          ],
+        });
+        expect(await pdfRecusado(servidor)).toBe(NAO_ESTA_COM_VOCE);
+      });
+
+      it('a foto recusada com 403 nunca é "concluída pelo escritório"', async () => {
+        await db.os.put(paraOsLocal('o1', 3, os('CONCLUIDA', { historico: [...ATE_INICIAR, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9')] })));
+        await db.anexosOs.put(anexoLocal());
+        await sync.registrarUploadAnexoOs('o1', 'f1');
+        const p = sync.sincronizar();
+        (await upload()).flush({ codigo: 'ACESSO_NEGADO' }, { status: 403, statusText: 'Forbidden' });
+        await pullVazio();
+        await p;
+        expect((await db.pendencias.toArray())[0].erro?.mensagem).toBe(NAO_ESTA_COM_VOCE);
+      });
     });
 
     it('5xx no upload do anexo: continua na fila, sem pendência; queda de rede também', async () => {

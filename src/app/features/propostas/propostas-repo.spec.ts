@@ -198,6 +198,12 @@ describe('PropostasRepo', () => {
       expect(await db.propostas.get(id)).toMatchObject({ validadeAte: '2026-10-16', condicoesPagamento: null, templateId: null });
     });
 
+    it('empresa do perfil TECNICO no aparelho (sem validade e condições padrão, M2P1-R25): 15 dias e sem condições', async () => {
+      await db.empresa.put(paraEmpresaLocal(ID_EMPRESA, 4, { razaoSocial: 'Regera Energia Ltda', corPrimaria: '#123456' }));
+      const id = await repo.criar('SERVICO');
+      expect(await db.propostas.get(id)).toMatchObject({ validadeAte: '2026-10-16', condicoesPagamento: null });
+    });
+
     it('ADMIN também fica como responsável', async () => {
       usuario.set(ADMIN);
       const id = await repo.criar('VENDA');

@@ -13,7 +13,7 @@ import { cnpjValido, normalizarDocumento } from '../../core/util/documentos';
 import { formatarTelefone, mascararDocumento, somenteDigitos } from '../../core/util/formatos';
 import { Toasts } from '../../shared/ui/toasts';
 import { EmpresaApi, EmpresaResposta } from './empresa-api';
-import { EmpresaDados, ID_EMPRESA, paraEmpresaLocal } from './empresa-models';
+import { EmpresaDados, ID_EMPRESA, paraEmpresaLocal, VALIDADE_PADRAO_DIAS } from './empresa-models';
 
 const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
 const naoSoEspacos = (c: AbstractControl<string>): ValidationErrors | null =>
@@ -141,7 +141,7 @@ export class EmpresaPage implements ComAlteracoes {
     email: ['', Validators.email],
     site: [''],
     corPrimaria: ['#1d4ed8'],
-    validadePadraoDias: [15, [Validators.required, Validators.min(1), Validators.max(365)]],
+    validadePadraoDias: [VALIDADE_PADRAO_DIAS, [Validators.required, Validators.min(1), Validators.max(365)]],
     condicoesPagamentoPadrao: [''],
   });
 
@@ -307,7 +307,7 @@ export class EmpresaPage implements ComAlteracoes {
       email: e.email ?? '',
       site: e.site ?? '',
       corPrimaria: e.corPrimaria,
-      validadePadraoDias: e.validadePadraoDias,
+      validadePadraoDias: e.validadePadraoDias ?? VALIDADE_PADRAO_DIAS,
       condicoesPagamentoPadrao: e.condicoesPagamentoPadrao ?? '',
     });
     this.logoArquivoId.set(e.logoArquivoId);

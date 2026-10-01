@@ -407,7 +407,7 @@ describe('PendenciasService', () => {
     });
 
     describe('OS e anexos da OS', () => {
-      const osDados = { codigoProvisorio: 'OSP-0Z9XY7', tipo: 'INSTALACAO', status: 'ABERTA', urgente: false,
+      const osDados = { codigoProvisorio: 'OSP-0Z9XY7', tipo: 'INSTALACAO', status: 'ABERTA', urgente: false, concluiProposta: true,
         assinaturaRecusada: false, itens: [], notas: [] } as const;
       const anexo = (id: string, osId: string, enviado: boolean): AnexoOsLocal => ({
         id, osId, tipo: 'FOTO', sha256: 'b'.repeat(64), legenda: null, momento: null, tiradaEm: null, assinanteNome: null,

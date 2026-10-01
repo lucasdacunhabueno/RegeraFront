@@ -22,6 +22,8 @@ describe('RegeraDb v4', () => {
     ]);
     await v3.table('clientes').put({ id: 'c1', documento: '1', nomeBusca: 'x' });
     await v3.table('itens').put({ id: 'i1', codigo: 'A', nomeBusca: 'a' });
+    // com mutações na fila: o v6 (N2) apaga as tabelas sincronizadas, menos o que a fila protege
+    await v3.table('outbox').bulkAdd([{ mutationId: 'm1', agregadoId: 'c1' }, { mutationId: 'm2', agregadoId: 'i1' }]);
     v3.close();
 
     const db = new RegeraDb();

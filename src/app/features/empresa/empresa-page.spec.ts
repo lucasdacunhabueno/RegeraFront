@@ -208,6 +208,14 @@ describe('EmpresaPage', () => {
     expect(get).toHaveBeenCalledTimes(1);
   });
 
+  it('cópia local sem a validade padrão (a do TECNICO, M2P1-R25): o formulário mostra o padrão de 15 dias', async () => {
+    const semPadroes = paraEmpresaLocal(ID_EMPRESA, 5, { razaoSocial: 'Regera Energia Ltda', corPrimaria: '#1d4ed8' });
+    const { el } = montar({ online: false, preparar: (db) => vi.spyOn(db.empresa, 'get').mockResolvedValue(semPadroes) });
+    await vi.waitFor(() => expect(el.querySelector<HTMLInputElement>('#razaoSocial')!.value).toBe('Regera Energia Ltda'));
+    expect(el.querySelector<HTMLInputElement>('#validadePadraoDias')!.value).toBe('15');
+    expect(el.querySelector<HTMLTextAreaElement>('#condicoesPagamentoPadrao')!.value).toBe('');
+  });
+
   it('conflito de versão com falha ao recarregar mostra o erro', async () => {
     const salvar = vi.fn().mockRejectedValue(new HttpErrorResponse({
       status: 409, error: { codigo: 'CONFLITO_VERSAO', detail: 'Os dados da empresa foram alterados por outra pessoa.' },

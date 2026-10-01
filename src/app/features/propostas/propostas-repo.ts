@@ -16,7 +16,7 @@ import { sha256Hex } from '../../core/util/sha256';
 import { uuidv7 } from '../../core/util/uuid';
 import type { ItemLocal } from '../catalogo/item-models';
 import type { ClienteLocal } from '../clientes/cliente-models';
-import { EmpresaLocal, ID_EMPRESA } from '../empresa/empresa-models';
+import { EmpresaLocal, ID_EMPRESA, VALIDADE_PADRAO_DIAS } from '../empresa/empresa-models';
 import type { TemplateLocal, TipoProposta } from '../templates/template-models';
 import { TemplatesRepo } from '../templates/templates-repo';
 import { calcular, deCentesimos, deMilesimos, paraCentavos } from './calculo';
@@ -516,8 +516,8 @@ export class PropostasRepo {
 
   /**
    * Novo RASCUNHO com os padrões (§13): o usuário atual é o responsável (obrigatório para o COMERCIAL); emissão hoje
-   * em São Paulo; validade = hoje + `validadePadraoDias` da empresa (15 sem empresa); condições de pagamento da
-   * empresa; template padrão do tipo.
+   * em São Paulo; validade = hoje + `validadePadraoDias` da empresa (15 sem ela, ou sem a validade, como a do TECNICO);
+   * condições de pagamento da empresa; template padrão do tipo.
    */
   async criar(tipo: TipoProposta, clienteId?: string | null): Promise<string> {
     const u = this.usuario();
@@ -538,7 +538,7 @@ export class PropostasRepo {
       responsavelId: u.id,
       tecnicoId: null,
       dataEmissao: hoje,
-      validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? 15),
+      validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? VALIDADE_PADRAO_DIAS),
       condicoesPagamento: texto(empresa?.condicoesPagamentoPadrao),
       prazoExecucao: null,
       observacoes: null,
@@ -680,7 +680,7 @@ export class PropostasRepo {
       revisao: 1,
       status: 'RASCUNHO',
       dataEmissao: hoje,
-      validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? 15),
+      validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? VALIDADE_PADRAO_DIAS),
       motivoEncerramento: null,
       itens,
       historico: [],

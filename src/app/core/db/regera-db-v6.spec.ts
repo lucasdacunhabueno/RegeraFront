@@ -10,7 +10,7 @@ const V5 = {
 };
 
 const osDados = (extra: Partial<OsDados> = {}): OsDados => ({
-  codigoProvisorio: 'OSP-0Z9XY7', tipo: 'INSTALACAO', status: 'ABERTA', urgente: false, assinaturaRecusada: false,
+  codigoProvisorio: 'OSP-0Z9XY7', tipo: 'INSTALACAO', status: 'ABERTA', urgente: false, concluiProposta: true, assinaturaRecusada: false,
   itens: [], notas: [], ...extra,
 });
 
@@ -65,6 +65,89 @@ describe('RegeraDb v6', () => {
     expect(db.anexosOs.schema.primKey.name).toBe('id');
     // `enviado` (boolean) não é chave válida do IndexedDB: filtrado em memória, como em `documentos`
     expect(db.anexosOs.schema.indexes.map((i) => i.name).sort()).toEqual(['osId', 'tipo']);
+    db.close();
+  });
+
+  it('N2 (Q18): o upgrade limpa as tabelas sincronizadas, menos o que a fila ou as pendências protegem', async () => {
+    const v5 = new Dexie('regera');
+    v5.version(5).stores(V5);
+    await v5.table('meta').bulkPut([
+      { chave: 'cursor', valor: 99 }, { chave: 'cursorDono', valor: 'u1:COMERCIAL' }, { chave: 'sessao', valor: { id: 'u1' } },
+      { chave: 'ultimoSync', valor: '2026-10-01T10:00:00Z' },
+    ]);
+    await v5.table('clientes').bulkPut([
+      { id: 'c-fila', documento: '1', nomeBusca: 'fila' }, // mutação na fila
+      { id: 'c-da-proposta', documento: '2', nomeBusca: 'da proposta' }, // cliente da proposta protegida
+      { id: 'c-outro', documento: '3', nomeBusca: 'outro' },
+      { id: 'c-mais-um', documento: '4', nomeBusca: 'mais um' },
+    ]);
+    await v5.table('propostas').bulkPut([
+      { id: 'p-doc', status: 'ENVIADA', clienteId: 'c-da-proposta', templateId: 't-da-proposta' }, // PDF não enviado
+      { id: 'p-pendente', status: 'RASCUNHO', clienteId: null, templateId: null }, // pendência
+      { id: 'p-livre', status: 'ENVIADA', clienteId: 'c-outro', templateId: 't-outro' },
+    ]);
+    await v5.table('documentos').bulkPut([
+      { id: 'd-nao-enviado', propostaId: 'p-doc', bytes: new Uint8Array([0x25]).buffer, enviado: false, arquivoId: null },
+      { id: 'd-enviado-protegida', propostaId: 'p-doc', bytes: new Uint8Array([0x26]).buffer, enviado: true, arquivoId: 'a1' },
+      { id: 'd-enviado', propostaId: 'p-livre', bytes: new Uint8Array([0x27]).buffer, enviado: true, arquivoId: 'a2' },
+    ]);
+    await v5.table('templates').bulkPut([
+      { id: 't-da-proposta', tipoProposta: 'VENDA', nomeBusca: 'a' }, { id: 't-outro', tipoProposta: 'VENDA', nomeBusca: 'b' },
+    ]);
+    await v5.table('itens').bulkPut([{ id: 'i-fila', codigo: 'A', nomeBusca: 'a' }, { id: 'i-outro', codigo: 'B', nomeBusca: 'b' }]);
+    await v5.table('empresa').put({ id: 'empresa-1', razaoSocial: 'Regera' });
+    await v5.table('usuarios').bulkPut([{ id: 'u1', nome: 'Ana' }, { id: 'u2', nome: 'Tito' }]);
+    await v5.table('arquivos').put({ id: 'logo-1', mime: 'image/png', bytes: new Uint8Array([1]).buffer });
+    await v5.table('outbox').bulkAdd([
+      { mutationId: 'm1', agregadoId: 'c-fila', entidade: 'cliente', op: 'UPSERT', baseVersion: 2 },
+      { mutationId: 'm2', agregadoId: 'p-doc', entidade: 'documento_proposta', op: 'UPLOAD', dados: { documentoId: 'd-nao-enviado' } },
+      { mutationId: 'm3', agregadoId: 'i-fila', entidade: 'item_catalogo', op: 'UPSERT', baseVersion: 1 },
+    ]);
+    await v5.table('pendencias').put({ mutationId: 'm0', agregadoId: 'p-pendente', entidade: 'proposta', tipo: 'CONFLITO' });
+    v5.close();
+
+    const db = new RegeraDb();
+    const ids = async (t: { toCollection(): { primaryKeys(): Promise<unknown[]> } }) =>
+      ((await t.toCollection().primaryKeys()) as string[]).sort();
+    // fila, pendências, sessão e o cache de arquivos ficam como estavam; o cursor recomeça do zero
+    expect((await db.outbox.orderBy('seq').toArray()).map((m) => m.mutationId)).toEqual(['m1', 'm2', 'm3']);
+    expect((await db.pendencias.toArray()).map((p) => p.mutationId)).toEqual(['m0']);
+    expect(await db.lerMeta('sessao')).toEqual({ id: 'u1' });
+    expect(await db.lerMeta('ultimoSync')).toBe('2026-10-01T10:00:00Z');
+    expect(await db.lerMeta('cursor')).toBeUndefined();
+    expect(await db.arquivos.count()).toBe(1);
+    // o protegido fica (e o cliente e o template da proposta protegida, para ela abrir offline); o resto vem no pull
+    expect(await ids(db.clientes)).toEqual(['c-da-proposta', 'c-fila']);
+    expect(await ids(db.propostas)).toEqual(['p-doc', 'p-pendente']);
+    expect(await ids(db.templates)).toEqual(['t-da-proposta']);
+    expect(await ids(db.itens)).toEqual(['i-fila']);
+    // com proposta protegida, a empresa fica (o PDF offline); os usuários sempre voltam no pull
+    expect(await db.empresa.count()).toBe(1);
+    expect(await db.usuarios.count()).toBe(0);
+    // o PDF não enviado fica com os bytes; os enviados são cópia do servidor e saem, como na troca de dono do cursor
+    expect(await ids(db.documentos)).toEqual(['d-nao-enviado']);
+    expect(new Uint8Array((await db.documentos.get('d-nao-enviado'))!.bytes!)).toEqual(new Uint8Array([0x25]));
+    db.close();
+  });
+
+  it('N2: sem nada protegido, todas as tabelas sincronizadas ficam vazias (inclusive a empresa)', async () => {
+    const v5 = new Dexie('regera');
+    v5.version(5).stores(V5);
+    await v5.table('meta').put({ chave: 'sessao', valor: { id: 't1' } });
+    await v5.table('clientes').bulkPut([{ id: 'c1', documento: '1', nomeBusca: 'a' }, { id: 'c2', documento: '2', nomeBusca: 'b' }]);
+    await v5.table('propostas').put({ id: 'p1', status: 'APROVADA', clienteId: 'c1', templateId: 't1' });
+    await v5.table('templates').put({ id: 't1', tipoProposta: 'VENDA', nomeBusca: 't' });
+    await v5.table('itens').put({ id: 'i1', codigo: 'A', nomeBusca: 'a' });
+    await v5.table('empresa').put({ id: 'empresa-1', razaoSocial: 'Regera' });
+    await v5.table('usuarios').put({ id: 'u1', nome: 'Ana' });
+    await v5.table('documentos').put({ id: 'd1', propostaId: 'p1', bytes: null, enviado: true, arquivoId: 'a1' });
+    v5.close();
+
+    const db = new RegeraDb();
+    for (const t of [db.clientes, db.propostas, db.templates, db.itens, db.empresa, db.usuarios, db.documentos, db.os, db.anexosOs]) {
+      expect(await t.count(), t.name).toBe(0);
+    }
+    expect(await db.lerMeta('sessao')).toEqual({ id: 't1' });
     db.close();
   });
 

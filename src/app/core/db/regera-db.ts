@@ -1,5 +1,5 @@
 import { Injectable } from '@angular/core';
-import Dexie, { type Table } from 'dexie';
+import Dexie, { type Table, type Transaction } from 'dexie';
 import type { ClienteLocal } from '../../features/clientes/cliente-models';
 import type { ItemLocal } from '../../features/catalogo/item-models';
 import type { EmpresaLocal } from '../../features/empresa/empresa-models';
@@ -17,6 +17,43 @@ export interface ArquivoLocal {
   id: string;
   mime: string;
   bytes: ArrayBuffer;
+}
+
+interface ComId {
+  id: string;
+}
+
+/**
+ * Q18 / N2 do upgrade v6: o TECNICO agora só recebe os clientes ligados a ele, e o aparelho não pode ficar com a base
+ * inteira do M1. Como o cursor recomeça do zero, tudo o que vem do pull (clientes, itens, propostas, templates,
+ * empresa, usuários, OS) é apagado e volta no pull completo, na mesma transação do upgrade. Fica:
+ * - a fila, as pendências, a sessão e o cache de arquivos (meta e arquivos não são tocados);
+ * - o registro de todo agregado com mutação na fila ou pendência, que o pull também não sobrescreveria;
+ * - o cliente e o template de uma proposta ou OS protegida, e a empresa se houver alguma: sem eles ela não abre nem
+ *   gera o PDF offline (o pull os traz de volta ou manda o tombstone; o servidor sobe o `sync_seq` de todo cliente);
+ * - os PDFs e anexos ainda não enviados (os bytes esperam o upload); os enviados são cópia do servidor e saem, como
+ *   na troca de dono do cursor.
+ */
+async function limparSincronizadasV6(tx: Transaction): Promise<void> {
+  const naFila = (await tx.table('outbox').toArray()) as { agregadoId: string }[];
+  const pendentes = (await tx.table('pendencias').toArray()) as { agregadoId: string }[];
+  const protegidos = new Set([...naFila, ...pendentes].map((m) => m.agregadoId));
+  const manter = async <T extends ComId>(tabela: string, extras: ReadonlySet<string> = new Set()): Promise<T[]> => {
+    const t = tx.table<T, string>(tabela);
+    await t.filter((r) => !protegidos.has(r.id) && !extras.has(r.id)).delete();
+    return t.toArray();
+  };
+  const propostas = await manter<ComId & { clienteId?: string | null; templateId?: string | null }>('propostas');
+  const oss = await manter<ComId & { clienteId?: string | null }>('os');
+  const dependencias = (valores: (string | null | undefined)[]) => new Set(valores.filter((v): v is string => !!v));
+  await manter('clientes', dependencias([...propostas, ...oss].map((a) => a.clienteId)));
+  await manter('templates', dependencias(propostas.map((p) => p.templateId)));
+  await manter('itens');
+  if (propostas.length + oss.length === 0) await tx.table('empresa').clear();
+  await tx.table('usuarios').clear();
+  for (const tabela of ['documentos', 'anexosOs']) {
+    await tx.table<{ enviado: boolean }>(tabela).filter((r) => r.enviado).delete();
+  }
 }
 
 @Injectable({ providedIn: 'root' })
@@ -118,6 +155,7 @@ export class RegeraDb extends Dexie {
         // fronts P4 pularam os como entidade desconhecida e avançaram o cursor: puxa tudo de novo (a fila e as
         // pendências ficam)
         await tx.table('meta').bulkDelete(['cursor', 'cursorDono']);
+        await limparSincronizadasV6(tx);
       });
   }
 

@@ -21,6 +21,8 @@ describe('RegeraDb v3', () => {
       { chave: 'cursor', valor: 99 }, { chave: 'cursorDono', valor: 'u1' }, { chave: 'sessao', valor: { id: 'u1' } },
     ]);
     await v2.table('clientes').put({ id: 'c1', documento: '1', nomeBusca: 'x' });
+    // com mutação na fila: o v6 (N2) apaga as tabelas sincronizadas, menos o que a fila protege
+    await v2.table('outbox').add({ mutationId: 'm1', agregadoId: 'c1' });
     v2.close();
 
     const db = new RegeraDb();

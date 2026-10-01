@@ -341,7 +341,9 @@ export class SyncService {
         await this.liberar(m);
         return false;
       }
-      await this.aplicarResultado(m, { mutationId: m.mutationId, status: 'REJEITADO', erro: tipo.erro(e, registro) });
+      const agregado = await ADAPTADORES[tipo.agregado].tabela(this.db).get(m.agregadoId);
+      const erro = tipo.erro(e, registro, { agregado, usuarioId: this.auth.usuario?.()?.id ?? null });
+      await this.aplicarResultado(m, { mutationId: m.mutationId, status: 'REJEITADO', erro });
       return true;
     }
     await this.aplicarUpload(m, tipo, registro.id, resp);

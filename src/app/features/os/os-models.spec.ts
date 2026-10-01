@@ -12,6 +12,7 @@ import {
   camposEditaveisOs,
   codigoOsBase,
   codigoOsExibido,
+  concluidaPorOutro,
   ContextoTransicaoOs,
   corStatusOs,
   dadosDaOs,
@@ -33,7 +34,7 @@ import {
 
 /** SHA-256 dos arquivos com fins de linha normalizados para LF. Os testes Java têm as mesmas constantes. */
 const SHA_CASOS_TRANSICOES_OS = 'aed65ce71c5da769d0d40cfb090145fcb30adf4dbb494a72a3fa96726aac0e5e';
-const SHA_CASOS_EDICAO_OS = 'a29d3e470561ab58082b888efc63d056a22d991830e23680e8d4548338ab4722';
+const SHA_CASOS_EDICAO_OS = '9fac3a3efbd18f9550eec95841e7262a3ff73f18db8c5a67024b38d2f437f83e';
 
 interface CasoTransicaoOs {
   grupo: string;
@@ -112,6 +113,8 @@ function dadosCompletos(): OsDados {
     numero: 123,
     revisao: 2,
     propostaId: 'p1',
+    propostaNumero: 277,
+    propostaCodigoExibido: '000277-R2',
     clienteId: 'c1',
     tipo: 'INSTALACAO',
     status: 'EM_ANDAMENTO',
@@ -119,6 +122,7 @@ function dadosCompletos(): OsDados {
     tecnicoId: 'u3',
     dataPrevista: '2026-10-10',
     urgente: true,
+    concluiProposta: false,
     descricao: 'Instalar o gerador',
     enderecoCep: '01001000',
     enderecoLogradouro: 'Praça da Sé',
@@ -239,7 +243,7 @@ describe('os-models', () => {
     });
 
     it('tem a grade completa e os casos esperados', () => {
-      expect(arquivoEdicao.casos.length).toBeGreaterThan(1700);
+      expect(arquivoEdicao.casos).toHaveLength(1875);
       const grade = new Set(arquivoEdicao.casos.filter((c) => c.grupo === 'grade').map((c) =>
         [c.statusServidor, c.perfil, c.ehResponsavel, c.ehTecnicoAtribuido, JSON.stringify(c.camposAlterados)].join('>')));
       expect(grade.size).toBe(5 * 3 * 4 * (1 + CAMPOS_EDICAO_OS.length));
@@ -347,7 +351,17 @@ describe('os-models', () => {
           }
         }
       }
-      expect(camposEditaveisOs('EM_ANDAMENTO', 'TECNICO', false, true)).toEqual(['resumoExecucao', 'assinaturaRecusada', 'motivoRecusa', 'notas']);
+      expect(camposEditaveisOs('EM_ANDAMENTO', 'TECNICO', false, true))
+        .toEqual(['concluiProposta', 'resumoExecucao', 'assinaturaRecusada', 'motivoRecusa', 'notas']);
+      // M2P1-R26: a evidência do técnico atribuído depois do encerramento
+      expect(camposEditaveisOs('CONCLUIDA', 'TECNICO', false, true)).toEqual(['notas']);
+      expect(camposEditaveisOs('CANCELADA', 'TECNICO', false, true)).toEqual(['notas']);
+      expect(camposEditaveisOs('CANCELADA', 'ADMIN', false, false)).toEqual(['aceitarTrabalho']);
+      // Q17/Q21: concluiProposta em ABERTA pelo escritório; em EM_ANDAMENTO pelo ADMIN e pelo técnico atribuído
+      expect(camposEditaveisOs('ABERTA', 'COMERCIAL', true, false)).toContain('concluiProposta');
+      expect(camposEditaveisOs('EM_ANDAMENTO', 'COMERCIAL', true, false)).not.toContain('concluiProposta');
+      expect(camposEditaveisOs('EM_ANDAMENTO', 'ADMIN', false, false)).toContain('concluiProposta');
+      expect(camposEditaveisOs('ABERTA', 'TECNICO', false, true)).not.toContain('concluiProposta');
       expect(camposEditaveisOs('ABERTA', 'TECNICO', false, false)).toEqual([]);
     });
 
@@ -369,6 +383,23 @@ describe('os-models', () => {
         expect(podeExecutar(s, 'TECNICO', false), s).toBe(false);
         expect(podeExecutar(s, 'COMERCIAL', true), s).toBe(false);
       }
+    });
+  });
+
+  describe('concluidaPorOutro (M2P1-R28): a última transição para CONCLUIDA no histórico foi de outro usuário', () => {
+    const h = (statusDe: StatusOs | null, statusPara: StatusOs, usuarioId: string) =>
+      ({ statusDe, statusPara, usuarioId, em: '2026-10-01T12:00:00Z', observacao: null });
+
+    it('pela ordem do histórico (a do pull), sem contar os registros sem transição (R26)', () => {
+      const inicio = [h(null, 'ABERTA', 'u2'), h('ABERTA', 'EM_ANDAMENTO', 'u1')];
+      expect(concluidaPorOutro({ historico: inicio }, 'u1')).toBe(false);
+      expect(concluidaPorOutro({ historico: [...inicio, h('EM_ANDAMENTO', 'CONCLUIDA', 'u1')] }, 'u1')).toBe(false);
+      expect(concluidaPorOutro({ historico: [...inicio, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9')] }, 'u1')).toBe(true);
+      expect(concluidaPorOutro({ historico: [...inicio, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9'), h('CONCLUIDA', 'CONCLUIDA', 'u1')] }, 'u1'))
+        .toBe(true);
+      const reconcluida = [...inicio, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9'), h('CONCLUIDA', 'EM_ANDAMENTO', 'u9'), h('EM_ANDAMENTO', 'CONCLUIDA', 'u1')];
+      expect(concluidaPorOutro({ historico: reconcluida }, 'u1')).toBe(false);
+      expect(concluidaPorOutro({ historico: reconcluida }, 'u9')).toBe(true);
     });
   });
 
@@ -433,11 +464,28 @@ describe('os-models', () => {
         enderecoComplemento: null, enderecoBairro: null, enderecoCidade: null, enderecoUf: null, iniciadaEm: null,
         concluidaEm: null, resumoExecucao: null, motivoCancelamento: null, assinaturaAnexoId: null, assinanteNome: null,
         assinantePapel: null, assinadaEm: null, motivoRecusa: null, notas: [], anexos: [], historico: [], atualizadoEm: null,
+        propostaNumero: null, propostaCodigoExibido: null,
+        // Q17: o padrão do servidor é "conclui a proposta"
+        concluiProposta: true,
       });
       expect(os.itens[0]).toEqual({
         id: 'l1', itemCatalogoId: null, codigo: 'X', nome: 'Y', unidade: 'un', natureza: 'SERVICO', quantidadePrevistaMilesimos: 2500, ordem: null,
       });
       expect(dadosDaOs(os).itens[0].quantidadePrevista).toBe(2.5);
+    });
+
+    it('concluiProposta (Q17) e o código da proposta [srv] (M2P1-R25) fazem a ida e volta; concluiProposta sempre vai', () => {
+      const os = paraOsLocal(ID, 4, dadosCompletos());
+      expect(os).toMatchObject({ concluiProposta: false, propostaNumero: 277, propostaCodigoExibido: '000277-R2' });
+      expect(dadosDaOs(os)).toMatchObject({ concluiProposta: false, propostaNumero: 277, propostaCodigoExibido: '000277-R2' });
+      expect(dadosDaOs({ ...os, concluiProposta: true }).concluiProposta).toBe(true);
+      // a OS avulsa não tem proposta: os dois ficam null; o booleano obrigatório do push vai mesmo sem vir no pull
+      const avulsa = paraOsLocal(ID, null, {
+        codigoProvisorio: 'OSP-0Z9XY7', tipo: 'SERVICO', status: 'ABERTA', urgente: false, assinaturaRecusada: false, itens: [], notas: [],
+      } as unknown as OsDados);
+      expect(avulsa).toMatchObject({ propostaNumero: null, propostaCodigoExibido: null, concluiProposta: true });
+      const rede = JSON.parse(JSON.stringify(dadosDaOs(avulsa))) as Record<string, unknown>;
+      expect(rede['concluiProposta']).toBe(true);
     });
 
     it('nota sem autor e sem data (ainda não aceita) fica null e assim vai para a rede', () => {
