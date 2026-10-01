@@ -354,16 +354,21 @@ export class SyncService {
    * fila passa a ter essa versão como base, senão voltaria CONFLITO.
    * P4b-R24: o toque sobe a versão em exatamente 1. Se a devolvida não é `baseVersion + 1`, alguém escreveu no agregado
    * entre a mutação anterior e o upload: a base fica `baseVersion + 1` (o que este aparelho conhece), e a próxima
-   * mutação recebe CONFLITO em vez de desfazer em silêncio a escrita alheia. Sem `baseVersion`, adota a devolvida.
+   * mutação recebe CONFLITO em vez de desfazer em silêncio a escrita alheia.
+   * M2P2-R3: o upload primeiro da fila não tem `baseVersion` (ex.: a foto de uma OS já sincronizada); a base conhecida
+   * é então a versão do agregado local, que o pull não sobrescreve enquanto o upload está na fila. Só sem nenhuma das
+   * duas (o agregado não está no aparelho, ou nunca foi ao servidor) a versão devolvida é adotada.
    * P4b-R26: a poda dos bytes é a do tipo (`enviado` e `podar`).
    */
   private async aplicarUpload(m: MutacaoLocal, tipo: TipoUpload, id: string, resp: unknown): Promise<void> {
     const devolvida = tipo.versao(resp);
-    const esperada = m.baseVersion === null ? null : m.baseVersion + 1;
-    const versao = esperada !== null && devolvida !== esperada ? esperada : devolvida;
     const tabela = tipo.tabela(this.db);
     const agregados = ADAPTADORES[tipo.agregado].tabela(this.db);
     await this.db.transaction('rw', [this.db.outbox, tabela, agregados], async () => {
+      const local = await agregados.get(m.agregadoId);
+      const base = m.baseVersion ?? (local as { version?: number | null } | undefined)?.version ?? null;
+      const esperada = base === null ? null : base + 1;
+      const versao = esperada !== null && devolvida !== esperada ? esperada : devolvida;
       const atual = await this.db.outbox.get(m.seq!);
       if (atual?.mutationId === m.mutationId) await this.db.outbox.delete(m.seq!);
       // put do registro inteiro: o `update` do Dexie clona o objeto e, no IndexedDB dos testes, perde os bytes
@@ -372,7 +377,6 @@ export class SyncService {
       await tipo.podar(tabela, m.agregadoId, resp);
       const proxima = await this.db.outbox.where('agregadoId').equals(m.agregadoId).first();
       if (proxima) await this.db.outbox.update(proxima.seq!, { baseVersion: versao });
-      const local = await agregados.get(m.agregadoId);
       if (local) await agregados.update(m.agregadoId, tipo.noAgregado(local, resp, versao));
     });
   }

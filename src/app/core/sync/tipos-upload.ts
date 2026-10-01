@@ -72,9 +72,12 @@ function porCodigo(mapa: Readonly<Record<string, string>>, codigo: string | null
   return codigo !== null && Object.hasOwn(mapa, codigo) ? mapa[codigo] : undefined;
 }
 
-function comProblema(e: HttpErrorResponse, mensagem: (codigo: string | null) => string): ErroMutacao {
+function comProblema(
+  e: HttpErrorResponse,
+  mensagem: (codigo: string | null, campos: Record<string, string> | undefined) => string,
+): ErroMutacao {
   const { codigo, campos } = lerProblema(e);
-  return { codigo: codigo ?? `HTTP_${e.status}`, mensagem: mensagem(codigo), ...(campos ? { campos } : {}) };
+  return { codigo: codigo ?? `HTTP_${e.status}`, mensagem: mensagem(codigo, campos), ...(campos ? { campos } : {}) };
 }
 
 // --- documento da proposta (P4b) ---
@@ -142,7 +145,9 @@ const DESCARTE_UPLOAD_OS = 'Descarte este envio para liberar a sincronização d
 const MOTIVO_ANEXO_POR_CODIGO: Readonly<Record<string, string>> = {
   LIMITE_FOTOS: 'Esta OS já tem o máximo de 20 fotos no servidor.',
   LIMITE_ASSINATURAS: 'Esta OS já tem o máximo de 10 assinaturas no servidor.',
+  // pendente no servidor: o código vem com a onda final do M2-P1 (o limite de PDFs por OS)
   LIMITE_DOCUMENTOS: 'Esta OS já tem o máximo de PDFs no servidor.',
+  ARQUIVO_VAZIO: 'O arquivo do anexo está vazio.',
   SHA_DIVERGENTE: 'O arquivo chegou diferente do que foi gravado no aparelho (falha de integridade) e não foi aceito.',
   TIPO_NAO_SUPORTADO: 'O tipo do arquivo não é aceito para este anexo.',
   CORPO_INVALIDO: 'O servidor não reconheceu os dados deste anexo (o tipo, por exemplo).',
@@ -156,7 +161,32 @@ const MOTIVO_ANEXO_POR_STATUS: Readonly<Record<number, string>> = {
   415: 'O tipo do arquivo não é aceito para este anexo.',
 };
 
-function motivoDoAnexo(a: AnexoOsLocal, codigo: string | null, status: number): string {
+/** Os campos dos metadados do upload (`campos` do 400 VALIDACAO), como o usuário os conhece. */
+const ROTULO_CAMPO_ANEXO: Readonly<Record<string, string>> = {
+  metadados: 'Metadados do anexo',
+  anexoId: 'Identificador do anexo',
+  tipo: 'Tipo do anexo',
+  sha256: 'SHA-256 do arquivo',
+  legenda: 'Legenda',
+  momento: 'Momento da foto',
+  tiradaEm: 'Quando a foto foi tirada',
+  assinanteNome: 'Nome de quem assina',
+  assinantePapel: 'Papel de quem assina',
+  assinadaEm: 'Data da assinatura',
+  revisaoOs: 'Revisão da OS',
+  codigoExibido: 'Código exibido no PDF',
+  snapshot: 'Dados do PDF',
+};
+
+/** "Dados do anexo inválidos: Nome de quem assina (mensagem); …." — o nome cru quando o campo não é conhecido. */
+function motivoDosCampos(campos: Record<string, string>): string {
+  const itens = Object.entries(campos).map(([campo, msg]) =>
+    `${Object.hasOwn(ROTULO_CAMPO_ANEXO, campo) ? ROTULO_CAMPO_ANEXO[campo] : campo} (${msg})`);
+  return `Dados do anexo inválidos: ${itens.join('; ')}.`;
+}
+
+function motivoDoAnexo(a: AnexoOsLocal, codigo: string | null, status: number, campos?: Record<string, string>): string {
+  if (codigo === 'VALIDACAO' && campos && Object.keys(campos).length > 0) return motivoDosCampos(campos);
   if (codigo === 'STATUS_INVALIDO') {
     return a.tipo === 'DOCUMENTO'
       ? 'No servidor, a OS não está concluída, e o PDF não foi aceito.'
@@ -203,12 +233,12 @@ const ANEXO_OS: TipoUpload<AnexoOsLocal, RespostaAnexoOs> = {
   url: (osId) => `/api/os/${encodeURIComponent(osId)}/anexos`,
   montar: envioDoAnexo,
   ausente: { codigo: 'ANEXO_AUSENTE', mensagem: `O arquivo deste anexo não está mais neste aparelho. ${DESCARTE_UPLOAD_OS}` },
-  erro: (e, a) => comProblema(e, (codigo) =>
+  erro: (e, a) => comProblema(e, (codigo, campos) =>
     // M2-R3/R22: o técnico que perdeu a atribuição (o PDF dele, ou tudo depois de 7 dias, inclusive a repetição de
     // um upload já aceito) e a OS que sumiu: o único caminho é descartar
     e.status === 403 || e.status === 404
       ? MENSAGEM_OS_NAO_ESTA_COM_VOCE
-      : `${motivoDoAnexo(a, codigo, e.status)} ${DESCARTE_UPLOAD_OS}`),
+      : `${motivoDoAnexo(a, codigo, e.status, campos)} ${DESCARTE_UPLOAD_OS}`),
   versao: (resp) => resp.versaoOs,
   // P4b-R26: depois do aceite fica só a miniatura (e os metadados); o PDF guarda os bytes da revisão atual
   enviado: (a, resp) => ({ ...a, enviado: true, arquivoId: resp.anexo.arquivoId, bytes: a.tipo === 'DOCUMENTO' ? a.bytes : null }),
