@@ -719,6 +719,156 @@ describe('PendenciasService', () => {
         expect(contexto.os.get('o1')?.numero).toBe(123);
         expect([...contexto.tiposDeAnexo.entries()]).toEqual([['s1', 'ASSINATURA']]);
       });
+
+      describe('M2P2-R13: a pendência que libera a OS a relê do servidor', () => {
+        const TEC = 'u-tec';
+        const URL = '/api/sync/agregado/os/o1';
+        const online = () => TestBed.inject(ConectividadeService).online as WritableSignal<boolean>;
+        const doServidor = (extra: Partial<OsDados> = {}): OsDados => ({
+          ...osDados, numero: 123, revisao: 1, tecnicoId: TEC, responsavelId: 'u1', itens: [], notas: [], ...extra,
+        });
+        const documento = (id: string, revisaoOs = 1): AnexoOsLocal => ({
+          ...anexo(id, 'o1', false), tipo: 'DOCUMENTO', revisaoOs, codigoExibido: 'OS-000123',
+        });
+        const recusa = (mutationId: string, anexoId: string, codigo: string): Pendencia => ({
+          mutationId, entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '',
+          erro: { codigo, mensagem: 'x' }, mutacao: uploadOs(mutationId, anexoId),
+        });
+        const marcas = async () => (await db.lerMeta<string[]>('relerAoDesproteger')) ?? [];
+
+        beforeEach(() => {
+          usuarioAtual = { id: TEC, nome: 'Téo', email: 'teo@regera.com', perfil: 'TECNICO', ativo: true };
+          online().set(true);
+        });
+
+        it('cenário 1: o PDF recusado da OS reaberta lá; depois do Descartar ela volta em andamento (rev 2) e concluir de novo funciona', async () => {
+          await db.os.put(paraOsLocal('o1', 5, doServidor({ status: 'CONCLUIDA', resumoExecucao: 'Feito', assinaturaRecusada: true, motivoRecusa: 'Ausente' })));
+          await gravarAnexos(documento('d1'));
+          const p = recusa('up1', 'd1', 'STATUS_INVALIDO');
+          await db.pendencias.put(p);
+
+          const descarte = svc.descartar(p);
+          (await vi.waitFor(() => http.expectOne(URL))).flush({
+            entidade: 'os', id: 'o1', version: 7, deleted: false,
+            dados: doServidor({ status: 'EM_ANDAMENTO', revisao: 2, resumoExecucao: 'Feito', assinaturaRecusada: true, motivoRecusa: 'Ausente' }),
+          });
+          await descarte;
+
+          expect(await db.os.get('o1')).toMatchObject({ status: 'EM_ANDAMENTO', revisao: 2, version: 7 });
+          expect(await db.anexosOs.get('d1')).toBeUndefined();
+          expect(await comBytes()).toEqual([]);
+          expect(await marcas()).toEqual([]);
+          vi.spyOn(TestBed.inject(PdfService), 'logoDataUrl').mockResolvedValue(null);
+          const { codigoExibido } = await TestBed.inject(OsRepo).concluir('o1', 'Feito de novo', async () => new Blob(['%PDF-1.7']));
+          expect(codigoExibido).toBe('OS-000123-R2');
+          expect((await db.outbox.orderBy('seq').toArray()).map((m) => [m.entidade, m.baseVersion])).toEqual([['os', 7], [TIPO_UPLOAD_ANEXO_OS, null]]);
+        });
+
+        it('cenário 2 (M2-R3): o PDF de quem perdeu a OS (403); depois do Descartar a OS sai do aparelho, com as miniaturas', async () => {
+          await db.os.put(paraOsLocal('o1', 5, doServidor({ status: 'EM_ANDAMENTO', tecnicoId: 'u-outro' })));
+          await gravarAnexos([anexo('f0', 'o1', true), documento('d1')]);
+          const p = recusa('up1', 'd1', 'ACESSO_NEGADO');
+          await db.pendencias.put(p);
+
+          const descarte = svc.descartar(p);
+          (await vi.waitFor(() => http.expectOne(URL))).flush({ codigo: 'NAO_ENCONTRADO' }, { status: 404, statusText: 'Not Found' });
+          await descarte;
+
+          expect(await db.os.get('o1')).toBeUndefined();
+          expect(await db.anexosOs.count()).toBe(0);
+          expect(await comBytes()).toEqual([]);
+          expect(await marcas()).toEqual([]);
+        });
+
+        it('com mais da OS na fila, não relê ainda: o agregado fica marcado e é relido quando ficar livre', async () => {
+          await db.os.put(paraOsLocal('o1', 5, doServidor({ status: 'EM_ANDAMENTO' })));
+          await gravarAnexos([anexo('f1', 'o1', false), anexo('f2', 'o1', false)]);
+          await db.outbox.add(uploadOs('up2', 'f2'));
+          await db.pendencias.put(recusa('up1', 'f1', 'LIMITE_FOTOS'));
+
+          await svc.descartar((await db.pendencias.get('up1'))!);
+          http.expectNone(URL);
+          expect(await marcas()).toEqual(['os:o1']);
+
+          await db.outbox.clear();
+          const releitura = TestBed.inject(SyncService).relerDesprotegidos();
+          (await vi.waitFor(() => http.expectOne(URL))).flush({ entidade: 'os', id: 'o1', version: 8, deleted: false, dados: doServidor({ status: 'EM_ANDAMENTO', urgente: true }) });
+          await releitura;
+          expect(await db.os.get('o1')).toMatchObject({ version: 8, urgente: true });
+          expect(await marcas()).toEqual([]);
+        });
+
+        it('offline: o Descartar do upload marca a OS, e ela é relida na próxima sincronização', async () => {
+          online().set(false);
+          await db.os.put(paraOsLocal('o1', 5, doServidor({ status: 'CONCLUIDA' })));
+          await gravarAnexos(documento('d1'));
+          const p = recusa('up1', 'd1', 'STATUS_INVALIDO');
+          await db.pendencias.put(p);
+
+          await svc.descartar(p);
+          http.expectNone(URL);
+          expect(await db.pendencias.count()).toBe(0);
+          expect(await marcas()).toEqual(['os:o1']);
+          expect(await db.os.get('o1')).toMatchObject({ status: 'CONCLUIDA', version: 5 });
+
+          online().set(true);
+          const sync = TestBed.inject(SyncService);
+          vi.mocked(sync.sincronizar).mockRestore();
+          const rodada = sync.sincronizar();
+          (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({ cursor: 1, temMais: false, mudancas: [], usuarios: [] });
+          (await vi.waitFor(() => http.expectOne(URL))).flush({ entidade: 'os', id: 'o1', version: 7, deleted: false, dados: doServidor({ status: 'EM_ANDAMENTO', revisao: 2 }) });
+          await rodada;
+          expect(await db.os.get('o1')).toMatchObject({ status: 'EM_ANDAMENTO', revisao: 2, version: 7 });
+          expect(await marcas()).toEqual([]);
+        });
+
+        it('offline: "Usar a do servidor" aplica o que a pendência guardou e marca para reler', async () => {
+          online().set(false);
+          await db.os.put(paraOsLocal('o1', 4, doServidor({ status: 'EM_ANDAMENTO' })));
+          const p: Pendencia = {
+            mutationId: 'c', entidade: 'os', agregadoId: 'o1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 6,
+            dadosServidor: doServidor({ status: 'EM_ANDAMENTO', urgente: true }),
+            mutacao: { mutationId: 'c', entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: 4, dados: doServidor({ status: 'EM_ANDAMENTO' }), criadaEm: '' },
+          };
+          await db.pendencias.put(p);
+          const usar = svc.usarServidor(p);
+          (await vi.waitFor(() => http.expectOne(URL))).error(new ProgressEvent('error'), { status: 0 });
+          await usar;
+          expect(await db.os.get('o1')).toMatchObject({ version: 6, urgente: true });
+          expect(await marcas()).toEqual(['os:o1']);
+        });
+
+        it('depois de 7 dias (404 OS_NAO_ENCONTRADA no upload): um Descartar só leva a OS inteira, em vez de um por foto', async () => {
+          await db.os.put(paraOsLocal('o1', 5, doServidor({ status: 'EM_ANDAMENTO' })));
+          await gravarAnexos([anexo('f0', 'o1', true), anexo('f1', 'o1', false), anexo('f2', 'o1', false), anexo('f3', 'o1', false)]);
+          await db.outbox.bulkAdd([uploadOs('up2', 'f2'), uploadOs('up3', 'f3'),
+            { mutationId: 'n', entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: 5,
+              dados: doServidor({ status: 'EM_ANDAMENTO', notas: [{ id: 'n1', texto: 'Cheguei', autorId: null, criadaEm: null }] }), criadaEm: '' }]);
+          const p = recusa('up1', 'f1', 'OS_NAO_ENCONTRADA');
+          await db.pendencias.put(p);
+          // o que vai junto (fora a foto do próprio upload) é avisado antes (P4c-R15)
+          expect(await svc.perdaDaOs(p)).toEqual({ anexos: true, notas: true });
+          expect(await svc.descartaEnvio(p)).toBe(true);
+
+          const descarte = svc.descartar(p);
+          (await vi.waitFor(() => http.expectOne(URL))).flush({ codigo: 'NAO_ENCONTRADO' }, { status: 404, statusText: 'Not Found' });
+          await descarte;
+
+          expect(await db.os.get('o1')).toBeUndefined();
+          expect(await db.outbox.count()).toBe(0);
+          expect(await db.pendencias.count()).toBe(0);
+          expect(await db.anexosOs.count()).toBe(0);
+          expect(await comBytes()).toEqual([]);
+        });
+
+        it('o upload da OS que não existe mais, sozinho: o Descartar não pergunta (só a foto dele vai)', async () => {
+          await gravarAnexos(anexo('f1', 'o1', false));
+          const p = recusa('up1', 'f1', 'OS_NAO_ENCONTRADA');
+          await db.pendencias.put(p);
+          expect(await svc.perdaDaOs(p)).toEqual({ anexos: false, notas: false });
+          expect(await svc.descartaEnvio(p)).toBe(false);
+        });
+      });
     });
 
     it('P4b-R17: manter a minha rebaseia no lugar — [E1 CONFLITO, T ENVIADA, UPLOAD d1, T APROVADA]', async () => {

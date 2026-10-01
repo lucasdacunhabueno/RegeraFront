@@ -7,7 +7,7 @@ import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { mensagemDeErro } from '../../core/http/erro-api';
 import { PdfService } from '../../core/pdf/pdf-service';
-import { PendenciasService } from '../../core/sync/pendencias-service';
+import { osNaoEncontrada, PendenciasService } from '../../core/sync/pendencias-service';
 import { DadosUploadAnexoOs, Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { MENSAGEM_OS_NAO_ESTA_COM_VOCE } from '../../core/sync/tipos-upload';
@@ -43,8 +43,11 @@ function avisoDaOs(perda: { anexos: boolean; notas: boolean }): string {
 /** M2P1-R19: o "Manter a minha" tirou notas que o perfil não acrescenta na OS encerrada no servidor. */
 const NOTAS_DESCARTADAS = 'As notas não puderam ser acrescentadas: a OS está encerrada.';
 
-/** P4c-R15: a ação sobre a proposta ou a OS (não sobre o upload dela) pode levar o que foi feito aqui: pergunta antes. */
-const perguntaAntes = (p: Pendencia) => p.entidade === 'proposta' || p.entidade === 'os';
+/**
+ * P4c-R15: a ação sobre a proposta ou a OS (não sobre o upload dela) pode levar o que foi feito aqui: pergunta antes.
+ * O Descartar do upload da OS que não existe mais também (M2P2-R13: ele leva a OS inteira).
+ */
+const perguntaAntes = (p: Pendencia) => p.entidade === 'proposta' || p.entidade === 'os' || osNaoEncontrada(p);
 
 /** A confirmação de uma ação que levaria o envio feito no aparelho (P4c-R15, N2). */
 interface Confirmacao {
@@ -463,7 +466,7 @@ export class PendenciasPage {
 
   /** O texto da confirmação, ou null quando a ação não leva nada feito aqui. */
   private async avisoDoDescarte(p: Pendencia): Promise<string | null> {
-    if (p.entidade === 'os') {
+    if (p.entidade === 'os' || osNaoEncontrada(p)) {
       const perda = await this.servico.perdaDaOs(p);
       return perda.anexos || perda.notas ? avisoDaOs(perda) : null;
     }

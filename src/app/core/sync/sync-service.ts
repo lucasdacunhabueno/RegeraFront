@@ -25,6 +25,8 @@ import {
 const CHAVE_CURSOR = 'cursor';
 const CHAVE_CURSOR_DONO = 'cursorDono';
 const CHAVE_ULTIMO_SYNC = 'ultimoSync';
+/** M2P2-R13: `entidade:id` dos agregados a reler do servidor quando não houver nada deles na fila nem nas pendências. */
+const CHAVE_RELER = 'relerAoDesproteger';
 const LOTE = 100;
 const LIMITE_PULL = 500;
 const MAX_RODADAS_PUSH = 50;
@@ -34,6 +36,11 @@ const MAX_REPETICOES = 3;
 const CODIGOS_TRANSITORIOS = new Set(['ERRO_INTERNO', 'INTEGRIDADE']);
 /** Trocas automáticas de código provisório por proposta numa sincronização, antes de virar pendência. */
 const MAX_TROCAS_CODIGO = 3;
+
+/** A marca de releitura (`CHAVE_RELER`) de um agregado. */
+export function marcaDeReleitura(entidade: string, id: string): string {
+  return `${entidade}:${id}`;
+}
 
 function semSeq(m: MutacaoLocal): MutacaoLocal {
   const copia = { ...m };
@@ -52,6 +59,8 @@ export class SyncService {
   private emAndamento: Promise<void> | null = null;
   /** Alguém pediu `sincronizar()` enquanto uma rodada rodava: o que ele quer enviar pode ter ficado de fora. */
   private repetir = false;
+  /** A releitura em curso (`relerDesprotegidos`), para a próxima esperar. */
+  private releitura: Promise<void> = Promise.resolve();
 
   readonly sincronizando = signal(false);
   readonly ultimoSync = signal<string | null>(null);
@@ -154,6 +163,83 @@ export class SyncService {
   }
 
   /**
+   * M2P2-R13: marca os agregados para reler do servidor (`relerDesprotegidos`) assim que nada deles estiver na fila nem
+   * nas pendências. Precisa de `meta` na transação de quem chama.
+   */
+  async marcarParaReler(marcas: readonly string[]): Promise<void> {
+    if (marcas.length === 0) return;
+    const atuais = (await this.db.lerMeta<string[]>(CHAVE_RELER)) ?? [];
+    const novas = [...new Set([...atuais, ...marcas])];
+    if (novas.length !== atuais.length) await this.db.gravarMeta(CHAVE_RELER, novas);
+  }
+
+  /** O estado do servidor já está no aparelho: tira as marcas. Precisa de `meta` na transação de quem chama. */
+  async desmarcarReleitura(marcas: readonly string[]): Promise<void> {
+    const atuais = (await this.db.lerMeta<string[]>(CHAVE_RELER)) ?? [];
+    const fora = new Set(marcas);
+    const restantes = atuais.filter((x) => !fora.has(x));
+    if (restantes.length !== atuais.length) await this.db.gravarMeta(CHAVE_RELER, restantes);
+  }
+
+  /**
+   * M2P2-R13: relê do servidor (`GET /api/sync/agregado/{entidade}/{id}`) cada agregado marcado que não tem mais nada
+   * na fila nem nas pendências, e aplica como o "Usar a do servidor": 404 ou excluído apaga o local e os uploads dele
+   * (o tombstone); senão grava o do servidor, se não for mais velho que o local. É o reparo das mudanças do pull que o
+   * aparelho pulou enquanto o agregado estava protegido (o cursor passou delas): sem ele, um upload recusado e
+   * descartado deixaria a OS como estava (a reaberta continuaria concluída, a de outro técnico ficaria no aparelho).
+   * Roda ao fim de toda sincronização e depois das ações de pendência que liberam o agregado. Sem internet ou sem
+   * sessão não faz nada; com erro de rede ou do servidor, para e deixa as marcas para a próxima. Nunca falha.
+   */
+  relerDesprotegidos(): Promise<void> {
+    // uma leitura de cada vez: a segunda (a da pendência durante a sincronização) já vê as marcas que a primeira tirou
+    const vez = this.releitura.then(() => this.relerAgora());
+    this.releitura = vez.catch(() => undefined);
+    return vez;
+  }
+
+  private async relerAgora(): Promise<void> {
+    if (!this.conectividade.online() || !this.auth.autenticado() || this.auth.sessaoExpirada()) return;
+    for (const marca of (await this.db.lerMeta<string[]>(CHAVE_RELER)) ?? []) {
+      const corte = marca.indexOf(':');
+      const entidade = marca.slice(0, corte);
+      const id = marca.slice(corte + 1);
+      const adaptador = adaptadorDe(entidade);
+      if (!adaptador || corte < 0) {
+        await this.db.transaction('rw', this.db.meta, () => this.desmarcarReleitura([marca]));
+        continue;
+      }
+      if (await this.protegido(id)) continue;
+      let atual: Mudanca | null;
+      try {
+        atual = await firstValueFrom(this.http.get<Mudanca>(`/api/sync/agregado/${entidade}/${id}`));
+      } catch (e) {
+        if (!(e instanceof HttpErrorResponse)) return;
+        if (e.status !== 404) return;
+        atual = null;
+      }
+      const tabela = adaptador.tabela(this.db);
+      await this.db.transaction('rw', [this.db.meta, this.db.outbox, this.db.pendencias, tabela, ...tabelasDeUpload(this.db)], async () => {
+        // algo do agregado entrou na fila durante a leitura: o OK dela traz o estado, e a marca fica
+        if (await this.protegido(id)) return;
+        await this.desmarcarReleitura([marca]);
+        if (!atual || atual.deleted) {
+          await tabela.delete(id);
+          await apagarUploadsDoAgregado(this.db, entidade, id);
+          return;
+        }
+        const local = (await tabela.get(id)) as { version?: number | null } | undefined;
+        if (local && (local.version ?? -1) > atual.version) return;
+        await tabela.put(adaptador.paraLocal(id, atual.version, atual.dados));
+      });
+    }
+  }
+
+  /** O agregado tem mutação na fila ou pendência (o pull não o sobrescreve). */
+  private async protegido(id: string): Promise<boolean> {
+    return (await this.db.outbox.where('agregadoId').equals(id).count()) + (await this.db.pendencias.where('agregadoId').equals(id).count()) > 0;
+  }
+
+  /**
    * Inicia uma sincronização ou, se já houver uma em curso, pede mais uma rodada ao fim dela (o push dela pode já ter
    * passado da mutação que motivou a chamada) e devolve a promessa do laço inteiro.
    */
@@ -201,6 +287,7 @@ export class SyncService {
       await this.purgarDocumentosDoTecnico();
       await this.enviar();
       const aplicou = await this.receber();
+      await this.relerDesprotegidos();
       if (aplicou && this.conectividade.online()) {
         this.prefetchArquivos().catch(() => undefined);
       }
@@ -545,6 +632,8 @@ export class SyncService {
    * desatribuído) apaga também os PDFs já enviados dela (têm valores; o servidor não os serve mais a este usuário). Um
    * PDF não enviado tem o UPLOAD na fila ou numa pendência, então a proposta está protegida e o tombstone nem é aplicado.
    * O mesmo vale para a OS e os anexos dela: os não enviados sobem antes, e só depois o tombstone é aplicado (M2-R3).
+   * M2P2-R13: o que foi pulado por estar protegido fica marcado para reler (`relerDesprotegidos`), porque o cursor passa
+   * da mudança; o que foi aplicado perde a marca (o pull trouxe o estado atual).
    */
   private async aplicarMudancas(mudancas: Mudanca[]): Promise<void> {
     const conhecidas = mudancas.flatMap((mu) => {
@@ -553,11 +642,14 @@ export class SyncService {
     });
     if (conhecidas.length === 0) return;
     const tabelas = [...new Set(conhecidas.map(({ adaptador }) => adaptador.tabela(this.db)))];
-    await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, ...tabelasDeUpload(this.db), ...tabelas], async () => {
+    await this.db.transaction('rw', [this.db.meta, this.db.outbox, this.db.pendencias, ...tabelasDeUpload(this.db), ...tabelas], async () => {
       const ids = [...new Set(conhecidas.map(({ mu }) => mu.id))];
       const naFila = await this.db.outbox.where('agregadoId').anyOf(ids).toArray();
       const pendentes = await this.db.pendencias.where('agregadoId').anyOf(ids).toArray();
       const protegidos = new Set([...naFila, ...pendentes].map((m) => m.agregadoId));
+      const pulados = conhecidas.filter(({ mu }) => protegidos.has(mu.id)).map(({ mu }) => marcaDeReleitura(mu.entidade, mu.id));
+      await this.desmarcarReleitura(conhecidas.filter(({ mu }) => !protegidos.has(mu.id)).map(({ mu }) => marcaDeReleitura(mu.entidade, mu.id)));
+      await this.marcarParaReler(pulados);
       for (const { mu, adaptador } of conhecidas) {
         if (protegidos.has(mu.id)) continue;
         const tabela = adaptador.tabela(this.db);

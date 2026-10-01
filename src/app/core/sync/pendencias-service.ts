@@ -13,8 +13,16 @@ import { Adaptador, adaptadorDe, RegistroLocal } from './adaptadores';
 import {
   DadosUploadAnexoOs, Mudanca, MutacaoLocal, Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO,
 } from './sync-models';
-import { SyncService } from './sync-service';
+import { marcaDeReleitura, SyncService } from './sync-service';
 import { apagarUploadsDasMutacoes, apagarUploadsDoAgregado, ehUpload, tabelasDeUpload, tipoUploadDe } from './tipos-upload';
+
+/**
+ * O upload de anexo recusado com 404 `OS_NAO_ENCONTRADA`: a OS não existe mais para este usuário (o técnico que perdeu
+ * a atribuição há mais de 7 dias, M2-R3/R22, ou a OS excluída). Todo o resto da OS na fila teria a mesma recusa.
+ */
+export function osNaoEncontrada(p: Pendencia): boolean {
+  return p.entidade === TIPO_UPLOAD_ANEXO_OS && p.erro?.codigo === 'OS_NAO_ENCONTRADA';
+}
 
 /** Os ids das notas das mutações que o servidor ainda não tem (sem a data dele e fora das notas de `servidor`). */
 function notasNovas(mutacoes: readonly OsDados[], servidor: OsDados | null | undefined): string[] {
@@ -141,33 +149,40 @@ export class PendenciasService {
    * escreve nada.
    */
   async perdaDaOs(p: Pendencia): Promise<{ anexos: boolean; notas: boolean }> {
-    if (p.entidade !== 'os') return { anexos: false, notas: false };
+    if (p.entidade !== 'os' && !osNaoEncontrada(p)) return { anexos: false, notas: false };
     const id = p.agregadoId;
+    // M2P2-R13: no Descartar do upload da OS que não existe mais, o próprio anexo dele não conta (é a ação)
+    const proprio = p.entidade === TIPO_UPLOAD_ANEXO_OS ? (p.mutacao.dados as DadosUploadAnexoOs | null)?.anexoId : undefined;
     const mutacoes = [
       p.mutacao,
       ...(await this.db.outbox.where('agregadoId').equals(id).toArray()),
       ...(await this.db.pendencias.where('agregadoId').equals(id).toArray()).map((x) => x.mutacao),
-    ];
+    ].filter((m) => m.mutationId !== p.mutationId || p.entidade === 'os');
     const anexos = mutacoes.some((m) => m.entidade === TIPO_UPLOAD_ANEXO_OS)
-      || (await this.db.anexosOs.where('osId').equals(id).filter((a) => !a.enviado).count()) > 0;
+      || (await this.db.anexosOs.where('osId').equals(id).filter((a) => !a.enviado && a.id !== proprio).count()) > 0;
     const daOs = mutacoes.filter((m) => m.entidade === 'os' && !!m.dados).map((m) => m.dados as OsDados);
     const notas = notasNovas(daOs, p.dadosServidor as OsDados | null | undefined).length > 0;
     return { anexos, notas };
   }
 
-  /** Busca o estado ATUAL do servidor (dadosServidor pode estar velho); sem rede, usa o que a pendência guardou. */
+  /**
+   * Busca o estado ATUAL do servidor (dadosServidor pode estar velho); sem rede, usa o que a pendência guardou e marca o
+   * agregado para reler na próxima sincronização (M2P2-R13).
+   */
   async usarServidor(daTela: Pendencia): Promise<void> {
     this.adaptador(daTela);
     const p = await this.gravada(daTela);
     if (!p) return;
     let atual: Mudanca | null | undefined;
+    let fresco = true;
     try {
       atual = await this.buscarNoServidor(p, p.agregadoId);
     } catch (e) {
       if (!(e instanceof HttpErrorResponse && e.status === 0)) throw e;
+      fresco = false;
       atual = p.dadosServidor == null ? null : { dados: p.dadosServidor, version: p.versionServidor ?? null, deleted: false } as unknown as Mudanca;
     }
-    await this.aplicarEClear(p, p.agregadoId, atual);
+    await this.aplicarEClear(p, p.agregadoId, atual, fresco);
   }
 
   /**
@@ -176,10 +191,11 @@ export class PendenciasService {
    * ENVIADA ou um UPLOAD, na fila ou numa pendência da proposta) ou um PDF gerado aqui e ainda não enviado: a tela pede
    * confirmação antes. Não escreve nada.
    * Na OS (M2-P2, carry M1), o mesmo com as fotos, a assinatura, o PDF e as notas ainda não enviados (`perdaDaOs`). A
-   * pendência do próprio upload de um anexo descarta só o anexo dele: false.
+   * pendência do próprio upload de um anexo descarta só o anexo dele: false; menos a da OS que não existe mais
+   * (`osNaoEncontrada`, M2P2-R13), cujo Descartar leva a OS inteira.
    */
   async descartaEnvio(p: Pendencia): Promise<boolean> {
-    if (p.entidade === 'os') {
+    if (p.entidade === 'os' || osNaoEncontrada(p)) {
       const perda = await this.perdaDaOs(p);
       return perda.anexos || perda.notas;
     }
@@ -197,6 +213,11 @@ export class PendenciasService {
     return (await this.db.documentos.where('propostaId').equals(id).filter((d) => !d.enviado).count()) > 0;
   }
 
+  /**
+   * "Descartar" de uma rejeição. A criação recusada some do aparelho. A edição recusada tira da fila tudo do agregado e
+   * aplica o estado atual do servidor, que ela busca: sem rede falha e nada muda (o agregado continua protegido). O
+   * upload recusado: `descartarUpload`.
+   */
   async descartar(daTela: Pendencia): Promise<void> {
     const p = await this.gravada(daTela);
     if (!p) return;
@@ -285,19 +306,45 @@ export class PendenciasService {
   /**
    * Upload recusado (PDF da proposta ou anexo da OS): some com o envio — a pendência e o registro local ainda não
    * enviado. O agregado e as mutações dele na fila ficam e voltam a sair.
+   * M2P2-R13: enquanto o upload estava na fila, o pull pulou as mudanças do agregado (o cursor passou delas), e uma
+   * recusa não traz o estado do servidor (o OK, o upload aceito e o "Usar a do servidor" trazem). Então o agregado fica
+   * marcado para reler e, se nada mais dele está na fila, é relido já (`relerDesprotegidos`, com internet; sem ela, na
+   * próxima sincronização): a OS reaberta lá volta em andamento, e a que saiu do técnico sai do aparelho.
+   * O 404 `OS_NAO_ENCONTRADA` (`osNaoEncontrada`): a OS não existe mais para este usuário, e cada upload que viesse
+   * atrás teria a mesma recusa, um Descartar por foto. Então este Descartar leva tudo dela na fila (`limparAgregado`,
+   * com a confirmação do P4c-R15 na tela) e a relê, o que a tira do aparelho.
    */
   private async descartarUpload(p: Pendencia): Promise<void> {
     const tipo = tipoUploadDe(p.entidade)!;
-    const id = tipo.idDe(p.mutacao.dados);
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, ...tipo.tabelas(this.db)], async () => {
-      if (!(await this.gravada(p))) return;
-      await this.db.pendencias.delete(p.mutationId);
-      if (!id) return;
-      await this.db.outbox.filter((m) => m.entidade === tipo.entidade && tipo.idDe(m.dados) === id).delete();
-      const registro = await tipo.tabela(this.db).get(id);
-      if (registro && !registro.enviado) await tipo.apagar(this.db, [id]);
-    });
+    if (osNaoEncontrada(p)) {
+      await this.limparEMarcar(p);
+    } else {
+      const id = tipo.idDe(p.mutacao.dados);
+      await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.meta, ...tipo.tabelas(this.db)], async () => {
+        if (!(await this.gravada(p))) return;
+        await this.db.pendencias.delete(p.mutationId);
+        await this.sync.marcarParaReler([marcaDeReleitura(tipo.agregado, p.agregadoId)]);
+        if (!id) return;
+        await this.db.outbox.filter((m) => m.entidade === tipo.entidade && tipo.idDe(m.dados) === id).delete();
+        const registro = await tipo.tabela(this.db).get(id);
+        if (registro && !registro.enviado) await tipo.apagar(this.db, [id]);
+      });
+    }
+    await this.sync.relerDesprotegidos();
     void this.sync.sincronizar();
+  }
+
+  /**
+   * Tira da fila e das pendências tudo do agregado (`limparAgregado`) sem o estado do servidor e o marca para reler
+   * (M2P2-R13); o registro local fica até a releitura.
+   */
+  private async limparEMarcar(p: Pendencia): Promise<void> {
+    const agregado = tipoUploadDe(p.entidade)?.agregado ?? p.entidade;
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.meta, ...tabelasDeUpload(this.db)], async () => {
+      if (!(await this.gravada(p))) return;
+      await this.limparAgregado(p);
+      await this.sync.marcarParaReler([marcaDeReleitura(agregado, p.agregadoId)]);
+    });
   }
 
   /** A pendência como está gravada; undefined se já foi resolvida. */
@@ -337,13 +384,18 @@ export class PendenciasService {
     await apagarUploadsDasMutacoes(this.db, mutacoes, (r) => !r.enviado);
   }
 
-  /** Aplica o estado do servidor (null/deleted = apagar) e limpa o agregado, tudo numa transação. */
-  private async aplicarEClear(p: Pendencia, id: string, m: Mudanca | null): Promise<void> {
+  /**
+   * Aplica o estado do servidor (null/deleted = apagar) e limpa o agregado, tudo numa transação. `fresco`: lido agora
+   * do servidor, e a marca de releitura sai; senão (o guardado na pendência, sem rede), fica marcado (M2P2-R13).
+   */
+  private async aplicarEClear(p: Pendencia, id: string, m: Mudanca | null, fresco = true): Promise<void> {
     const adaptador = this.adaptador(p);
     const tabela = adaptador.tabela(this.db);
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, ...tabelasDeUpload(this.db), tabela], async () => {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.meta, ...tabelasDeUpload(this.db), tabela], async () => {
       if (!(await this.gravada(p))) return;
       await this.limparAgregado(p);
+      const marca = [marcaDeReleitura(p.entidade, id)];
+      await (fresco ? this.sync.desmarcarReleitura(marca) : this.sync.marcarParaReler(marca));
       if (!m || m.deleted) {
         await this.apagarLocal(p, tabela, id);
       } else {

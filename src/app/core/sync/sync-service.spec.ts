@@ -1357,7 +1357,11 @@ describe('SyncService', () => {
         expect(await db.outbox.count()).toBe(0);
         expect(await lerAnexo('f1')).toMatchObject({ enviado: true });
         vi.spyOn(sync, 'sincronizar').mockResolvedValue();
-        await TestBed.inject(PendenciasService).descartar(pend[0]);
+        const descarte = TestBed.inject(PendenciasService).descartar(pend[0]);
+        // M2P2-R13: com a OS livre, ela é relida do servidor
+        (await vi.waitFor(() => http.expectOne('/api/sync/agregado/os/o1')))
+          .flush({ entidade: 'os', id: 'o1', version: 9, deleted: false, dados: cancelada({ anexos: [anexoServidor()] }) });
+        await descarte;
         expect(await db.pendencias.count()).toBe(0);
         expect(await lerAnexo('d1')).toBeUndefined();
         expect(await db.os.get('o1')).toMatchObject({ status: 'CANCELADA', version: 9 });
@@ -1619,8 +1623,7 @@ describe('SyncService', () => {
     });
 
     it.each([
-      [404, 'OS_NAO_ENCONTRADA', 'FOTO'],
-      // depois de 7 dias, também a repetição de um upload já aceito (resposta perdida) volta 404
+      // sem o código do servidor: só este anexo (o OS_NAO_ENCONTRADA leva a OS inteira, no teste do M2P2-R13)
       [404, undefined, 'ASSINATURA'],
       // o PDF do técnico que perdeu a atribuição
       [403, 'ACESSO_NEGADO', 'DOCUMENTO'],
@@ -1695,6 +1698,90 @@ describe('SyncService', () => {
       ] as const)('ACESSO_NEGADO (a OS saiu do técnico: %s) continua "não está mais com você"', async (_, tecnicoId) => {
         const pend = await pdfRecusado('ACESSO_NEGADO', os('CONCLUIDA', { numero: 123, tecnicoId }));
         expect(pend.erro?.mensagem).toBe(NAO_ESTA_COM_VOCE);
+      });
+    });
+
+    describe('M2P2-R13: o que o pull pulou com a OS protegida é relido quando ela fica livre', () => {
+      const URL_AGREGADO = '/api/sync/agregado/os/o1';
+      const marcas = async () => (await db.lerMeta<string[]>('relerAoDesproteger')) ?? [];
+      const recusa = { mutationId: 'up1', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO' as const, criadaEm: '',
+        erro: { codigo: 'LIMITE_FOTOS', mensagem: 'x' },
+        mutacao: { mutationId: 'up1', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', op: 'UPLOAD' as const, baseVersion: null,
+          dados: { anexoId: 'f1' }, separada: true, criadaEm: '' } };
+
+      /** A OS o1 (v3) presa por uma pendência; o pull traz a mudança dela (v5), que é pulada e marcada. */
+      async function pulada(): Promise<void> {
+        await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO')));
+        await db.pendencias.put(recusa);
+        const p = sync.sincronizar();
+        (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+          cursor: 5, temMais: false, usuarios: [],
+          mudancas: [{ entidade: 'os', id: 'o1', version: 5, deleted: false, dados: os('EM_ANDAMENTO', { revisao: 2, urgente: true }) }],
+        });
+        await p;
+        // protegida: nem aplica nem relê
+        http.expectNone(URL_AGREGADO);
+        expect((await db.os.get('o1'))?.version).toBe(3);
+        expect(await marcas()).toEqual(['os:o1']);
+        await db.pendencias.clear();
+      }
+
+      it('livre na sincronização seguinte: lê o agregado e grava o do servidor', async () => {
+        await pulada();
+        const p = sync.sincronizar();
+        await pullVazio(5);
+        (await vi.waitFor(() => http.expectOne(URL_AGREGADO)))
+          .flush({ entidade: 'os', id: 'o1', version: 6, deleted: false, dados: os('EM_ANDAMENTO', { revisao: 2, urgente: true }) });
+        await p;
+        expect(await db.os.get('o1')).toMatchObject({ version: 6, revisao: 2, urgente: true });
+        expect(await marcas()).toEqual([]);
+      });
+
+      it('404 ou excluída: apaga a OS e os anexos dela (o tombstone que o cursor pulou)', async () => {
+        await pulada();
+        await gravarAnexos([anexoLocal({ id: 'f0', enviado: true, arquivoId: 'af0', bytes: null }), documentoOs('d1', 1, { enviado: true, arquivoId: 'ad1' })]);
+        const p = sync.sincronizar();
+        await pullVazio(5);
+        (await vi.waitFor(() => http.expectOne(URL_AGREGADO))).flush({ codigo: 'NAO_ENCONTRADO' }, { status: 404, statusText: 'Not Found' });
+        await p;
+        expect(await db.os.get('o1')).toBeUndefined();
+        expect(await db.anexosOs.count()).toBe(0);
+        expect(await db.anexosOsBytes.count()).toBe(0);
+        expect(await marcas()).toEqual([]);
+      });
+
+      it('o pull que traz a OS livre tira a marca (sem releitura); a versão local mais nova não é sobrescrita', async () => {
+        await pulada();
+        const p = sync.sincronizar();
+        (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+          cursor: 7, temMais: false, usuarios: [],
+          mudancas: [{ entidade: 'os', id: 'o1', version: 7, deleted: false, dados: os('EM_ANDAMENTO', { revisao: 2 }) }],
+        });
+        await p;
+        http.expectNone(URL_AGREGADO);
+        expect((await db.os.get('o1'))?.version).toBe(7);
+        expect(await marcas()).toEqual([]);
+
+        // a releitura atrasada (v6) não desfaz o que o pull já trouxe (v7)
+        await db.gravarMeta('relerAoDesproteger', ['os:o1']);
+        const r = sync.relerDesprotegidos();
+        (await vi.waitFor(() => http.expectOne(URL_AGREGADO))).flush({ entidade: 'os', id: 'o1', version: 6, deleted: false, dados: os('ABERTA') });
+        await r;
+        expect(await db.os.get('o1')).toMatchObject({ version: 7, status: 'EM_ANDAMENTO' });
+        expect(await marcas()).toEqual([]);
+      });
+
+      it('sem internet, ou com erro de rede na leitura, a marca fica para a próxima', async () => {
+        await pulada();
+        online.set(false);
+        await sync.relerDesprotegidos();
+        http.expectNone(URL_AGREGADO);
+        online.set(true);
+        const r = sync.relerDesprotegidos();
+        (await vi.waitFor(() => http.expectOne(URL_AGREGADO))).error(new ProgressEvent('error'), { status: 0 });
+        await r;
+        expect(await marcas()).toEqual(['os:o1']);
+        expect((await db.os.get('o1'))?.version).toBe(3);
       });
     });
 

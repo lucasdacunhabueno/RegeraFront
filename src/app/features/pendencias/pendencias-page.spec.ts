@@ -689,7 +689,7 @@ describe('PendenciasPage', () => {
       const resposta = new HttpErrorResponse({ status, error: codigo ? { codigo, detail: 'x' } : {} });
       const pdf = {
         id: 'd1', osId: 'o1', tipo: 'DOCUMENTO', sha256: 'a'.repeat(64), legenda: null, momento: null, tiradaEm: null,
-        assinanteNome: null, assinantePapel: null, revisaoOs: 1, codigoExibido: 'OS-000123', bytes: null, miniatura: null,
+        assinanteNome: null, assinantePapel: null, revisaoOs: 1, codigoExibido: 'OS-000123', miniatura: null,
         enviado: false, arquivoId: null,
       } as const;
       const p = uploadOs('d1', tipoUploadDe(TIPO_UPLOAD_ANEXO_OS)!.erro(resposta, { ...pdf }));
@@ -700,6 +700,21 @@ describe('PendenciasPage', () => {
       await vi.waitFor(() => expect(svc.descartar).toHaveBeenCalledWith(p));
       expect(svc.descartaEnvio).not.toHaveBeenCalled();
       expect(svc.perdaDaOs).not.toHaveBeenCalled();
+    });
+
+    it('M2P2-R13: o upload da OS que não existe mais (404 OS_NAO_ENCONTRADA) leva a OS inteira: o Descartar pergunta antes', async () => {
+      const p = uploadOs('f1', { codigo: 'OS_NAO_ENCONTRADA', mensagem: 'Esta OS não está mais com você.' });
+      const { el, svc, fixture } = montar([p], 0, 'TECNICO', { os: [osLocal()], anexos: [['f1', 'FOTO']], perdaOs: { anexos: true, notas: true } });
+      botao(el, 'Descartar').click();
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(dialogo(el)).not.toBeNull();
+      });
+      expect(svc.perdaDaOs).toHaveBeenCalledWith(p);
+      expect(svc.descartar).not.toHaveBeenCalled();
+      expect(document.getElementById(dialogo(el)!.getAttribute('aria-describedby')!)?.textContent).toContain('Isto descarta');
+      [...dialogo(el)!.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Descartar')!.click();
+      await vi.waitFor(() => expect(svc.descartar).toHaveBeenCalledWith(p));
     });
 
     it('o push da OS recusado com ACESSO_NEGADO para o técnico (passados os 7 dias): "Esta OS não está mais com você."', () => {
