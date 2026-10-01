@@ -119,6 +119,9 @@ export const MODOS_WIZARD: Readonly<Record<string, ModoWizard>> = {
     async salvar(injector, id, edicao, versao) {
       const repo = injector.get(PropostasRepo);
       const { responsavelId, resto } = separarResponsavel(edicao);
+      // N1 (como a correção, P4c-R10): a troca do responsável é conferida antes, para a recusa dela (ex.: CONFLITO,
+      // P4c-R15) não deixar o passo gravado pela metade
+      if (responsavelId !== undefined) await repo.conferirAtribuicao(id, { responsavelId });
       if (Object.keys(resto).length > 0) await repo.salvarRascunho(id, resto, versao.base);
       // fora do "Manter", o responsável vai com a versão da cópia local (o ack da edição acima pode ter chegado no meio)
       if (responsavelId !== undefined) {
@@ -355,8 +358,8 @@ export class WizardPropostaPage implements ComAlteracoes {
   protected readonly anuncio = signal('');
   /** P4c-R8: o PDF enviado esperando um toque para o compartilhamento (o navegador recusou sem gesto). */
   protected readonly pdfPronto = signal<File | null>(null);
-  /** P4c-R15: a proposta tem um CONFLITO em Pendências (o Enviar espera). */
-  protected readonly conflito = signal(false);
+  /** P4c-R15: a proposta tem um CONFLITO em Pendências (o Enviar e a atribuição do passo 3 esperam). */
+  protected readonly conflito = this.e.conflito;
   /** P4c-R16: a correção de uma proposta cujo PDF já foi gerado (a nota no topo e o aviso depois de gravar). */
   protected readonly avisoPdfAnterior = signal(false);
   protected readonly textoPdfAnterior = AVISO_PDF_ANTERIOR;
@@ -649,9 +652,12 @@ export class WizardPropostaPage implements ComAlteracoes {
     this.observar(id);
   }
 
-  /** P4c-R16: a proposta já tem PDF (do servidor ou do aparelho), ou já passou do rascunho (o envio offline gerou um). */
+  /**
+   * P4c-R16: a proposta tem um PDF de verdade, do servidor (`p.documentos`) ou do aparelho, enviado ou não. N3: o status
+   * não basta (ex.: cancelada offline sem nunca ter sido enviada não tem PDF nenhum).
+   */
   private async temPdf(p: PropostaLocal): Promise<boolean> {
-    if (p.status !== 'RASCUNHO' || p.documentos.length > 0) return true;
+    if (p.documentos.length > 0) return true;
     return (await firstValueFrom(this.repo.observarDocumentos(p.id))).length > 0;
   }
 

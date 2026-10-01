@@ -15,7 +15,7 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
 /**
  * Passo 3 (§13): condições. Template (ativos do tipo; o padrão vem pré-selecionado na criação), validade, pagamento,
  * prazo, desconto geral e observações; técnico opcional (o ADMIN ou o responsável trocam) e, só para o ADMIN, o
- * responsável.
+ * responsável. Com CONFLITO da proposta, técnico e responsável ficam travados com a dica (P4c-R15).
  */
 @Component({
   selector: 'app-passo-condicoes',
@@ -92,11 +92,16 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
         @if (erros().observacoes; as erro) { <p id="observacoes-erro" class="text-sm text-red-600">{{ erro }}</p> }
       </div>
 
+      @if (e.conflito() && (e.podeTrocarTecnico() || e.admin())) {
+        <!-- P4c-R15: como o "Atribuir técnico" do detalhe, a atribuição espera o CONFLITO -->
+        <p id="dica-conflito-atribuicao" class="text-sm text-amber-800">Resolva a pendência primeiro.</p>
+      }
+
       <div class="space-y-1">
         <label for="tecnico" class="text-sm font-medium">Técnico (opcional)</label>
-        <select id="tecnico" [disabled]="!e.podeTrocarTecnico()" (change)="e.tecnicoId.set($any($event.target).value || null); limpar('tecnicoId')"
+        <select id="tecnico" [disabled]="!e.podeTrocarTecnico() || e.conflito()" (change)="e.tecnicoId.set($any($event.target).value || null); limpar('tecnicoId')"
                 [attr.aria-invalid]="erros().tecnicoId ? 'true' : 'false'"
-                  [attr.aria-describedby]="erros().tecnicoId ? 'tecnico-erro' : null"
+                [attr.aria-describedby]="descricao(erros().tecnicoId ? 'tecnico-erro' : null)"
                 class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3 disabled:bg-slate-100">
           <option value="" [selected]="!e.tecnicoId()">Nenhum</option>
           @for (u of tecnicos(); track u.id) {
@@ -109,10 +114,10 @@ function opcoesDeUsuario(usuarios: readonly UsuarioResumo[], perfis: readonly Pe
       @if (e.admin()) {
         <div class="space-y-1">
           <label for="responsavel" class="text-sm font-medium">Responsável</label>
-          <select id="responsavel" (change)="e.responsavelId.set($any($event.target).value); limpar('responsavelId')"
+          <select id="responsavel" [disabled]="e.conflito()" (change)="e.responsavelId.set($any($event.target).value); limpar('responsavelId')"
                   [attr.aria-invalid]="erros().responsavelId ? 'true' : 'false'"
-                  [attr.aria-describedby]="erros().responsavelId ? 'responsavel-erro' : null"
-                  class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3">
+                  [attr.aria-describedby]="descricao(erros().responsavelId ? 'responsavel-erro' : null)"
+                  class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3 disabled:bg-slate-100">
             @for (u of responsaveis(); track u.id) {
               <option [value]="u.id" [selected]="u.id === e.responsavelId()">{{ u.rotulo }}</option>
             }
@@ -156,6 +161,12 @@ export class PassoCondicoes {
     const t = this.e.totais();
     return t ? moedaCentavos(Number(t.totalCentavos)) : '—';
   });
+
+  /** O `aria-describedby` de técnico e responsável: o erro do campo e, com CONFLITO, a dica (P4c-R15). */
+  protected descricao(erro: string | null): string | null {
+    const ids = [erro, this.e.conflito() ? 'dica-conflito-atribuicao' : null].filter((x) => x !== null);
+    return ids.length > 0 ? ids.join(' ') : null;
+  }
 
   protected limpar(campo: string): void {
     this.e.limparErroServidor((c) => c === campo);

@@ -100,6 +100,7 @@ function repoFalso(iniciais: PropostaLocal[]) {
     store,
     recusas,
     pendencias$,
+    documentos,
     observarPendencias: vi.fn((id: string) => pendencias$.pipe(map((l) => l.filter((x) => x.agregadoId === id)))),
     /** Excluída em outro aparelho (o pull tira a proposta do aparelho). */
     sumir(id: string) {
@@ -190,12 +191,15 @@ interface Opcoes {
   online?: boolean;
   /** As pendências do aparelho (P4c-R15). */
   pendencias?: Pendencia[];
+  /** Os PDFs da proposta no aparelho (`observarDocumentos`). */
+  documentos?: { propostaId: string; codigoExibido: string }[];
 }
 
 async function montar(o: Opcoes = {}) {
   const repo = repoFalso(o.propostas ?? [proposta()]);
   if (o.recusa) repo.recusas.set(o.recusa.agregadoId, o.recusa);
   if (o.pendencias) repo.pendencias$.next(o.pendencias);
+  if (o.documentos) repo.documentos.push(...o.documentos);
   const pendencias = {
     corrigirProposta: vi.fn(async (pendenciaId: string, edicao: Partial<EdicaoRascunho>) => repo.corrigir(pendenciaId, edicao)),
   };
@@ -555,6 +559,45 @@ describe('WizardPropostaPage', () => {
       await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
       expect(repo.atribuir).toHaveBeenCalledWith('p1', { responsavelId: 'u-com2' });
       expect(repo.salvarRascunho.mock.calls[0][1]).not.toHaveProperty('responsavelId');
+    });
+
+    it('N1: a troca do responsável é conferida antes de gravar o passo; recusada, nada é gravado (sem gravação pela metade)', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ id: 'p1', passo: '3', usuario: ADMIN });
+      repo.conferirAtribuicao.mockRejectedValueOnce(
+        new ErroProposta('RESOLVA_A_PENDENCIA', 'proposta', 'Resolva a pendência desta proposta antes de mudar a atribuição.'),
+      );
+      digitar(fixture, el.querySelector<HTMLInputElement>('#prazo-execucao')!, '20 dias');
+      escolher(fixture, el.querySelector<HTMLSelectElement>('#responsavel')!, 'u-com2');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Resolva a pendência desta proposta antes de mudar a atribuição.'));
+      expect(repo.conferirAtribuicao).toHaveBeenCalledWith('p1', { responsavelId: 'u-com2' });
+      expect(repo.salvarRascunho).not.toHaveBeenCalled();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(titulo(el)).toBe('Condições');
+
+      // aceita: conferida antes, depois o passo e a atribuição
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
+      expect(repo.conferirAtribuicao.mock.invocationCallOrder[1]).toBeLessThan(repo.salvarRascunho.mock.invocationCallOrder[0]);
+      expect(repo.atribuir).toHaveBeenCalledWith('p1', { responsavelId: 'u-com2' });
+    });
+
+    it('N1: com CONFLITO, técnico e responsável ficam travados no passo 3, com a dica (como "Atribuir técnico" no detalhe)', async () => {
+      const conflito: Pendencia = {
+        mutationId: 'c1', entidade: 'proposta', agregadoId: 'p1', tipo: 'CONFLITO', criadaEm: '',
+        mutacao: { mutationId: 'c1', entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: 1, dados: null, criadaEm: '' },
+      };
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3', usuario: ADMIN, pendencias: [conflito] });
+      for (const id of ['#tecnico', '#responsavel']) {
+        const campo = () => el.querySelector<HTMLSelectElement>(id)!;
+        await ate(fixture, () => expect(campo().disabled).toBe(true));
+        expect(document.getElementById(campo().getAttribute('aria-describedby')!)?.textContent?.trim()).toBe('Resolva a pendência primeiro.');
+      }
+      // o resto do passo continua editável (P4b-R27)
+      expect(el.querySelector<HTMLInputElement>('#prazo-execucao')!.disabled).toBe(false);
+      repo.pendencias$.next([]);
+      await ate(fixture, () => expect(el.querySelector<HTMLSelectElement>('#responsavel')!.disabled).toBe(false));
+      expect(el.querySelector('#responsavel')!.getAttribute('aria-describedby')).toBeNull();
     });
 
     it('o comercial que não é o responsável não troca o técnico', async () => {
@@ -1261,7 +1304,9 @@ describe('WizardPropostaPage', () => {
 
     it('P4c-R16: com o PDF já enviado, a nota na tela e, depois de gravar, o aviso de usar Nova revisão (sem gerar outro PDF)', async () => {
       const AVISO = 'O PDF já enviado ao cliente mostra os dados anteriores. Para mandar o PDF corrigido, use Nova revisão depois de sincronizar.';
-      const { fixture, el, pdf, navegar, toast } = await corrigir({ passo: '3' });
+      const { fixture, el, pdf, navegar, toast } = await corrigir({
+        passo: '3', documentos: [{ propostaId: 'p1', codigoExibido: 'PROV-ABC123' }],
+      });
       const nota = el.querySelector('[data-testid=nota-pdf-anterior]');
       expect(nota?.textContent?.trim()).toBe(AVISO);
       digitar(fixture, el.querySelector<HTMLInputElement>('#prazo-execucao')!, '10 dias');
@@ -1272,6 +1317,25 @@ describe('WizardPropostaPage', () => {
       expect(toast).toHaveBeenCalledWith(AVISO, { fixo: true });
       expect(pdf.gerarBlob).not.toHaveBeenCalled();
       expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+    });
+
+    it('N3: cancelada offline sem nunca ter sido enviada (nenhum PDF no aparelho nem no servidor): sem a nota e sem o aviso', async () => {
+      const cancelada = proposta({ status: 'CANCELADA', prazoExecucao: 'Em breve', motivoEncerramento: 'Desistiu' });
+      const { fixture, el, navegar, toast } = await corrigir({ passo: '3', propostas: [cancelada] });
+      expect(el.querySelector('[data-testid=nota-pdf-anterior]')).toBeNull();
+      digitar(fixture, el.querySelector<HTMLInputElement>('#prazo-execucao')!, '10 dias');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
+      expect(toast).toHaveBeenCalledTimes(1);
+    });
+
+    it('N3: o PDF que veio do servidor (documentos da proposta) também conta', async () => {
+      const comDoc = proposta({
+        status: 'ENVIADA', prazoExecucao: 'Em breve',
+        documentos: [{ id: 'd1', revisao: 1, codigoExibido: '000277', arquivoId: 'a1', sha256: 'x', geradoEm: '', geradoPor: '' }],
+      });
+      const { el } = await corrigir({ passo: '3', propostas: [comDoc] });
+      expect(el.querySelector('[data-testid=nota-pdf-anterior]')).not.toBeNull();
     });
 
     it('P4c-R16: rascunho que nunca teve PDF (criação recusada antes do envio): sem a nota e sem o aviso', async () => {

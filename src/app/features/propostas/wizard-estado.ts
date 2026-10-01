@@ -121,6 +121,11 @@ export class EstadoWizard {
     initialValue: new Map<TipoProposta, string>(),
   });
   readonly usuarios = toSignal(inject(PropostasRepo).observarUsuarios(), { initialValue: [] });
+  /**
+   * P4c-R15: a proposta tem um CONFLITO em Pendências (a página observa). Enviar e trocar técnico ou responsável
+   * esperam a pendência; o resto da edição continua (P4b-R27).
+   */
+  readonly conflito = signal(false);
 
   // ---- a proposta (o que está gravado) ----
   readonly id = signal<string | null>(null);

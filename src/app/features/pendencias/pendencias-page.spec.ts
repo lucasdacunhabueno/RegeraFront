@@ -419,6 +419,40 @@ describe('PendenciasPage', () => {
       });
     });
 
+    it('N2: "Descartar" de uma proposta recusada com envio atrás pede a mesma confirmação; sem envio, descarta direto', async () => {
+      const recusada = rejeitada({ erro: { codigo: 'ACESSO_NEGADO', mensagem: 'Sem permissão.' } });
+      const { el, svc, fixture } = montar([recusada], 0, 'ADMIN', { propostas: [propostaLocal('p1')], descartaEnvio: true });
+      botao(el, 'Descartar').click();
+      const dialogo = () => el.querySelector<HTMLElement>('[role=alertdialog]');
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(dialogo()?.textContent).toContain('Isto descarta o envio e o PDF gerado neste aparelho.');
+      });
+      expect(document.getElementById(dialogo()!.getAttribute('aria-labelledby')!)?.textContent?.trim()).toBe('Descartar a pendência?');
+      expect(svc.descartaEnvio).toHaveBeenCalledWith(recusada);
+      expect(svc.descartar).not.toHaveBeenCalled();
+      const noDialogo = (texto: string) => [...dialogo()!.querySelectorAll('button')].find((b) => b.textContent?.trim() === texto)!;
+      noDialogo('Descartar').click();
+      await vi.waitFor(() => expect(svc.descartar).toHaveBeenCalledWith(recusada));
+
+      TestBed.resetTestingModule();
+      const sem = montar([recusada], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      botao(sem.el, 'Descartar').click();
+      await vi.waitFor(() => expect(sem.svc.descartar).toHaveBeenCalledWith(recusada));
+      sem.fixture.detectChanges();
+      expect(sem.el.querySelector('[role=alertdialog]')).toBeNull();
+    });
+
+    it('N4: com CONFLITO da proposta, "Gerar PDF novamente" fica desabilitado com a dica', async () => {
+      const conflitoProposta = rejeitada({ mutationId: 'mc', tipo: 'CONFLITO', erro: undefined, dadosServidor: { codigoProvisorio: 'PROV-ABC123' } });
+      const { el, repo } = montar([conflitoProposta, upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      const b = botao(el, 'Gerar PDF novamente');
+      expect(b.disabled).toBe(true);
+      expect(document.getElementById(b.getAttribute('aria-describedby')!)?.textContent?.trim()).toBe('Resolva a pendência primeiro.');
+      b.click();
+      expect(repo.regerarDocumento).not.toHaveBeenCalled();
+    });
+
     it('M4: erro técnico numa ação de proposta vira a mensagem genérica; a recusa do repositório, a mensagem dela', async () => {
       const conflitoProposta = rejeitada({ tipo: 'CONFLITO', erro: undefined, dadosServidor: { codigoProvisorio: 'PROV-ABC123' } });
       const { el, svc, fixture } = montar([conflitoProposta], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });

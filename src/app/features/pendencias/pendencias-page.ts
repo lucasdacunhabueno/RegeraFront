@@ -26,6 +26,13 @@ const ROTULO_CAMPO_TEMPLATE: Record<string, string> = {
 };
 const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
 
+/** A confirmação de uma ação que levaria o envio feito no aparelho (P4c-R15, N2). */
+interface Confirmacao {
+  pendencia: Pendencia;
+  gatilho: HTMLElement | null;
+  acao: 'servidor' | 'descartar';
+}
+
 @Component({
   selector: 'app-pendencias-page',
   imports: [RouterLink, PdfPronto, DialogoMotivo],
@@ -85,7 +92,12 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
                         class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-60">Corrigir e reenviar</button>
               }
               @if (podeRegerar(p)) {
-                <button type="button" data-testid="regerar" (click)="regerar(p)" [disabled]="ocupada(p)"
+                @if (comConflito(p)) {
+                  <!-- P4c-R15: como no detalhe, o PDF novo espera o CONFLITO da proposta -->
+                  <p [id]="'dica-conflito-' + p.mutationId" class="w-full text-sm text-amber-800">Resolva a pendência primeiro.</p>
+                }
+                <button type="button" data-testid="regerar" (click)="regerar(p)" [disabled]="ocupada(p) || comConflito(p)"
+                        [attr.aria-describedby]="comConflito(p) ? 'dica-conflito-' + p.mutationId : null"
                         class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-60">
                   {{ regerando(p) ? 'Gerando PDF…' : 'Gerar PDF novamente' }}
                 </button>
@@ -97,7 +109,7 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
                 <a data-testid="abrir-proposta" [routerLink]="['/propostas', p.agregadoId]"
                    class="inline-flex h-12 items-center rounded-lg border border-slate-300 px-4 text-sm font-semibold">Abrir proposta</a>
               }
-              <button type="button" (click)="descartar(p)" [disabled]="ocupada(p)" class="h-12 rounded-lg px-4 text-sm font-semibold text-red-600 disabled:opacity-60">Descartar</button>
+              <button type="button" (click)="descartar(p, $any($event.currentTarget))" [disabled]="ocupada(p)" class="h-12 rounded-lg px-4 text-sm font-semibold text-red-600 disabled:opacity-60">Descartar</button>
             }
             @if (p.tipo === 'CONFLITO' && p.entidade === 'proposta' && temCopia(p)) {
               <a data-testid="abrir-proposta" [routerLink]="['/propostas', p.agregadoId]"
@@ -114,10 +126,11 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
       </div>
     }
 
-    @if (confirmarServidor(); as c) {
-      <app-dialogo-motivo [gatilho]="c.gatilho" titulo="Usar a do servidor?" [texto]="avisoDescarte" rotuloConfirmar="Usar a do servidor"
+    @if (confirmacao(); as c) {
+      <app-dialogo-motivo [gatilho]="c.gatilho" [titulo]="c.acao === 'servidor' ? 'Usar a do servidor?' : 'Descartar a pendência?'"
+                          [texto]="avisoDescarte" [rotuloConfirmar]="c.acao === 'servidor' ? 'Usar a do servidor' : 'Descartar'"
                           rotuloCancelar="Voltar" [pedirMotivo]="false" [perigo]="true" [ocupado]="ocupada(c.pendencia)"
-                          (confirmado)="confirmarUsarServidor(c.pendencia)" (cancelado)="confirmarServidor.set(null)" />
+                          (confirmado)="confirmar(c)" (cancelado)="confirmacao.set(null)" />
     }
   `,
 })
@@ -215,6 +228,11 @@ export class PendenciasPage {
   protected podeRegerar(p: Pendencia): boolean {
     const local = this.propostas().get(p.agregadoId);
     return !!local && motivoParaRegerar(local, [], [p]) === 'CODIGO_EXIBIDO_INVALIDO' && this.podeMexer(p);
+  }
+
+  /** P4c-R15: a proposta da pendência tem um CONFLITO (o PDF novo espera, como no detalhe). */
+  protected comConflito(p: Pendencia): boolean {
+    return this.itens().some((x) => x.agregadoId === p.agregadoId && x.tipo === 'CONFLITO');
   }
 
   /** "Abrir proposta": toda rejeição de proposta que não é a correção direta (o conflito tem o link à parte). */
@@ -321,10 +339,13 @@ export class PendenciasPage {
     return this.agir(p, () => this.servico.manterMinha(p));
   }
 
-  /** P4c-R15: o texto da confirmação do "Usar a do servidor" quando ele levaria o envio feito aqui. */
+  /** P4c-R15: o texto da confirmação quando a ação levaria o envio feito aqui. */
   protected readonly avisoDescarte = 'Isto descarta o envio e o PDF gerado neste aparelho.';
-  /** A confirmação aberta (`DialogoMotivo` sem motivo, `alertdialog`), com o botão que a abriu para o foco voltar. */
-  protected readonly confirmarServidor = signal<{ pendencia: Pendencia; gatilho: HTMLElement | null } | null>(null);
+  /**
+   * A confirmação aberta (`DialogoMotivo` sem motivo, `alertdialog`): de "Usar a do servidor" ou de "Descartar", com o
+   * botão que a abriu para o foco voltar.
+   */
+  protected readonly confirmacao = signal<Confirmacao | null>(null);
 
   /**
    * "Usar a do servidor" (e o "Descartar" do excluído lá). P4c-R15: numa proposta com envio ou PDF feito neste aparelho
@@ -332,10 +353,21 @@ export class PendenciasPage {
    */
   protected usarServidor(p: Pendencia, gatilho: HTMLElement | null = null): Promise<void> {
     if (p.entidade !== 'proposta') return this.agir(p, () => this.servico.usarServidor(p));
-    return this.usarServidorNaProposta(p, gatilho);
+    return this.perguntarSeDescartaEnvio({ pendencia: p, gatilho, acao: 'servidor' });
   }
 
-  private async usarServidorNaProposta(p: Pendencia, gatilho: HTMLElement | null): Promise<void> {
+  /**
+   * "Descartar" de uma rejeição. N2: numa proposta recusada com envio ou PDF atrás (`descartaEnvio`), a mesma
+   * confirmação — descartar também tira da fila o envio e apaga o PDF. O upload recusado descarta só o PDF dele (a
+   * ação é essa) e vai direto, como as outras entidades.
+   */
+  protected descartar(p: Pendencia, gatilho: HTMLElement | null = null): Promise<void> {
+    if (p.entidade !== 'proposta') return this.agir(p, () => this.servico.descartar(p));
+    return this.perguntarSeDescartaEnvio({ pendencia: p, gatilho, acao: 'descartar' });
+  }
+
+  private async perguntarSeDescartaEnvio(c: Confirmacao): Promise<void> {
+    const p = c.pendencia;
     if (this.ocupada(p)) return;
     const perguntar = await this.servico.descartaEnvio(p).catch((e: unknown) => {
       this.toasts.erro(this.mensagemDoErro(p, e));
@@ -343,23 +375,23 @@ export class PendenciasPage {
     });
     if (perguntar === null) return;
     if (perguntar) {
-      this.confirmarServidor.set({ pendencia: p, gatilho });
+      this.confirmacao.set(c);
       return;
     }
-    await this.agir(p, () => this.servico.usarServidor(p));
+    await this.agir(p, () => this.executarDescarte(c));
   }
 
-  protected async confirmarUsarServidor(p: Pendencia): Promise<void> {
-    await this.agir(p, async () => {
-      await this.servico.usarServidor(p);
+  protected async confirmar(c: Confirmacao): Promise<void> {
+    await this.agir(c.pendencia, async () => {
+      await this.executarDescarte(c);
       // a pendência sai da lista com o botão que abriu o diálogo: o foco vai ao título
-      this.focarAoSair.set(p.mutationId);
+      this.focarAoSair.set(c.pendencia.mutationId);
     });
-    this.confirmarServidor.set(null);
+    this.confirmacao.set(null);
   }
 
-  protected descartar(p: Pendencia): Promise<void> {
-    return this.agir(p, () => this.servico.descartar(p));
+  private executarDescarte(c: Confirmacao): Promise<void> {
+    return c.acao === 'servidor' ? this.servico.usarServidor(c.pendencia) : this.servico.descartar(c.pendencia);
   }
 
   protected async usarExistente(p: Pendencia): Promise<void> {
