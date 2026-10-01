@@ -1279,6 +1279,55 @@ describe('SyncService', () => {
       expect((await db.os.get('o1'))?.version).toBe(5);
     });
 
+    describe('M2P1-R30: o OK do envio desatualizado do técnico traz o estado do escritório', () => {
+      const ESCRITORIO = { dataPrevista: '2026-10-09', descricao: 'Do escritório', enderecoLogradouro: 'Av. Nova', concluiProposta: false };
+      const VELHO = { dataPrevista: '2026-10-05', descricao: 'Antiga', enderecoLogradouro: 'Av. Velha', concluiProposta: true };
+
+      it('as mutações seguintes e a OS local passam a ter o que o técnico não mudou: o servidor não recusa a seguinte', async () => {
+        perfil = 'TECNICO';
+        await db.os.put({ ...paraOsLocal('o1', 4, os('EM_ANDAMENTO', { ...VELHO, notas: [{ id: 'n1', texto: 'Cheguei' }] })),
+          iniciadaLocalEm: '2026-10-01T09:00:00Z' });
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', VELHO), 4, { separada: true });
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { ...VELHO, notas: [{ id: 'n1', texto: 'Cheguei' }] }), 4);
+
+        const p = sync.sincronizar();
+        const push1 = await push();
+        expect(push1.request.body.mutacoes[0]).toMatchObject({ baseVersion: 4, dados: VELHO });
+        // o servidor rebaseou (R30): o cabeçalho e o "Precisa voltar" do escritório, o iniciar do técnico
+        ok(push1, 8, os('EM_ANDAMENTO', { ...ESCRITORIO, numero: 123 }));
+        const push2 = await push();
+        expect(push2.request.body.mutacoes[0]).toMatchObject({
+          baseVersion: 8, dados: { ...ESCRITORIO, status: 'EM_ANDAMENTO', notas: [{ id: 'n1', texto: 'Cheguei' }] },
+        });
+        expect(await db.os.get('o1')).toMatchObject({ ...ESCRITORIO, version: 4, iniciadaLocalEm: '2026-10-01T09:00:00Z' });
+        ok(push2, 9, os('EM_ANDAMENTO', { ...ESCRITORIO, numero: 123, notas: [{ id: 'n1', texto: 'Cheguei', autorId: 'u1', criadaEm: '2026-10-01T12:00:00Z' }] }));
+        await pullVazio();
+        await p;
+        expect(await db.pendencias.count()).toBe(0);
+        expect(await db.os.get('o1')).toMatchObject({ ...ESCRITORIO, version: 9 });
+      });
+
+      it('R26: a OS foi cancelada pelo escritório; o concluir da fila não tenta passar de cancelada para concluída', async () => {
+        perfil = 'TECNICO';
+        await db.os.put(paraOsLocal('o1', 4, os('CONCLUIDA', { resumoExecucao: 'Feito' })));
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }), 4);
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { resumoExecucao: 'Feito', notas: [{ id: 'n1', texto: 'a' }] }), 4,
+          { separada: true });
+
+        const p = sync.sincronizar();
+        ok(await push(), 8, os('CANCELADA', { motivoCancelamento: 'Cliente desistiu', notas: [{ id: 'n1', texto: 'a', autorId: 'u1' }] }));
+        const push2 = await push();
+        // como o servidor no R26: da OS encerrada o técnico só acrescenta notas (o resumo dele não muda a cancelada)
+        expect(push2.request.body.mutacoes[0]).toMatchObject({
+          baseVersion: 8, dados: { status: 'CANCELADA', resumoExecucao: null, notas: [{ id: 'n1', texto: 'a' }] },
+        });
+        ok(push2, 8, os('CANCELADA', { motivoCancelamento: 'Cliente desistiu', notas: [{ id: 'n1', texto: 'a', autorId: 'u1' }] }));
+        await pullVazio();
+        await p;
+        expect(await db.os.get('o1')).toMatchObject({ status: 'CANCELADA', version: 8 });
+      });
+    });
+
     it('assinatura: PNG com o assinante nos metadados; a OS local passa a ter a assinatura aceita, sem recusa', async () => {
       await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' })));
       await db.anexosOs.put(anexoLocal({

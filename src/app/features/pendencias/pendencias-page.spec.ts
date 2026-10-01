@@ -10,9 +10,11 @@ import { ConectividadeService } from '../../core/conectividade/conectividade-ser
 import { PdfService } from '../../core/pdf/pdf-service';
 import { PendenciasService } from '../../core/sync/pendencias-service';
 import { Toasts } from '../../shared/ui/toasts';
+import { ErroOs } from '../os/erro-os';
+import { OsDados, OsLocal, paraOsLocal, TipoAnexoOs } from '../os/os-models';
 import { PropostaLocal } from '../propostas/proposta-models';
 import { PropostasRepo } from '../propostas/propostas-repo';
-import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
+import { Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { PendenciasPage } from './pendencias-page';
 
@@ -70,6 +72,9 @@ function propostaLocal(id: string, p: Partial<PropostaLocal> = {}): PropostaLoca
 
 interface OpcoesMontar {
   propostas?: PropostaLocal[];
+  /** As OS do aparelho com pendência e o tipo dos anexos (`observarOsDasPendencias`). */
+  os?: OsLocal[];
+  anexos?: [string, TipoAnexoOs][];
   regerar?: ReturnType<typeof vi.fn>;
   /** P4c-R15: "Usar a do servidor" levaria um envio ou PDF feito no aparelho. */
   descartaEnvio?: boolean;
@@ -88,6 +93,9 @@ function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMI
     descartar: vi.fn().mockResolvedValue(undefined),
     usarExistente: vi.fn().mockResolvedValue('c9'),
     descartaEnvio: vi.fn().mockResolvedValue(o.descartaEnvio ?? false),
+    observarOsDasPendencias: () => of({
+      os: new Map((o.os ?? []).map((x) => [x.id, x] as const)), tiposDeAnexo: new Map(o.anexos ?? []),
+    }),
   };
   const sincronizar = vi.fn().mockResolvedValue(undefined);
   TestBed.configureTestingModule({
@@ -586,6 +594,162 @@ describe('PendenciasPage', () => {
       expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
       botao(el, 'Descartar').click();
       expect(svc.descartar).toHaveBeenCalledWith(u);
+    });
+  });
+
+  describe('OS e anexos da OS (M2-P2)', () => {
+    const dadosOs = (extra: Partial<OsDados> = {}): OsDados => ({
+      codigoProvisorio: 'OSP-0Z9XY7', numero: 123, revisao: 1, propostaId: 'p1', clienteId: 'c1', tipo: 'INSTALACAO',
+      status: 'EM_ANDAMENTO', responsavelId: 'u-com', tecnicoId: 'u', urgente: false, concluiProposta: true,
+      assinaturaRecusada: false, itens: [], notas: [], ...extra,
+    });
+    const osLocal = (extra: Partial<OsDados> = {}) => paraOsLocal('o1', 4, dadosOs(extra));
+    const pendenciaOs = (extra: Partial<Pendencia> = {}, dados: Partial<OsDados> = {}): Pendencia => ({
+      mutationId: 'mo', entidade: 'os', agregadoId: 'o1', tipo: 'CONFLITO', criadaEm: '30', versionServidor: 6,
+      dadosServidor: dadosOs({ dataPrevista: '2026-10-09' }),
+      mutacao: { mutationId: 'mo', entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: 4, dados: dadosOs(dados), criadaEm: '' },
+      ...extra,
+    });
+    const uploadOs = (anexoId: string, erro: Pendencia['erro']): Pendencia => ({
+      mutationId: `u-${anexoId}`, entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '31', erro,
+      mutacao: { mutationId: `u-${anexoId}`, entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', op: 'UPLOAD', baseVersion: null,
+        dados: { anexoId }, separada: true, criadaEm: '' },
+    });
+    const abrirOs = (el: HTMLElement) => [...el.querySelectorAll<HTMLAnchorElement>('[data-testid="abrir-os"]')];
+    const titulos = (el: HTMLElement) => [...el.querySelectorAll(':scope > ul > li > p:first-child')].map((x) => x.textContent?.trim());
+    const dialogo = (el: HTMLElement) => el.querySelector<HTMLElement>('[role=alertdialog]');
+    const AVISO_OS = 'Isto descarta as fotos, a assinatura e o PDF desta OS que ainda não foram enviados deste aparelho.';
+
+    it('conflito: título "OS " + código exibido, manter a minha / usar a do servidor e "Abrir OS" (/os/:id)', async () => {
+      const c = pendenciaOs();
+      const { el, svc, fixture } = montar([c], 0, 'TECNICO', { os: [osLocal({ revisao: 2 })] });
+      expect(titulos(el)).toEqual(['OS OS-000123-R2']);
+      expect(el.textContent).toContain('Alterado por outra pessoa enquanto você editava.');
+      expect(abrirOs(el).map((a) => a.getAttribute('href'))).toEqual(['/os/o1']);
+      botao(el, 'Manter a minha').click();
+      expect(svc.manterMinha).toHaveBeenCalledWith(c);
+      await vi.waitFor(async () => {
+        await fixture.whenStable();
+        expect(botao(el, 'Usar a do servidor').disabled).toBe(false);
+      });
+      botao(el, 'Usar a do servidor').click();
+      await vi.waitFor(() => expect(svc.usarServidor).toHaveBeenCalledWith(c));
+      expect(svc.descartaEnvio).toHaveBeenCalledWith(c);
+      // nada de ação de proposta numa OS
+      expect(botao(el, 'Corrigir e reenviar')).toBeUndefined();
+      expect(el.querySelector('[data-testid="abrir-proposta"]')).toBeNull();
+    });
+
+    it('sem a cópia local: o código vem dos dados (do servidor, senão da mutação) e não há "Abrir OS"', () => {
+      const { el } = montar([
+        pendenciaOs(),
+        pendenciaOs({ mutationId: 'm2', agregadoId: 'o2', dadosServidor: undefined, tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } },
+          { numero: null, codigoProvisorio: 'OSP-AAAAAA' }),
+        pendenciaOs({ mutationId: 'm3', agregadoId: 'o3', dadosServidor: undefined },
+          { numero: null, codigoProvisorio: undefined as unknown as string }),
+      ]);
+      expect(titulos(el)).toEqual(['OS OS-000123', 'OS OSP-AAAAAA', 'OS']);
+      expect(abrirOs(el)).toEqual([]);
+    });
+
+    it('R30: a OS reaberta por outra pessoa diz o que "Manter a minha" faz', () => {
+      const reaberta = pendenciaOs({ dadosServidor: dadosOs({ revisao: 2 }) }, { status: 'CONCLUIDA', revisao: 1 });
+      const { el } = montar([reaberta], 0, 'TECNICO', { os: [osLocal()] });
+      expect(el.textContent).toContain('Esta OS foi reaberta por outra pessoa. "Manter a minha" guarda o seu resumo e as notas; a OS continua em andamento.');
+    });
+
+    it('anexos: "Foto da OS …", "Assinatura da OS …", "PDF da OS …"; sem o anexo no aparelho, "Anexo da OS …"', () => {
+      const erro = { codigo: 'LIMITE_FOTOS', mensagem: 'Esta OS já tem o máximo de 20 fotos no servidor.' };
+      const { el } = montar(
+        [uploadOs('f1', erro), uploadOs('s1', erro), uploadOs('d1', erro), uploadOs('x1', erro)], 0, 'TECNICO',
+        { os: [osLocal()], anexos: [['f1', 'FOTO'], ['s1', 'ASSINATURA'], ['d1', 'DOCUMENTO']] },
+      );
+      expect(titulos(el)).toEqual(['Foto da OS OS-000123', 'Assinatura da OS OS-000123', 'PDF da OS OS-000123', 'Anexo da OS OS-000123']);
+      expect(abrirOs(el)).toHaveLength(4);
+      TestBed.resetTestingModule();
+      // sem a OS no aparelho: só o tipo
+      const sem = montar([uploadOs('f1', erro)], 0, 'TECNICO', { anexos: [['f1', 'FOTO']] });
+      expect(titulos(sem.el)).toEqual(['Foto da OS']);
+      expect(abrirOs(sem.el)).toEqual([]);
+    });
+
+    it.each([
+      ['OS_CONCLUIDA_POR_OUTRO', 'Esta OS foi concluída pelo escritório.'],
+      ['ACESSO_NEGADO', 'Esta OS não está mais com você.'],
+      ['HTTP_404', 'Esta OS não está mais com você.'],
+    ])('PDF recusado com %s: "%s" e Descartar (direto: descarta só o PDF)', async (codigo, mensagem) => {
+      const p = uploadOs('d1', { codigo, mensagem });
+      const { el, svc } = montar([p], 0, 'TECNICO', { os: [osLocal({ status: 'CONCLUIDA' })], anexos: [['d1', 'DOCUMENTO']] });
+      expect(el.querySelector('li p:nth-of-type(2)')?.textContent?.trim()).toBe(mensagem);
+      expect(botao(el, 'Manter a minha')).toBeUndefined();
+      botao(el, 'Descartar').click();
+      await vi.waitFor(() => expect(svc.descartar).toHaveBeenCalledWith(p));
+      expect(svc.descartaEnvio).not.toHaveBeenCalled();
+    });
+
+    it('o push da OS recusado com ACESSO_NEGADO para o técnico (passados os 7 dias): "Esta OS não está mais com você."', () => {
+      const p = pendenciaOs({ tipo: 'REJEITADO', erro: { codigo: 'ACESSO_NEGADO', mensagem: 'Você só altera as OS atribuídas a você.' } });
+      const tecnico = montar([p], 0, 'TECNICO', { os: [osLocal()] });
+      expect(tecnico.el.textContent).toContain('Esta OS não está mais com você.');
+      expect(botao(tecnico.el, 'Descartar')).toBeDefined();
+      TestBed.resetTestingModule();
+      // para os outros perfis, a mensagem do servidor
+      const admin = montar([p], 0, 'ADMIN', { os: [osLocal()] });
+      expect(admin.el.textContent).toContain('Você só altera as OS atribuídas a você.');
+    });
+
+    it.each([
+      ['Usar a do servidor', 'usarServidor', 'Usar a do servidor?', 'Usar a do servidor', pendenciaOs()],
+      ['Descartar', 'descartar', 'Descartar a pendência?', 'Descartar', pendenciaOs({ tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } })],
+      // excluída no servidor: o Descartar do conflito é o "usar a do servidor"
+      ['Descartar', 'usarServidor', 'Usar a do servidor?', 'Usar a do servidor', pendenciaOs({ dadosServidor: undefined })],
+    ] as const)('P4c-R15: "%s" com fotos, assinatura ou PDF não enviados pede confirmação com o aviso da OS', async (rotulo, acao, titulo, confirmar, p) => {
+      const { el, svc, fixture } = montar([p], 0, 'TECNICO', { os: [osLocal()], descartaEnvio: true });
+      botao(el, rotulo).click();
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(dialogo(el)).not.toBeNull();
+      });
+      const d = dialogo(el)!;
+      expect(document.getElementById(d.getAttribute('aria-labelledby')!)?.textContent?.trim()).toBe(titulo);
+      expect(document.getElementById(d.getAttribute('aria-describedby')!)?.textContent?.trim()).toBe(AVISO_OS);
+      expect(svc[acao]).not.toHaveBeenCalled();
+      [...d.querySelectorAll('button')].find((b) => b.textContent?.trim() === confirmar)!.click();
+      await vi.waitFor(() => expect(svc[acao]).toHaveBeenCalledWith(p));
+    });
+
+    it('sem anexo a perder: Descartar da criação recusada vai direto', async () => {
+      const p = pendenciaOs({ tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } });
+      p.mutacao = { ...p.mutacao, baseVersion: null };
+      const { el, svc, fixture } = montar([p], 0, 'ADMIN', { os: [osLocal()] });
+      botao(el, 'Descartar').click();
+      await vi.waitFor(() => expect(svc.descartar).toHaveBeenCalledWith(p));
+      fixture.detectChanges();
+      expect(dialogo(el)).toBeNull();
+    });
+
+    it('a ação em curso trava só os botões daquela pendência; o erro vira o toast da OS (mensagemErroOs)', async () => {
+      const c = pendenciaOs();
+      const outra = uploadOs('f1', { codigo: 'LIMITE_FOTOS', mensagem: 'x' });
+      const { el, svc, fixture } = montar([c, outra], 0, 'TECNICO', { os: [osLocal()], anexos: [['f1', 'FOTO']] });
+      let terminar!: (e: unknown) => void;
+      svc.manterMinha.mockReturnValue(new Promise<void>((_, r) => (terminar = r)));
+      const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+      botao(el, 'Manter a minha').click();
+      botao(el, 'Manter a minha').click();
+      await fixture.whenStable();
+      expect(svc.manterMinha).toHaveBeenCalledTimes(1);
+      expect(botao(el, 'Usar a do servidor').disabled).toBe(true);
+      expect(botao(el, 'Descartar').disabled).toBe(false);
+      terminar(new ErroOs('OS_SINCRONIZANDO', 'os', ''));
+      await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('A OS está sendo sincronizada. Tente de novo em instantes.'));
+      svc.manterMinha.mockRejectedValueOnce(new Error('DatabaseClosedError'));
+      await vi.waitFor(async () => {
+        await fixture.whenStable();
+        expect(botao(el, 'Manter a minha').disabled).toBe(false);
+      });
+      botao(el, 'Manter a minha').click();
+      await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('Não foi possível concluir. Tente de novo.'));
     });
   });
 });

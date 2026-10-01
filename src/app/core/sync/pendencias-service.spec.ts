@@ -1,11 +1,12 @@
 import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
-import { signal } from '@angular/core';
+import { HttpTestingController, provideHttpClientTesting, TestRequest } from '@angular/common/http/testing';
+import { signal, WritableSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
+import { firstValueFrom } from 'rxjs';
 import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
-import { AnexoOsLocal, paraOsLocal } from '../../features/os/os-models';
+import { AnexoOsLocal, OsDados, paraOsLocal } from '../../features/os/os-models';
 import { paraPropostaLocal, PropostaDados } from '../../features/propostas/proposta-models';
 import { ErroProposta, LinhaRascunho } from '../../features/propostas/propostas-repo';
 import type { UsuarioSessao } from '../auth/auth-models';
@@ -457,6 +458,184 @@ describe('PendenciasService', () => {
         expect((await db.anexosOs.toArray()).map((a) => a.id)).toEqual(['f9']);
         expect(await db.outbox.count()).toBe(0);
         expect(await db.pendencias.count()).toBe(0);
+      });
+
+      describe('"Manter a minha" (M2P1-R19)', () => {
+        const TEC = 'u-tec';
+        /** O servidor: o escritório mudou a data, a descrição, o endereço, as linhas e o resumo enquanto o técnico estava offline. */
+        const doServidor = (extra: Partial<OsDados> = {}): OsDados => ({
+          codigoProvisorio: 'OSP-0Z9XY7', numero: 123, revisao: 1, propostaId: 'p1', clienteId: 'c1', tipo: 'INSTALACAO',
+          status: 'EM_ANDAMENTO', responsavelId: 'u1', tecnicoId: TEC, dataPrevista: '2026-10-09', urgente: true,
+          concluiProposta: true, descricao: 'Do escritório', enderecoLogradouro: 'Av. Nova', resumoExecucao: 'Do escritório',
+          assinaturaRecusada: false,
+          itens: [{ id: 'l1', itemCatalogoId: 'i1', codigo: 'P-1', nome: 'Painel', unidade: 'un', natureza: 'PRODUTO', quantidadePrevista: 3, ordem: 0 }],
+          notas: [{ id: 'n0', texto: 'Do escritório', autorId: 'u-adm', criadaEm: '2026-10-01T10:00:00Z' }],
+          anexos: [], historico: [], atualizadoEm: '2026-10-01T10:00:00Z', ...extra,
+        });
+        /** O que o aparelho conhecia e mandou (o `paraEnvio`: `responsavelId` null na OS de proposta). */
+        const doAparelho = (extra: Partial<OsDados> = {}): OsDados => ({
+          ...doServidor(), dataPrevista: '2026-10-05', urgente: false, descricao: 'Antiga', enderecoLogradouro: 'Av. Velha',
+          resumoExecucao: null, responsavelId: null, notas: [], atualizadoEm: '2026-09-30T10:00:00Z',
+          itens: [{ id: 'l1', itemCatalogoId: 'i1', codigo: 'P-1', nome: 'Painel', unidade: 'un', natureza: 'PRODUTO', quantidadePrevista: 2, ordem: 0 }],
+          ...extra,
+        });
+        const nota = (id: string, texto: string) => ({ id, texto, autorId: null, criadaEm: null });
+        const mutOs = (mutationId: string, seq: number, dados: OsDados, extra: Partial<MutacaoLocal> = {}): MutacaoLocal => ({
+          seq, mutationId, entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: 4, dados, criadaEm: '', ...extra,
+        });
+        const CABECALHO_DO_SERVIDOR = {
+          dataPrevista: '2026-10-09', urgente: true, descricao: 'Do escritório', enderecoLogradouro: 'Av. Nova', tecnicoId: TEC,
+        };
+
+        /**
+         * A fila offline do técnico: N (nota e resumo, seq 5) voltou CONFLITO (o ADMIN mexeu no resumo); atrás dela, a foto
+         * f1 (seq 6) e o concluir (seq 7, separada). A OS local tem o cabeçalho antigo.
+         */
+        async function cenario(): Promise<Pendencia> {
+          usuarioAtual = { id: TEC, nome: 'Téo', email: 'teo@regera.com', perfil: 'TECNICO', ativo: true };
+          const n = doAparelho({ resumoExecucao: 'Meu resumo', notas: [nota('n1', 'Cheguei')] });
+          const c = doAparelho({ status: 'CONCLUIDA', resumoExecucao: 'Meu resumo', assinaturaRecusada: true, motivoRecusa: 'Ausente',
+            notas: [nota('n1', 'Cheguei'), nota('n2', 'Saí')] });
+          await db.os.put({
+            ...paraOsLocal('o1', 4, { ...c, responsavelId: 'u1' }), iniciadaLocalEm: '2026-10-01T09:00:00Z',
+            notas: [{ ...nota('n1', 'Cheguei'), autorLocalId: TEC, criadaLocalEm: '2026-10-01T09:10:00Z' },
+              { ...nota('n2', 'Saí'), autorLocalId: TEC, criadaLocalEm: '2026-10-01T11:00:00Z' }],
+          });
+          await db.anexosOs.put(anexo('f1', 'o1', false));
+          await db.outbox.bulkAdd([uploadOs('up1', 'f1'), mutOs('c1', 7, c, { separada: true })].map((m, i) => ({ ...m, seq: 6 + i })));
+          const p: Pendencia = {
+            mutationId: 'n', entidade: 'os', agregadoId: 'o1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 7,
+            dadosServidor: doServidor(), mutacao: mutOs('n', 5, n),
+          };
+          await db.pendencias.put(p);
+          return p;
+        }
+
+        it('rebaseia no lugar a do conflito, as seguintes e a OS local: o que o técnico não edita vem do servidor', async () => {
+          const p = await cenario();
+
+          await svc.manterMinha(p);
+
+          expect(await db.pendencias.count()).toBe(0);
+          const f = await db.outbox.orderBy('seq').toArray();
+          expect(f.map((m) => [m.seq, m.entidade, m.op])).toEqual([[5, 'os', 'UPSERT'], [6, TIPO_UPLOAD_ANEXO_OS, 'UPLOAD'], [7, 'os', 'UPSERT']]);
+          expect(f[0]).toMatchObject({ baseVersion: 7, enviando: false, dados: {
+            ...CABECALHO_DO_SERVIDOR, status: 'EM_ANDAMENTO', resumoExecucao: 'Meu resumo', responsavelId: null,
+          } });
+          expect(f[0].mutationId).not.toBe('n');
+          const n = f[0].dados as OsDados;
+          expect(n.itens[0].quantidadePrevista).toBe(3);
+          expect(n.notas.map((x) => x.id)).toEqual(['n0', 'n1']);
+          // a seguinte: o cabeçalho que ela trazia era o mesmo da do conflito, então também passa a ser o do servidor
+          expect(f[2]).toMatchObject({ separada: true, dados: {
+            ...CABECALHO_DO_SERVIDOR, status: 'CONCLUIDA', resumoExecucao: 'Meu resumo', assinaturaRecusada: true, motivoRecusa: 'Ausente',
+          } });
+          expect((f[2].dados as OsDados).notas.map((x) => x.id)).toEqual(['n0', 'n1', 'n2']);
+          expect(f[1]).toMatchObject({ mutationId: 'up1', dados: { anexoId: 'f1' } });
+          const local = (await db.os.get('o1'))!;
+          // o responsável continua o da OS (a mutação manda null, que é "manter")
+          expect(local).toMatchObject({ ...CABECALHO_DO_SERVIDOR, version: 7, status: 'CONCLUIDA', resumoExecucao: 'Meu resumo',
+            iniciadaLocalEm: '2026-10-01T09:00:00Z', responsavelId: 'u1' });
+          expect(local.notas.map((x) => [x.id, x.autorLocalId ?? null])).toEqual([['n0', null], ['n1', TEC], ['n2', TEC]]);
+          expect(await db.anexosOs.get('f1')).toMatchObject({ enviado: false });
+        });
+
+        it('com o SyncService real: o servidor aceita a do conflito, a foto e o concluir, e nada volta para as pendências', async () => {
+          const p = await cenario();
+          await svc.manterMinha(p);
+          const sync = TestBed.inject(SyncService);
+          vi.mocked(sync.sincronizar).mockRestore();
+          (TestBed.inject(ConectividadeService).online as WritableSignal<boolean>).set(true);
+          const ok = (req: TestRequest, version: number, d: unknown) =>
+            req.flush({ resultados: [{ mutationId: req.request.body.mutacoes[0].mutationId, status: 'OK', version, dados: d }] });
+
+          const rodada = sync.sincronizar();
+          const push1 = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+          const enviado1 = push1.request.body.mutacoes[0];
+          expect(enviado1).toMatchObject({ entidade: 'os', id: 'o1', baseVersion: 7, dados: { ...CABECALHO_DO_SERVIDOR, responsavelId: null } });
+          const aceito = doServidor({ resumoExecucao: 'Meu resumo', notas: [...doServidor().notas,
+            { id: 'n1', texto: 'Cheguei', autorId: TEC, criadaEm: '2026-10-01T15:00:00Z' }] });
+          ok(push1, 8, aceito);
+          (await vi.waitFor(() => http.expectOne('/api/os/o1/anexos'))).flush({
+            anexo: { id: 'f1', tipo: 'FOTO', arquivoId: 'af1', sha256: 'b'.repeat(64), autorId: TEC, criadoEm: '2026-10-01T15:01:00Z' },
+            versaoOs: 9,
+          }, { status: 201, statusText: 'Created' });
+          const push2 = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+          expect(push2.request.body.mutacoes[0]).toMatchObject({
+            baseVersion: 9, dados: { ...CABECALHO_DO_SERVIDOR, status: 'CONCLUIDA', responsavelId: null, resumoExecucao: 'Meu resumo' },
+          });
+          ok(push2, 10, { ...aceito, status: 'CONCLUIDA', assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+          (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull')))
+            .flush({ cursor: 1, temMais: false, mudancas: [], usuarios: [] });
+          await rodada;
+
+          expect(await db.pendencias.count()).toBe(0);
+          expect(await db.outbox.count()).toBe(0);
+          expect(await db.os.get('o1')).toMatchObject({ version: 10, status: 'CONCLUIDA', dataPrevista: '2026-10-09' });
+          http.expectNone('/api/sync/push');
+        });
+
+        it('a do conflito sem os dados do servidor (excluída lá) ou um DELETE seguem a regra comum', async () => {
+          await cenario();
+          const p = { ...(await db.pendencias.get('n'))!, dadosServidor: undefined };
+          await db.pendencias.put(p);
+          await svc.manterMinha(p);
+          const [primeira] = await db.outbox.orderBy('seq').toArray();
+          expect(primeira).toMatchObject({ seq: 5, baseVersion: 7, dados: { dataPrevista: '2026-10-05', resumoExecucao: 'Meu resumo' } });
+        });
+      });
+
+      it('P4c-R15 (M1): descartaEnvio da OS diz se a ação levaria fotos, assinatura ou PDF ainda não enviados', async () => {
+        await db.os.put(paraOsLocal('o1', 3, { ...osDados, itens: [], notas: [] }));
+        const conflitoOs: Pendencia = {
+          mutationId: 'mo', entidade: 'os', agregadoId: 'o1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 5,
+          dadosServidor: osDados,
+          mutacao: { mutationId: 'mo', entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: 3, dados: osDados, criadaEm: '' },
+        };
+        await db.pendencias.put(conflitoOs);
+        // anexos já enviados (cópia do servidor) e de outra OS não contam
+        await db.anexosOs.bulkPut([anexo('f0', 'o1', true), anexo('f9', 'o9', false)]);
+        expect(await svc.descartaEnvio(conflitoOs)).toBe(false);
+
+        // o upload de um anexo na fila
+        const u = await db.outbox.add(uploadOs('up1', 'f1'));
+        expect(await svc.descartaEnvio(conflitoOs)).toBe(true);
+        await db.outbox.delete(u);
+
+        // o upload recusado de um anexo, nas pendências
+        const recusado: Pendencia = {
+          mutationId: 'up2', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '',
+          erro: { codigo: 'LIMITE_FOTOS', mensagem: 'x' }, mutacao: uploadOs('up2', 'f2'),
+        };
+        await db.pendencias.put(recusado);
+        expect(await svc.descartaEnvio(conflitoOs)).toBe(true);
+        await db.pendencias.delete('up2');
+
+        // uma foto, a assinatura ou o PDF gravados aqui e ainda não enviados
+        for (const tipo of ['FOTO', 'ASSINATURA', 'DOCUMENTO'] as const) {
+          await db.anexosOs.put({ ...anexo('f3', 'o1', false), tipo });
+          expect(await svc.descartaEnvio(conflitoOs)).toBe(true);
+          await db.anexosOs.delete('f3');
+        }
+        expect(await svc.descartaEnvio(conflitoOs)).toBe(false);
+        // a recusa da criação da OS também (o Descartar apaga a OS e os anexos dela)
+        await db.anexosOs.put(anexo('f4', 'o1', false));
+        expect(await svc.descartaEnvio({ ...conflitoOs, tipo: 'REJEITADO', mutacao: { ...conflitoOs.mutacao, baseVersion: null } })).toBe(true);
+        // o próprio upload recusado descarta só o anexo dele: não pergunta
+        expect(await svc.descartaEnvio({ ...recusado })).toBe(false);
+      });
+
+      it('observarOsDasPendencias: as OS e o tipo dos anexos das pendências, sem ler os bytes de outras', async () => {
+        await db.os.bulkPut([paraOsLocal('o1', 3, { ...osDados, numero: 123, itens: [], notas: [] }), paraOsLocal('o9', 1, { ...osDados, itens: [], notas: [] })]);
+        await db.anexosOs.bulkPut([{ ...anexo('s1', 'o1', false), tipo: 'ASSINATURA' }, anexo('f9', 'o9', false)]);
+        await db.pendencias.put({
+          mutationId: 'up1', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '',
+          erro: { codigo: 'ACESSO_NEGADO', mensagem: 'x' }, mutacao: uploadOs('up1', 's1'),
+        });
+        const contexto = await firstValueFrom(svc.observarOsDasPendencias());
+        expect([...contexto.os.keys()]).toEqual(['o1']);
+        expect(contexto.os.get('o1')?.numero).toBe(123);
+        expect([...contexto.tiposDeAnexo.entries()]).toEqual([['s1', 'ASSINATURA']]);
       });
     });
 

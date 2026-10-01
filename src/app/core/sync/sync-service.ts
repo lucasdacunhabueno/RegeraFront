@@ -2,6 +2,8 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom } from 'rxjs';
+import type { OsDados } from '../../features/os/os-models';
+import { quemNoServidor, rebaseFilaOs, rebaseOsLocal } from '../../features/os/rebase-os';
 import { gerarCodigoProvisorio } from '../../features/propostas/codigo-provisorio';
 import type { PropostaDados } from '../../features/propostas/proposta-models';
 import { Toasts } from '../../shared/ui/toasts';
@@ -404,8 +406,10 @@ export class SyncService {
         if (proxima) {
           // há outra mutação na fila (edição durante o envio, transição seguinte, upload): vai sobre esta versão
           await this.db.outbox.update(proxima.seq!, { baseVersion: r.version ?? null });
+          const soUploads = seguintes.every(ehUpload);
+          if (m.entidade === 'os') await this.rebasearSeguintesDaOs(m, r, seguintes, !soUploads);
           // o upload não leva dados da proposta: se só há uploads atrás, o local já recebe o do servidor (o número)
-          if (!seguintes.every(ehUpload)) return;
+          if (!soUploads) return;
         }
         if (!adaptador) return;
         const tabela = adaptador.tabela(this.db);
@@ -429,6 +433,30 @@ export class SyncService {
         criadaEm: new Date().toISOString(),
       });
     });
+  }
+
+  /**
+   * OK de uma mutação da OS com outras atrás na fila. O resultado pode não ser o que foi enviado: no envio desatualizado
+   * do técnico, o servidor fica com o cabeçalho do escritório, o status dele e o "Precisa voltar" dele (M2P1-R30, e a
+   * OS encerrada do R26). As mutações seguintes da OS e, se for o caso, a OS local (que só é substituída com a fila
+   * vazia) passam pelo `rebaseFilaOs`: o que não mudou desde o envio passa a ser o do servidor, e o que o perfil não
+   * altera no status do servidor também (como o servidor faz no R26 e no R30). Senão a seguinte, já com a versão nova
+   * como base, levaria os valores velhos e seria recusada (`OS_NAO_EDITAVEL`, `TRANSICAO_INVALIDA`), ou desfaria em
+   * silêncio a mudança do escritório num campo que o técnico também edita. Roda na transação do `aplicarResultado`.
+   */
+  private async rebasearSeguintesDaOs(m: MutacaoLocal, r: ResultadoMutacao, seguintes: MutacaoLocal[], local: boolean): Promise<void> {
+    const enviado = m.dados as OsDados | null;
+    const servidor = r.dados as OsDados | null | undefined;
+    if (m.op !== 'UPSERT' || !enviado || !servidor) return;
+    const u = this.auth.usuario?.();
+    const daOs = seguintes.filter((s) => s.entidade === 'os' && s.op === 'UPSERT' && !!s.dados);
+    const originais = daOs.map((s) => s.dados as OsDados);
+    const rebaseadas = rebaseFilaOs(enviado, servidor, originais, u ? quemNoServidor(servidor, u.perfil, u.id) : undefined);
+    for (const [i, s] of daOs.entries()) {
+      if (JSON.stringify(rebaseadas[i]) !== JSON.stringify(s.dados)) await this.db.outbox.update(s.seq!, { dados: rebaseadas[i] });
+    }
+    const atual = local ? await this.db.os.get(m.agregadoId) : undefined;
+    if (atual) await this.db.os.put(rebaseOsLocal(atual, originais.at(-1) ?? enviado, rebaseadas.at(-1) ?? servidor));
   }
 
   /**

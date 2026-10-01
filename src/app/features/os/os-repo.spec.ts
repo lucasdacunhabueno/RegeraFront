@@ -10,8 +10,9 @@ import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { RegeraDb } from '../../core/db/regera-db';
 import { PdfService } from '../../core/pdf/pdf-service';
-import { MutacaoLocal, Pendencia, TIPO_UPLOAD_ANEXO_OS } from '../../core/sync/sync-models';
+import { MutacaoLocal, Pendencia, RespostaAnexoOs, TIPO_UPLOAD_ANEXO_OS } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
+import { tipoUploadDe } from '../../core/sync/tipos-upload';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { paraItemLocal } from '../catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../clientes/cliente-models';
@@ -857,6 +858,32 @@ describe('OsRepo', () => {
       const concluir = (await fila()).find((m) => m.entidade === 'os')!;
       expect(concluir).toMatchObject({ baseVersion: 4, separada: true });
       expect(await db.os.get('o1')).toMatchObject({ version: 4, status: 'CONCLUIDA', anexos: [{ id: f1 }] });
+    });
+
+    it('M2P2-R9: a assinatura aceita e espelhada durante a geração (OS em andamento) não muda o PDF: gera uma vez, sobre a versão nova', async () => {
+      await noAparelho('EM_ANDAMENTO', {}, 3);
+      const s1 = await repo.assinar('o1', { png: { bytes: PNG, sha256: SHA_PNG }, nome: 'Maria', papel: 'Síndica' });
+      gerarPdf.mockImplementationOnce(async () => {
+        // o que o aplicarUpload do SyncService faz com a assinatura aceita: o anexo enviado e o espelho na OS (`noAgregado`)
+        const a = (await db.anexosOs.get(s1))!;
+        await db.anexosOs.put({ ...a, enviado: true, arquivoId: `a-${s1}`, bytes: null });
+        const resp: RespostaAnexoOs = {
+          anexo: {
+            id: s1, tipo: 'ASSINATURA', arquivoId: `a-${s1}`, sha256: SHA_PNG, assinanteNome: 'Maria', assinantePapel: 'Síndica',
+            tiradaEm: a.tiradaEm, autorId: TECNICO.id, criadoEm: AGORA.toISOString(),
+          },
+          versaoOs: 4,
+        };
+        const local = (await db.os.get('o1'))!;
+        await db.os.put({ ...local, ...tipoUploadDe(TIPO_UPLOAD_ANEXO_OS)!.noAgregado(local, resp, 4) } as OsLocal);
+        expect(await db.os.get('o1')).toMatchObject({ version: 4, assinaturaAnexoId: s1, assinanteNome: 'Maria', assinantePapel: 'Síndica' });
+        return new Blob([PDF]);
+      });
+      await repo.concluir('o1', 'Feito', gerarPdf);
+      expect(gerarPdf).toHaveBeenCalledTimes(1);
+      const concluir = (await fila()).find((m) => m.entidade === 'os' && dadosDe(m).status === 'CONCLUIDA')!;
+      expect(concluir).toMatchObject({ baseVersion: 4, separada: true, dados: { assinaturaAnexoId: s1 } });
+      expect(await db.os.get('o1')).toMatchObject({ version: 4, status: 'CONCLUIDA', assinaturaAnexoId: s1, anexos: [{ id: s1 }] });
     });
 
     it('uma foto gravada durante a geração faz gerar de novo, já com ela', async () => {

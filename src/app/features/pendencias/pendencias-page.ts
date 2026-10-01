@@ -8,9 +8,12 @@ import { ConectividadeService } from '../../core/conectividade/conectividade-ser
 import { mensagemDeErro } from '../../core/http/erro-api';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { PendenciasService } from '../../core/sync/pendencias-service';
-import { Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
+import { DadosUploadAnexoOs, Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
+import { MENSAGEM_OS_NAO_ESTA_COM_VOCE } from '../../core/sync/tipos-upload';
 import { Toasts } from '../../shared/ui/toasts';
+import { mensagemErroOs } from '../os/formatos-os';
+import { codigoOsExibido, OsDados, OsLocal, TipoAnexoOs } from '../os/os-models';
 import { compartilharArquivo, ResultadoCompartilhar } from '../propostas/compartilhar';
 import { DialogoMotivo } from '../propostas/dialogo-motivo';
 import { mensagemErroProposta, rotuloCodigo } from '../propostas/formatos-proposta';
@@ -25,6 +28,16 @@ const ROTULO_CAMPO_TEMPLATE: Record<string, string> = {
   nome: 'Nome', tipoProposta: 'Tipo de proposta', ativo: 'Ativo', padrao: 'Padrão', blocos: 'Blocos',
 };
 const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
+const ROTULO_ANEXO_OS: Readonly<Record<TipoAnexoOs, string>> = { FOTO: 'Foto', ASSINATURA: 'Assinatura', DOCUMENTO: 'PDF' };
+
+/** P4c-R15: o texto da confirmação quando a ação levaria o que foi feito neste aparelho e ainda não foi enviado. */
+const AVISO_DESCARTE = {
+  proposta: 'Isto descarta o envio e o PDF gerado neste aparelho.',
+  os: 'Isto descarta as fotos, a assinatura e o PDF desta OS que ainda não foram enviados deste aparelho.',
+} as const;
+
+/** P4c-R15: a ação sobre a proposta ou a OS (não sobre o upload dela) pode levar o que foi feito aqui: pergunta antes. */
+const perguntaAntes = (p: Pendencia) => p.entidade === 'proposta' || p.entidade === 'os';
 
 /** A confirmação de uma ação que levaria o envio feito no aparelho (P4c-R15, N2). */
 interface Confirmacao {
@@ -115,6 +128,10 @@ interface Confirmacao {
               <a data-testid="abrir-proposta" [routerLink]="['/propostas', p.agregadoId]"
                  class="inline-flex h-12 items-center rounded-lg border border-slate-300 px-4 text-sm font-semibold">Abrir proposta</a>
             }
+            @if (osLocal(p)) {
+              <a data-testid="abrir-os" [routerLink]="['/os', p.agregadoId]"
+                 class="inline-flex h-12 items-center rounded-lg border border-slate-300 px-4 text-sm font-semibold">Abrir OS</a>
+            }
           </div>
         </li>
       }
@@ -128,7 +145,7 @@ interface Confirmacao {
 
     @if (confirmacao(); as c) {
       <app-dialogo-motivo [gatilho]="c.gatilho" [titulo]="c.acao === 'servidor' ? 'Usar a do servidor?' : 'Descartar a pendência?'"
-                          [texto]="avisoDescarte" [rotuloConfirmar]="c.acao === 'servidor' ? 'Usar a do servidor' : 'Descartar'"
+                          [texto]="avisoDescarte(c.pendencia)" [rotuloConfirmar]="c.acao === 'servidor' ? 'Usar a do servidor' : 'Descartar'"
                           rotuloCancelar="Voltar" [pedirMotivo]="false" [perigo]="true" [ocupado]="ocupada(c.pendencia)"
                           (confirmado)="confirmar(c)" (cancelado)="confirmacao.set(null)" />
     }
@@ -197,12 +214,49 @@ export class PendenciasPage {
         const codigo = this.codigoDaProposta(p);
         return codigo ? `PDF da proposta ${codigo}` : 'PDF da proposta';
       }
-      // os títulos com o código da OS ("OS OS-000123", "Foto da OS …") vêm com as pendências da OS (M2-P2 T5)
-      case 'os':
-        return 'OS';
-      case TIPO_UPLOAD_ANEXO_OS:
-        return 'Anexo da OS';
+      case 'os': {
+        const codigo = this.codigoDaOs(p);
+        return codigo ? `OS ${codigo}` : 'OS';
+      }
+      case TIPO_UPLOAD_ANEXO_OS: {
+        const anexoId = (p.mutacao.dados as DadosUploadAnexoOs | null)?.anexoId;
+        const tipo = anexoId ? this.contextoOs().tiposDeAnexo.get(anexoId) : undefined;
+        const rotulo = `${tipo ? ROTULO_ANEXO_OS[tipo] : 'Anexo'} da OS`;
+        const codigo = this.codigoDaOs(p);
+        return codigo ? `${rotulo} ${codigo}` : rotulo;
+      }
     }
+  }
+
+  /** As OS com pendência (dela ou de um anexo dela) neste aparelho e o tipo dos anexos: os títulos e o "Abrir OS". */
+  private readonly contextoOs = toSignal(this.servico.observarOsDasPendencias(), {
+    initialValue: { os: new Map<string, OsLocal>(), tiposDeAnexo: new Map<string, TipoAnexoOs>() },
+  });
+
+  /** A OS da pendência (dela ou de um anexo dela) neste aparelho: com ela, "Abrir OS" (a tela é do M2-P3). */
+  protected osLocal(p: Pendencia): OsLocal | undefined {
+    if (p.entidade !== 'os' && p.entidade !== TIPO_UPLOAD_ANEXO_OS) return undefined;
+    return this.contextoOs().os.get(p.agregadoId);
+  }
+
+  /**
+   * O código exibido da OS (`OS-000123`, com `-R<n>`, ou o `OSP-…`): o do aparelho e, sem a cópia local, o dos dados
+   * do servidor ou da mutação. O upload de anexo só leva o id do anexo: sem a cópia local, fica sem código.
+   */
+  private codigoDaOs(p: Pendencia): string | null {
+    const local = this.osLocal(p);
+    if (local) return codigoOsExibido(local);
+    if (p.entidade !== 'os') return null;
+    const d = (p.dadosServidor ?? p.mutacao.dados) as Partial<OsDados> | null | undefined;
+    if (!d?.codigoProvisorio) return null;
+    return codigoOsExibido({ numero: d.numero ?? null, revisao: d.revisao ?? null, codigoProvisorio: d.codigoProvisorio });
+  }
+
+  /** M2P1-R30 (V1): a mutação é de uma revisão anterior à do servidor, isto é, a OS foi reaberta depois. */
+  private reabertaNoServidor(p: Pendencia): boolean {
+    const minha = (p.mutacao.dados as Partial<OsDados> | null)?.revisao;
+    const dele = (p.dadosServidor as Partial<OsDados> | null | undefined)?.revisao;
+    return minha != null && dele != null && minha < dele;
   }
 
   /** O código da proposta: o do aparelho (número ou PROV) e, sem a cópia local, o da mutação. */
@@ -267,8 +321,16 @@ export class PendenciasPage {
         ? 'Este PDF é de uma revisão que já foi substituída. Descarte esta pendência.'
         : `${p.erro?.mensagem ?? 'O código impresso no PDF não é o da proposta.'} Descarte esta pendência.`;
     }
+    // M2-R3/R22: o envio do técnico que perdeu a atribuição há mais de 7 dias; o upload recusado já vem com o texto
+    if (p.entidade === 'os' && p.erro?.codigo === 'ACESSO_NEGADO' && this.auth.usuario()?.perfil === 'TECNICO') {
+      return MENSAGEM_OS_NAO_ESTA_COM_VOCE;
+    }
     if (p.tipo !== 'CONFLITO') return p.erro?.mensagem;
-    return this.excluidoNoServidor(p) ? 'Excluído por outra pessoa.' : 'Alterado por outra pessoa enquanto você editava.';
+    if (this.excluidoNoServidor(p)) return 'Excluído por outra pessoa.';
+    if (p.entidade === 'os' && this.reabertaNoServidor(p)) {
+      return 'Esta OS foi reaberta por outra pessoa. "Manter a minha" guarda o seu resumo e as notas; a OS continua em andamento.';
+    }
+    return 'Alterado por outra pessoa enquanto você editava.';
   }
 
   /** [caminho, rótulo, mensagem]; nos templates o caminho vira texto (`blocos[0].config…` → "Bloco 1 (Itens)"). */
@@ -344,8 +406,10 @@ export class PendenciasPage {
     return this.agir(p, () => this.servico.manterMinha(p));
   }
 
-  /** P4c-R15: o texto da confirmação quando a ação levaria o envio feito aqui. */
-  protected readonly avisoDescarte = 'Isto descarta o envio e o PDF gerado neste aparelho.';
+  /** P4c-R15: o texto da confirmação quando a ação levaria o envio feito aqui (na OS, as fotos, a assinatura e o PDF). */
+  protected avisoDescarte(p: Pendencia): string {
+    return p.entidade === 'os' ? AVISO_DESCARTE.os : AVISO_DESCARTE.proposta;
+  }
   /**
    * A confirmação aberta (`DialogoMotivo` sem motivo, `alertdialog`): de "Usar a do servidor" ou de "Descartar", com o
    * botão que a abriu para o foco voltar.
@@ -354,20 +418,22 @@ export class PendenciasPage {
 
   /**
    * "Usar a do servidor" (e o "Descartar" do excluído lá). P4c-R15: numa proposta com envio ou PDF feito neste aparelho
-   * (`descartaEnvio`), pergunta antes — a fila do agregado sai inteira, e o cliente pode já ter o PDF.
+   * (`descartaEnvio`), pergunta antes — a fila do agregado sai inteira, e o cliente pode já ter o PDF. Na OS, o mesmo
+   * com as fotos, a assinatura e o PDF ainda não enviados.
    */
   protected usarServidor(p: Pendencia, gatilho: HTMLElement | null = null): Promise<void> {
-    if (p.entidade !== 'proposta') return this.agir(p, () => this.servico.usarServidor(p));
+    if (!perguntaAntes(p)) return this.agir(p, () => this.servico.usarServidor(p));
     return this.perguntarSeDescartaEnvio({ pendencia: p, gatilho, acao: 'servidor' });
   }
 
   /**
    * "Descartar" de uma rejeição. N2: numa proposta recusada com envio ou PDF atrás (`descartaEnvio`), a mesma
-   * confirmação — descartar também tira da fila o envio e apaga o PDF. O upload recusado descarta só o PDF dele (a
-   * ação é essa) e vai direto, como as outras entidades.
+   * confirmação — descartar também tira da fila o envio e apaga o PDF. Na OS, as fotos, a assinatura e o PDF não
+   * enviados. O upload recusado (PDF da proposta, anexo da OS) descarta só o arquivo dele (a ação é essa) e vai direto,
+   * como as outras entidades.
    */
   protected descartar(p: Pendencia, gatilho: HTMLElement | null = null): Promise<void> {
-    if (p.entidade !== 'proposta') return this.agir(p, () => this.servico.descartar(p));
+    if (!perguntaAntes(p)) return this.agir(p, () => this.servico.descartar(p));
     return this.perguntarSeDescartaEnvio({ pendencia: p, gatilho, acao: 'descartar' });
   }
 
@@ -415,12 +481,13 @@ export class PendenciasPage {
 
   /**
    * O toast de uma ação que falhou. M4: numa proposta (ou no PDF dela), como nas outras telas de proposta
-   * (`mensagemErroProposta`: a recusa do repositório com a mensagem dela, o erro técnico com a genérica); a falha de
-   * rede ou do servidor, pela `mensagemDeErro`.
+   * (`mensagemErroProposta`: a recusa do repositório com a mensagem dela, o erro técnico com a genérica); na OS (ou num
+   * anexo dela), o mesmo pela `mensagemErroOs`; a falha de rede ou do servidor, pela `mensagemDeErro`.
    */
   private mensagemDoErro(p: Pendencia, e: unknown): string {
     if (e instanceof HttpErrorResponse) return mensagemDeErro(e);
     if (p.entidade === 'proposta' || p.entidade === TIPO_UPLOAD_DOCUMENTO) return mensagemErroProposta(e);
+    if (p.entidade === 'os' || p.entidade === TIPO_UPLOAD_ANEXO_OS) return mensagemErroOs(e);
     return e instanceof Error ? e.message : mensagemDeErro(e);
   }
 
