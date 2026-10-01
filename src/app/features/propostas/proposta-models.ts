@@ -141,6 +141,8 @@ export interface DocumentoLocal {
   enviado: boolean;
   /** Id do `arquivo` no servidor, depois do upload. */
   arquivoId: string | null;
+  /** Entrada do PDF (objeto JSON, ≤ 512 KB), enviada nos metadados do upload; ausente = `{}`. */
+  snapshot?: Record<string, unknown> | null;
 }
 
 // --- dados <-> local ---

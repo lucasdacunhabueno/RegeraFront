@@ -45,3 +45,11 @@ export const ADAPTADORES: Record<Entidade, Adaptador> = {
     dadosDe: (local) => dadosDaProposta(local as PropostaLocal),
   },
 };
+
+/**
+ * O adaptador da entidade, ou undefined se ela não tem um (ex.: o upload de documento, ou entidade nova de um
+ * servidor mais novo). `Object.hasOwn`: um nome como "constructor" não pode cair no protótipo do objeto.
+ */
+export function adaptadorDe(entidade: string): Adaptador | undefined {
+  return Object.hasOwn(ADAPTADORES, entidade) ? ADAPTADORES[entidade as Entidade] : undefined;
+}

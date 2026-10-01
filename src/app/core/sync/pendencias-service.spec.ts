@@ -5,11 +5,12 @@ import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
+import { paraPropostaLocal, PropostaDados } from '../../features/propostas/proposta-models';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
 import { PendenciasService } from './pendencias-service';
-import { Pendencia } from './sync-models';
+import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
 
 const dados = (nome: string, documento = '52998224725'): ClienteDados => ({
@@ -229,6 +230,94 @@ describe('PendenciasService', () => {
     expect(fila).toHaveLength(1);
     expect(fila[0]).toMatchObject({ op: 'DELETE', baseVersion: 4 });
     expect(await db.pendencias.count()).toBe(0);
+  });
+
+  describe('propostas e documentos', () => {
+    const prop = (clienteId: string | null): PropostaDados => ({
+      codigoProvisorio: 'PROV-0Z9XY7', tipo: 'VENDA', status: 'RASCUNHO', responsavelId: 'u1', dataEmissao: '2026-10-01',
+      descontoGeralPercentual: 0, itens: [], clienteId,
+    });
+    const mutProposta = (mutationId: string, agregadoId: string, clienteId: string | null) => ({
+      mutationId, entidade: 'proposta' as const, agregadoId, op: 'UPSERT' as const, baseVersion: null, dados: prop(clienteId), criadaEm: '',
+    });
+
+    it('usar cadastro existente também troca o clienteId nas propostas locais e na outbox, na mesma transação', async () => {
+      await db.clientes.put(paraClienteLocal('c1', null, dados('Duplicado')));
+      const p = pendencia({ tipo: 'REJEITADO', erro: { codigo: 'DOCUMENTO_DUPLICADO', mensagem: 'x', idExistente: 'c9' } });
+      p.mutacao.baseVersion = null;
+      await db.pendencias.put(p);
+      await db.propostas.bulkPut([paraPropostaLocal('p1', null, prop('c1')), paraPropostaLocal('p2', 2, prop('c5'))]);
+      await db.outbox.bulkAdd([mutProposta('mp1', 'p1', 'c1'), mutProposta('mp2', 'p2', 'c5'), { ...mutProposta('mp3', 'p1', 'c1'), enviando: true }]);
+      const transacao = vi.spyOn(db, 'transaction');
+
+      const promessa = svc.usarExistente(p);
+      (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/c9')))
+        .flush({ entidade: 'cliente', id: 'c9', version: 3, deleted: false, dados: dados('Original') });
+      expect(await promessa).toBe('c9');
+
+      expect((await db.propostas.get('p1'))?.clienteId).toBe('c9');
+      expect((await db.propostas.get('p2'))?.clienteId).toBe('c5');
+      const fila = await db.outbox.orderBy('seq').toArray();
+      expect(fila.map((m) => [m.agregadoId, (m.dados as PropostaDados).clienteId])).toEqual([['p1', 'c9'], ['p2', 'c5'], ['p1', 'c9']]);
+      // reescrita = outra mutação (a em voo não pode ter o resultado aplicado por cima)
+      expect(fila[0].mutationId).not.toBe('mp1');
+      expect(fila[2]).toMatchObject({ enviando: false });
+      expect(fila[2].mutationId).not.toBe('mp3');
+      expect(fila[1].mutationId).toBe('mp2');
+      const juntas = transacao.mock.calls.filter((args) =>
+        [db.clientes, db.propostas, db.outbox, db.pendencias].every((t) => args.some((a) => Array.isArray(a) && a.includes(t))));
+      expect(juntas).toHaveLength(1);
+    });
+
+    it('usar cadastro existente numa atualização não troca o cliente das propostas (o próprio continua existindo)', async () => {
+      await db.clientes.put(paraClienteLocal('c1', 1, dados('Editado')));
+      const p = pendencia({ tipo: 'REJEITADO', erro: { codigo: 'DOCUMENTO_DUPLICADO', mensagem: 'x', idExistente: 'c9' } });
+      await db.pendencias.put(p);
+      await db.propostas.put(paraPropostaLocal('p1', 1, prop('c1')));
+      await db.outbox.add(mutProposta('mp1', 'p1', 'c1'));
+
+      const promessa = svc.usarExistente(p);
+      (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/c9')))
+        .flush({ entidade: 'cliente', id: 'c9', version: 3, deleted: false, dados: dados('Original', '11144477735') });
+      (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/c1')))
+        .flush({ entidade: 'cliente', id: 'c1', version: 2, deleted: false, dados: dados('Do servidor', '39053344705') });
+      await promessa;
+
+      expect((await db.propostas.get('p1'))?.clienteId).toBe('c1');
+      expect((await db.outbox.toArray())[0]).toMatchObject({ mutationId: 'mp1', dados: { clienteId: 'c1' } });
+    });
+
+    it('descartar upload rejeitado apaga o PDF não enviado e libera a proposta, sem tocar nela', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
+      await db.documentos.put({
+        id: 'd1', propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-0Z9XY7', sha256: 'a'.repeat(64), geradoEm: '',
+        geradoPor: 'u1', bytes: null, enviado: false, arquivoId: null,
+      });
+      await db.outbox.add(mutProposta('mp1', 'p1', 'c1'));
+      const p: Pendencia = {
+        mutationId: 'up1', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '',
+        erro: { codigo: 'REVISAO_INVALIDA', mensagem: 'x' },
+        mutacao: { mutationId: 'up1', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null, dados: { documentoId: 'd1' }, criadaEm: '' },
+      };
+      await db.pendencias.put(p);
+
+      await svc.descartar(p);
+
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.documentos.get('d1')).toBeUndefined();
+      expect(await db.propostas.get('p1')).toBeDefined();
+      expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['mp1']);
+      expect(TestBed.inject(SyncService).sincronizar).toHaveBeenCalled();
+    });
+
+    it('manter a minha ou usar a do servidor não valem para upload', async () => {
+      const p: Pendencia = {
+        mutationId: 'up1', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '',
+        mutacao: { mutationId: 'up1', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null, dados: { documentoId: 'd1' }, criadaEm: '' },
+      };
+      await expect(svc.manterMinha(p)).rejects.toThrow();
+      await expect(svc.usarServidor(p)).rejects.toThrow();
+    });
   });
 
   describe('item do catálogo', () => {

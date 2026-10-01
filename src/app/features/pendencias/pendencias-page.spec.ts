@@ -7,7 +7,7 @@ import { Perfil } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { PendenciasService } from '../../core/sync/pendencias-service';
-import { Pendencia } from '../../core/sync/sync-models';
+import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { PendenciasPage } from './pendencias-page';
 
@@ -213,5 +213,19 @@ describe('PendenciasPage', () => {
     const semNome: Pendencia = { ...duplicado, mutationId: 'm8', mutacao: { ...duplicado.mutacao, op: 'DELETE', dados: null } };
     const { el } = montar([semNome]);
     expect(el.textContent).toContain('Exclusão de cliente');
+  });
+
+  it('upload do PDF recusado: título do PDF, a mensagem e só Descartar', () => {
+    const upload: Pendencia = {
+      mutationId: 'm11', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '11',
+      erro: { codigo: 'REVISAO_INVALIDA', mensagem: 'O PDF PROV-0Z9XY7 é de outra revisão da proposta.' },
+      mutacao: { mutationId: 'm11', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null, dados: { documentoId: 'd1' }, criadaEm: '' },
+    };
+    const { el, svc } = montar([upload]);
+    expect(el.textContent).toContain('PDF da proposta');
+    expect(el.textContent).toContain('O PDF PROV-0Z9XY7 é de outra revisão da proposta.');
+    expect(botao(el, 'Editar')).toBeUndefined();
+    botao(el, 'Descartar').click();
+    expect(svc.descartar).toHaveBeenCalledWith(upload);
   });
 });

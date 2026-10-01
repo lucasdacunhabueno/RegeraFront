@@ -6,7 +6,7 @@ import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { mensagemDeErro } from '../../core/http/erro-api';
 import { PendenciasService } from '../../core/sync/pendencias-service';
-import { Pendencia } from '../../core/sync/sync-models';
+import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { Toasts } from '../../shared/ui/toasts';
 import { TIPOS_BLOCO } from '../templates/template-models';
@@ -117,6 +117,8 @@ export class PendenciasPage {
         const d = (p.mutacao.dados ?? p.dadosServidor) as { codigoProvisorio?: string } | null | undefined;
         return d?.codigoProvisorio ? `Proposta ${d.codigoProvisorio}` : 'Proposta';
       }
+      case TIPO_UPLOAD_DOCUMENTO:
+        return 'PDF da proposta';
     }
   }
 

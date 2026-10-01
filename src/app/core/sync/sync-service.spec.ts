@@ -1,18 +1,21 @@
 import { provideHttpClient } from '@angular/common/http';
-import { HttpTestingController, provideHttpClientTesting } from '@angular/common/http/testing';
+import { HttpTestingController, provideHttpClientTesting, TestRequest } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { ID_EMPRESA, paraEmpresaLocal } from '../../features/empresa/empresa-models';
-import { paraPropostaLocal } from '../../features/propostas/proposta-models';
+import { codigoProvisorioValido } from '../../features/propostas/codigo-provisorio';
+import {
+  DocumentoLocal, paraPropostaLocal, PropostaDados, StatusProposta,
+} from '../../features/propostas/proposta-models';
 import { Toasts } from '../../shared/ui/toasts';
 import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
-import { Entidade, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
+import { TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
 
 const dados = (nome: string): ClienteDados => ({
@@ -365,11 +368,11 @@ describe('SyncService', () => {
       { ...doc, id: 'd2', enviado: false, arquivoId: null },
     ]);
     const upload = (mutationId: string) => ({
-      mutationId, entidade: TIPO_UPLOAD_DOCUMENTO as unknown as Entidade, agregadoId: 'p1', op: 'UPSERT' as const,
-      baseVersion: null, dados: { id: 'd2' }, criadaEm: '',
+      mutationId, entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD' as const,
+      baseVersion: null, dados: { documentoId: 'd2' }, criadaEm: '',
     });
     await db.outbox.add(upload('up1'));
-    await db.pendencias.put({ mutationId: 'up0', entidade: TIPO_UPLOAD_DOCUMENTO as unknown as Entidade, agregadoId: 'p0',
+    await db.pendencias.put({ mutationId: 'up0', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p0',
       tipo: 'REJEITADO', mutacao: upload('up0'), criadaEm: '' });
     // uma mutação comum fica (bloqueada por pendência para não ir ao push neste teste)
     const mut = { mutationId: 'mm', entidade: 'cliente' as const, agregadoId: 'o1', op: 'UPSERT' as const, baseVersion: null, dados: dados('O'), criadaEm: '' };
@@ -568,5 +571,271 @@ describe('SyncService', () => {
     });
     expect(await sync.contarNaoSincronizados()).toBe(2);
     await vi.waitFor(() => expect(sync.naoSincronizados()).toBe(1));
+  });
+
+  it('pull ignora entidade desconhecida com nome de propriedade do Object (constructor)', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    const p = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+      cursor: 2, temMais: false, usuarios: [],
+      mudancas: [
+        { entidade: 'constructor', id: 'x', version: 0, deleted: false, dados: {} },
+        { entidade: 'cliente', id: 'c1', version: 0, deleted: false, dados: dados('Ok') },
+      ],
+    });
+    await p;
+    expect(erro).not.toHaveBeenCalled();
+    expect((await db.clientes.get('c1'))?.nome).toBe('Ok');
+  });
+
+  describe('propostas: transições, documento e código provisório', () => {
+    const PROV = 'PROV-0Z9XY7';
+    const SHA = 'a'.repeat(64);
+    const URL_UPLOAD = '/api/propostas/p1/documentos';
+    const prop = (status: StatusProposta, extra: Partial<PropostaDados> = {}): PropostaDados => ({
+      codigoProvisorio: PROV, tipo: 'VENDA', status, responsavelId: 'u1', dataEmissao: '2026-10-01',
+      descontoGeralPercentual: 0, itens: [], ...extra,
+    });
+    const numerada = (status: StatusProposta, extra: Partial<PropostaDados> = {}) => prop(status, { numero: 277, revisao: 1, ...extra });
+    const PDF = new TextEncoder().encode('%PDF-1.7 conteúdo').buffer as ArrayBuffer;
+    const docLocal = (extra: Partial<DocumentoLocal> = {}): DocumentoLocal => ({
+      id: 'd1', propostaId: 'p1', revisao: 1, codigoExibido: PROV, sha256: SHA, geradoEm: '2026-10-01T12:00:00Z',
+      geradoPor: 'u1', bytes: PDF, enviado: false, arquivoId: null, snapshot: { cliente: 'X' }, ...extra,
+    });
+    const docServidor = {
+      id: 'd1', revisao: 1, codigoExibido: PROV, arquivoId: 'a1', sha256: SHA, geradoEm: '2026-10-01T12:00:01Z', geradoPor: 'u1',
+    };
+    const push = () => vi.waitFor(() => http.expectOne('/api/sync/push'));
+    const ok = (req: TestRequest, version: number, d: unknown) =>
+      req.flush({ resultados: [{ mutationId: req.request.body.mutacoes[0].mutationId, status: 'OK', version, dados: d }] });
+    const rejeitar = (req: TestRequest, codigo: string) =>
+      req.flush({ resultados: [{ mutationId: req.request.body.mutacoes[0].mutationId, status: 'REJEITADO', erro: { codigo, mensagem: 'x' } }] });
+    const fila = () => db.outbox.orderBy('seq').toArray();
+
+    it('transição (separada) nunca coalesce; edição antes ou depois dela é outra mutação', async () => {
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('RASCUNHO', { observacoes: 'a' }), 4);
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('ENVIADA'), 4, { separada: true });
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('APROVADA'), 4, { separada: true });
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('APROVADA', { tecnicoId: 't1' }), 4);
+
+      let m = await fila();
+      expect(m.map((x) => (x.dados as PropostaDados).status)).toEqual(['RASCUNHO', 'ENVIADA', 'APROVADA', 'APROVADA']);
+      expect(m.map((x) => x.separada === true)).toEqual([false, true, true, false]);
+
+      // a edição seguinte coalesce com a última (a edição), não com a transição nem com a primeira
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('APROVADA', { tecnicoId: 't2' }), 4);
+      m = await fila();
+      expect(m).toHaveLength(4);
+      expect((m[3].dados as PropostaDados).tecnicoId).toBe('t2');
+      expect((m[0].dados as PropostaDados).observacoes).toBe('a');
+    });
+
+    it('upload enfileirado não coalesce; a edição seguinte vem depois dele', async () => {
+      await sync.registrarUpload('p1', 'd1');
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('ENVIADA', { tecnicoId: 't1' }), 4);
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('ENVIADA', { tecnicoId: 't2' }), 4);
+      const m = await fila();
+      expect(m).toHaveLength(2);
+      expect(m[0]).toMatchObject({ entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', dados: { documentoId: 'd1' } });
+      expect(m[1]).toMatchObject({ entidade: 'proposta', dados: { tecnicoId: 't2' } });
+    });
+
+    it('duas transições offline saem em ordem, e a segunda leva o baseVersion devolvido pela primeira', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 4, numerada('ENVIADA')));
+      await sync.registrar('proposta', 'p1', 'UPSERT', numerada('APROVADA'), 4, { separada: true });
+      await sync.registrar('proposta', 'p1', 'UPSERT', numerada('EM_EXECUCAO'), 4, { separada: true });
+
+      const p = sync.sincronizar();
+      const push1 = await push();
+      expect(push1.request.body.mutacoes).toHaveLength(1);
+      expect(push1.request.body.mutacoes[0]).toMatchObject({ baseVersion: 4, dados: { status: 'APROVADA' } });
+      ok(push1, 5, numerada('APROVADA'));
+      const push2 = await push();
+      expect(push2.request.body.mutacoes[0]).toMatchObject({ baseVersion: 5, dados: { status: 'EM_EXECUCAO' } });
+      ok(push2, 6, numerada('EM_EXECUCAO'));
+      await pullVazio();
+      await p;
+
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.propostas.get('p1')).toMatchObject({ version: 6, status: 'EM_EXECUCAO' });
+    });
+
+    it('PROV offline com PDF: o upload espera a proposta, sobe depois dela (multipart) e marca o documento', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', null, prop('ENVIADA')));
+      await db.documentos.put(docLocal());
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('ENVIADA'), null, { separada: true });
+      await sync.registrarUpload('p1', 'd1');
+
+      const p = sync.sincronizar();
+      const push1 = await push();
+      expect(push1.request.body.mutacoes).toHaveLength(1);
+      expect(push1.request.body.mutacoes[0]).toMatchObject({ entidade: 'proposta', id: 'p1' });
+      http.expectNone(URL_UPLOAD);
+      ok(push1, 0, numerada('ENVIADA'));
+
+      const up = await vi.waitFor(() => http.expectOne(URL_UPLOAD));
+      expect(up.request.method).toBe('POST');
+      // só uploads vinham depois: a proposta já recebeu o número do servidor
+      expect(await db.propostas.get('p1')).toMatchObject({ numero: 277, version: 0 });
+      const corpo = up.request.body as FormData;
+      const arquivo = corpo.get('arquivo') as File;
+      expect(arquivo.type).toBe('application/pdf');
+      expect(new Uint8Array(await arquivo.arrayBuffer())).toEqual(new Uint8Array(PDF));
+      const metadados = corpo.get('metadados') as Blob;
+      expect(metadados.type).toBe('application/json');
+      expect(JSON.parse(await metadados.text())).toEqual({
+        id: 'd1', revisao: 1, codigoExibido: PROV, sha256: SHA, snapshot: { cliente: 'X' },
+      });
+      up.flush({ documento: docServidor, versaoProposta: 1 }, { status: 201, statusText: 'Created' });
+      await pullVazio();
+      await p;
+
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.documentos.get('d1')).toMatchObject({ enviado: true, arquivoId: 'a1' });
+      const local = await db.propostas.get('p1');
+      expect(local).toMatchObject({ version: 1, numero: 277 });
+      expect(local?.documentos).toEqual([docServidor]);
+    });
+
+    it('upload OK rebaseia a próxima mutação da proposta com a versaoProposta', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, numerada('ENVIADA')));
+      await db.documentos.put(docLocal({ codigoExibido: '000277' }));
+      await sync.registrarUpload('p1', 'd1');
+      await sync.registrar('proposta', 'p1', 'UPSERT', numerada('APROVADA'), 3, { separada: true });
+
+      const p = sync.sincronizar();
+      const up = await vi.waitFor(() => http.expectOne(URL_UPLOAD));
+      http.expectNone('/api/sync/push');
+      // 200: a repetição idempotente responde do mesmo jeito
+      up.flush({ documento: { ...docServidor, codigoExibido: '000277' }, versaoProposta: 4 });
+      const push1 = await push();
+      expect(push1.request.body.mutacoes[0]).toMatchObject({ baseVersion: 4, dados: { status: 'APROVADA' } });
+      expect((await db.propostas.get('p1'))?.version).toBe(4);
+      ok(push1, 5, numerada('APROVADA', { documentos: [{ ...docServidor, codigoExibido: '000277' }] }));
+      await pullVazio();
+      await p;
+
+      expect(await db.propostas.get('p1')).toMatchObject({ version: 5, status: 'APROVADA' });
+      expect(await db.documentos.get('d1')).toMatchObject({ enviado: true, arquivoId: 'a1' });
+    });
+
+    it.each([
+      [409, 'STATUS_INVALIDO', 'rascunho'],
+      [409, 'REVISAO_INVALIDA', 'outra revisão'],
+      [409, 'DOCUMENTO_DIVERGENTE', 'outro conteúdo'],
+      [422, 'SHA_DIVERGENTE', 'integridade'],
+      [422, 'CODIGO_EXIBIDO_INVALIDO', 'código impresso'],
+      [404, 'PROPOSTA_NAO_ENCONTRADA', 'não foi encontrada'],
+      [403, undefined, 'permissão'],
+      [413, undefined, '10 MB'],
+      [415, undefined, 'não é um PDF'],
+      [400, 'VALIDACAO', 'recusado'],
+    ])('upload recusado (%i %s) vira pendência REJEITADO e segura a proposta', async (status, codigo, trecho) => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, numerada('ENVIADA')));
+      await db.documentos.put(docLocal());
+      await sync.registrarUpload('p1', 'd1');
+      await sync.registrar('proposta', 'p1', 'UPSERT', numerada('APROVADA'), 3, { separada: true });
+
+      const p = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne(URL_UPLOAD)))
+        .flush(codigo ? { codigo, detail: 'detalhe' } : { detail: 'detalhe' }, { status, statusText: 'Erro' });
+      await pullVazio();
+      await p;
+      http.expectNone('/api/sync/push');
+
+      const pend = await db.pendencias.toArray();
+      expect(pend).toHaveLength(1);
+      expect(pend[0]).toMatchObject({
+        tipo: 'REJEITADO', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1',
+        mutacao: { op: 'UPLOAD', dados: { documentoId: 'd1' }, enviando: false },
+        erro: { codigo: codigo ?? `HTTP_${status}` },
+      });
+      expect(pend[0].erro?.mensagem).toContain(trecho);
+      expect(pend[0].erro?.mensagem).toContain(PROV);
+      expect((await fila()).map((m) => m.op)).toEqual(['UPSERT']);
+      expect(await db.documentos.get('d1')).toMatchObject({ enviado: false, arquivoId: null });
+    });
+
+    it('5xx no upload: continua na outbox, sem pendência, e o pull segue; queda de rede também', async () => {
+      await db.documentos.put(docLocal());
+      await sync.registrarUpload('p1', 'd1');
+
+      const p = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne(URL_UPLOAD))).flush({}, { status: 503, statusText: 'Indisponível' });
+      await pullVazio();
+      await p;
+      let m = await fila();
+      expect(m).toHaveLength(1);
+      expect(m[0].enviando).toBe(false);
+      expect(await db.pendencias.count()).toBe(0);
+
+      const p2 = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne(URL_UPLOAD))).error(new ProgressEvent('error'), { status: 0 });
+      await p2;
+      m = await fila();
+      expect(m).toHaveLength(1);
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.documentos.get('d1')).toMatchObject({ enviado: false });
+    });
+
+    it('upload cujo PDF não está mais no aparelho vira pendência sem chamar o servidor', async () => {
+      await db.documentos.put(docLocal({ bytes: null }));
+      await sync.registrarUpload('p1', 'd1');
+
+      const p = sync.sincronizar();
+      await pullVazio();
+      await p;
+      http.expectNone(URL_UPLOAD);
+      expect(await db.outbox.count()).toBe(0);
+      expect((await db.pendencias.toArray())[0]).toMatchObject({ tipo: 'REJEITADO', erro: { codigo: 'DOCUMENTO_AUSENTE' } });
+    });
+
+    it('CODIGO_PROVISORIO_DUPLICADO: gera outro código, atualiza o local e a fila, e reenvia na mesma sincronização', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', null, prop('RASCUNHO')));
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('RASCUNHO'), null);
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('ENVIADA'), null, { separada: true });
+
+      const p = sync.sincronizar();
+      const push1 = await push();
+      const m1 = push1.request.body.mutacoes[0];
+      rejeitar(push1, 'CODIGO_PROVISORIO_DUPLICADO');
+
+      const push2 = await push();
+      const m2 = push2.request.body.mutacoes[0];
+      const novo = m2.dados.codigoProvisorio as string;
+      expect(m2.mutationId).not.toBe(m1.mutationId);
+      expect(m2.dados.status).toBe('RASCUNHO');
+      expect(codigoProvisorioValido(novo)).toBe(true);
+      expect(novo).not.toBe(PROV);
+      expect((await db.propostas.get('p1'))?.codigoProvisorio).toBe(novo);
+      expect((await fila()).map((m) => (m.dados as PropostaDados).codigoProvisorio)).toEqual([novo, novo]);
+      expect(await db.pendencias.count()).toBe(0);
+      ok(push2, 0, numerada('RASCUNHO', { codigoProvisorio: novo }));
+
+      const push3 = await push();
+      expect(push3.request.body.mutacoes[0]).toMatchObject({ baseVersion: 0, dados: { status: 'ENVIADA', codigoProvisorio: novo } });
+      ok(push3, 1, numerada('ENVIADA', { codigoProvisorio: novo }));
+      await pullVazio();
+      await p;
+
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.propostas.get('p1')).toMatchObject({ codigoProvisorio: novo, numero: 277, version: 1 });
+    });
+
+    it('CODIGO_PROVISORIO_DUPLICADO repetido para no teto de trocas e vira pendência', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', null, prop('RASCUNHO')));
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('RASCUNHO'), null);
+
+      const p = sync.sincronizar();
+      // o envio original e mais 3 trocas
+      for (let i = 0; i < 4; i++) rejeitar(await push(), 'CODIGO_PROVISORIO_DUPLICADO');
+      await pullVazio();
+      await p;
+      http.expectNone('/api/sync/push');
+      const pend = await db.pendencias.toArray();
+      expect(pend).toHaveLength(1);
+      expect(pend[0]).toMatchObject({ tipo: 'REJEITADO', erro: { codigo: 'CODIGO_PROVISORIO_DUPLICADO' } });
+    });
   });
 });
