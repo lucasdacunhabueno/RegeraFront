@@ -26,7 +26,7 @@ describe('RegeraDb v5', () => {
     await Dexie.delete('regera');
   });
 
-  it('upgrade de v4 para v5 apaga o cursor para forçar pull completo, mantém o resto e cria propostas e documentos', async () => {
+  it('upgrade de v4 para v5 apaga o cursor para forçar pull completo, mantém o que a fila protege e cria propostas e documentos', async () => {
     const v4 = new Dexie('regera');
     v4.version(4).stores(V4);
     await v4.table('meta').bulkPut([

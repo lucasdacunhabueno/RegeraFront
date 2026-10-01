@@ -445,16 +445,6 @@ export function codigoOsExibido(os: Pick<OsLocal, 'numero' | 'revisao' | 'codigo
   return os.revisao !== null && os.revisao > 1 ? `${base}-R${os.revisao}` : base;
 }
 
-/**
- * M2P1-R28 (o `AnexoOsService.concluidaPorOutro` do servidor): a última transição para CONCLUIDA do histórico foi de
- * outro usuário. Os registros sem mudança de status (a evidência recebida depois do encerramento, R26) não contam. O
- * histórico local está na ordem do pull (data e id), então a última é a do fim da lista.
- */
-export function concluidaPorOutro(os: Pick<OsLocal, 'historico'>, usuarioId: string): boolean {
-  const ultima = os.historico.filter((h) => h.statusPara === 'CONCLUIDA' && h.statusDe !== 'CONCLUIDA').at(-1);
-  return ultima !== undefined && ultima.usuarioId !== usuarioId;
-}
-
 // --- textos (M2P1-R7) ---
 
 /** Tamanho em code points depois do `String.strip()` do Java, como o servidor (`char_length` do Postgres); null = 0. */

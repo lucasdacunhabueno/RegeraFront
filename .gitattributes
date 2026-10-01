@@ -1,0 +1,5 @@
+# Casos compartilhados com o RegeraServer (src/test/resources): bytes idênticos aos do servidor, sem conversão de fim
+# de linha no checkout (o SHA dos testes é conferido nos dois repos).
+src/app/features/os/casos-*.json -text
+src/app/features/propostas/casos-*.json -text
+src/app/features/templates/casos-*.json -text

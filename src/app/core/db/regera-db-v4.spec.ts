@@ -11,7 +11,7 @@ describe('RegeraDb v4', () => {
     await Dexie.delete('regera');
   });
 
-  it('upgrade de v3 para v4 apaga o cursor para forçar pull completo e mantém o resto', async () => {
+  it('upgrade de v3 para v4 apaga o cursor para forçar pull completo e mantém o que a fila protege', async () => {
     const v3 = new Dexie('regera');
     v3.version(3).stores({
       meta: 'chave', clientes: 'id, documento, nomeBusca', outbox: '++seq, agregadoId',

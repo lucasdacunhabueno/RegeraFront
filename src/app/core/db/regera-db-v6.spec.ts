@@ -33,7 +33,7 @@ describe('RegeraDb v6', () => {
     await Dexie.delete('regera');
   });
 
-  it('upgrade de v5 para v6 apaga o cursor, preserva a fila, as pendências e o resto, e cria os e anexosOs', async () => {
+  it('upgrade de v5 para v6 apaga o cursor, preserva a fila e as pendências, mantém o que a fila protege e cria os e anexosOs', async () => {
     const v5 = new Dexie('regera');
     v5.version(5).stores(V5);
     await v5.table('meta').bulkPut([
@@ -121,16 +121,17 @@ describe('RegeraDb v6', () => {
     expect(await ids(db.propostas)).toEqual(['p-doc', 'p-pendente']);
     expect(await ids(db.templates)).toEqual(['t-da-proposta']);
     expect(await ids(db.itens)).toEqual(['i-fila']);
-    // com proposta protegida, a empresa fica (o PDF offline); os usuários sempre voltam no pull
+    // com proposta protegida, a empresa (o PDF offline) e os usuários (nomes do responsável e do técnico, a escolha do
+    // técnico) ficam até o pull (M2P2-R7)
     expect(await db.empresa.count()).toBe(1);
-    expect(await db.usuarios.count()).toBe(0);
+    expect(await ids(db.usuarios)).toEqual(['u1', 'u2']);
     // o PDF não enviado fica com os bytes; os enviados são cópia do servidor e saem, como na troca de dono do cursor
     expect(await ids(db.documentos)).toEqual(['d-nao-enviado']);
     expect(new Uint8Array((await db.documentos.get('d-nao-enviado'))!.bytes!)).toEqual(new Uint8Array([0x25]));
     db.close();
   });
 
-  it('N2: sem nada protegido, todas as tabelas sincronizadas ficam vazias (inclusive a empresa)', async () => {
+  it('N2: sem nada protegido, todas as tabelas sincronizadas ficam vazias (inclusive a empresa e os usuários)', async () => {
     const v5 = new Dexie('regera');
     v5.version(5).stores(V5);
     await v5.table('meta').put({ chave: 'sessao', valor: { id: 't1' } });

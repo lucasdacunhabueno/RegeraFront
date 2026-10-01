@@ -1522,62 +1522,47 @@ describe('SyncService', () => {
       expect(await db.os.get('o1')).toBeDefined();
     });
 
-    describe('403 do PDF do técnico (M2P1-R28): pelo estado local, "concluída pelo escritório" ou "não está mais com você"', () => {
+    describe('403 do PDF do técnico pelo código (M2P1-R28/R29, M2P2-R6)', () => {
       const CONCLUIDA_PELO_ESCRITORIO = 'Esta OS foi concluída pelo escritório.';
-      const h = (statusDe: StatusOs | undefined, statusPara: StatusOs, usuarioId: string, observacao?: string) =>
-        ({ ...(statusDe ? { statusDe } : {}), statusPara, usuarioId, em: '2026-10-01T12:00:00Z', ...(observacao ? { observacao } : {}) });
-      const ATE_INICIAR = [h(undefined, 'ABERTA', 'u2'), h('ABERTA', 'EM_ANDAMENTO', 'u1')];
 
-      async function pdfRecusado(servidor: OsDados): Promise<string | undefined> {
-        await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { numero: 123, historico: ATE_INICIAR })));
+      /** A fila offline do técnico [concluir, PDF, nota]; o concluir volta OK com `servidor` e o PDF com 403 `codigo`. */
+      async function pdfRecusado(codigo: string, servidor: OsDados) {
+        await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { numero: 123 })));
         await db.anexosOs.put(documentoOs('d1', 1));
         await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { numero: 123, resumoExecucao: 'Feito' }), 3, { separada: true });
         await sync.registrarUploadAnexoOs('o1', 'd1');
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { numero: 123, notas: [{ id: 'n1', texto: 'Depois' }] }), 3);
 
         const p = sync.sincronizar();
-        // a fila offline do técnico com a OS já encerrada (M2P1-R26): OK com o estado do servidor
         ok(await push(), 5, servidor);
-        (await upload()).flush({ codigo: 'ACESSO_NEGADO', detail: 'x' }, { status: 403, statusText: 'Forbidden' });
+        (await upload()).flush({ codigo, detail: 'x' }, { status: 403, statusText: 'Forbidden' });
         await pullVazio();
         await p;
+        http.expectNone('/api/sync/push');
         const [pend] = await db.pendencias.toArray();
-        expect(pend).toMatchObject({ tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, erro: { codigo: 'ACESSO_NEGADO' } });
+        expect(pend).toMatchObject({ tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, erro: { codigo } });
+        // a nota segue segurada atrás da pendência, e o PDF não se perde antes da decisão
+        expect((await fila()).map((m) => [m.entidade, m.op])).toEqual([['os', 'UPSERT']]);
         expect(await db.anexosOs.get('d1')).toMatchObject({ enviado: false });
-        return pend.erro?.mensagem;
+        return pend;
       }
 
-      it('o escritório concluiu (e a evidência do técnico depois disso não conta como conclusão dele)', async () => {
-        const servidor = os('CONCLUIDA', {
-          numero: 123, resumoExecucao: 'Concluída pelo escritório',
-          historico: [...ATE_INICIAR, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9'), h('CONCLUIDA', 'CONCLUIDA', 'u1', 'Execução recebida')],
-        });
-        expect(await pdfRecusado(servidor)).toBe(CONCLUIDA_PELO_ESCRITORIO);
+      it('OS_CONCLUIDA_POR_OUTRO: "Esta OS foi concluída pelo escritório.", e Descartar libera a nota', async () => {
+        const pend = await pdfRecusado('OS_CONCLUIDA_POR_OUTRO', os('CONCLUIDA', { numero: 123, resumoExecucao: 'Do escritório' }));
+        expect(pend.erro?.mensagem).toBe(CONCLUIDA_PELO_ESCRITORIO);
+        vi.spyOn(sync, 'sincronizar').mockResolvedValue();
+        await TestBed.inject(PendenciasService).descartar(pend);
+        expect(await db.pendencias.count()).toBe(0);
+        expect(await db.anexosOs.get('d1')).toBeUndefined();
+        expect((await fila()).map((m) => [m.entidade, m.op])).toEqual([['os', 'UPSERT']]);
       });
 
-      it('a OS saiu do técnico (outro técnico, ou nenhum): "não está mais com você"', async () => {
-        const servidor = os('CONCLUIDA', { numero: 123, tecnicoId: 'u7', historico: [...ATE_INICIAR, h('EM_ANDAMENTO', 'CONCLUIDA', 'u7')] });
-        expect(await pdfRecusado(servidor)).toBe(NAO_ESTA_COM_VOCE);
-      });
-
-      it('a última conclusão é dele (o escritório concluiu, reabriu e ele concluiu de novo): "não está mais com você"', async () => {
-        const servidor = os('CONCLUIDA', {
-          numero: 123,
-          historico: [
-            ...ATE_INICIAR, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9'), h('CONCLUIDA', 'EM_ANDAMENTO', 'u9'), h('EM_ANDAMENTO', 'CONCLUIDA', 'u1'),
-          ],
-        });
-        expect(await pdfRecusado(servidor)).toBe(NAO_ESTA_COM_VOCE);
-      });
-
-      it('a foto recusada com 403 nunca é "concluída pelo escritório"', async () => {
-        await db.os.put(paraOsLocal('o1', 3, os('CONCLUIDA', { historico: [...ATE_INICIAR, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9')] })));
-        await db.anexosOs.put(anexoLocal());
-        await sync.registrarUploadAnexoOs('o1', 'f1');
-        const p = sync.sincronizar();
-        (await upload()).flush({ codigo: 'ACESSO_NEGADO' }, { status: 403, statusText: 'Forbidden' });
-        await pullVazio();
-        await p;
-        expect((await db.pendencias.toArray())[0].erro?.mensagem).toBe(NAO_ESTA_COM_VOCE);
+      it.each([
+        ['outro técnico', 'u7'],
+        ['nenhum técnico', null],
+      ] as const)('ACESSO_NEGADO (a OS saiu do técnico: %s) continua "não está mais com você"', async (_, tecnicoId) => {
+        const pend = await pdfRecusado('ACESSO_NEGADO', os('CONCLUIDA', { numero: 123, tecnicoId }));
+        expect(pend.erro?.mensagem).toBe(NAO_ESTA_COM_VOCE);
       });
     });
 

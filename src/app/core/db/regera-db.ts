@@ -29,8 +29,9 @@ interface ComId {
  * empresa, usuários, OS) é apagado e volta no pull completo, na mesma transação do upgrade. Fica:
  * - a fila, as pendências, a sessão e o cache de arquivos (meta e arquivos não são tocados);
  * - o registro de todo agregado com mutação na fila ou pendência, que o pull também não sobrescreveria;
- * - o cliente e o template de uma proposta ou OS protegida, e a empresa se houver alguma: sem eles ela não abre nem
- *   gera o PDF offline (o pull os traz de volta ou manda o tombstone; o servidor sobe o `sync_seq` de todo cliente);
+ * - o cliente e o template de uma proposta ou OS protegida e, se houver alguma, a empresa e os usuários (M2P2-R7): sem
+ *   eles ela não abre, não mostra o responsável e o técnico, nem gera o PDF offline (o pull os traz de volta ou manda o
+ *   tombstone; o servidor sobe o `sync_seq` de todo cliente, e a lista de usuários é trocada inteira a cada pull);
  * - os PDFs e anexos ainda não enviados (os bytes esperam o upload); os enviados são cópia do servidor e saem, como
  *   na troca de dono do cursor.
  */
@@ -49,8 +50,10 @@ async function limparSincronizadasV6(tx: Transaction): Promise<void> {
   await manter('clientes', dependencias([...propostas, ...oss].map((a) => a.clienteId)));
   await manter('templates', dependencias(propostas.map((p) => p.templateId)));
   await manter('itens');
-  if (propostas.length + oss.length === 0) await tx.table('empresa').clear();
-  await tx.table('usuarios').clear();
+  if (propostas.length + oss.length === 0) {
+    await tx.table('empresa').clear();
+    await tx.table('usuarios').clear();
+  }
   for (const tabela of ['documentos', 'anexosOs']) {
     await tx.table<{ enviado: boolean }>(tabela).filter((r) => r.enviado).delete();
   }

@@ -12,7 +12,6 @@ import {
   camposEditaveisOs,
   codigoOsBase,
   codigoOsExibido,
-  concluidaPorOutro,
   ContextoTransicaoOs,
   corStatusOs,
   dadosDaOs,
@@ -383,23 +382,6 @@ describe('os-models', () => {
         expect(podeExecutar(s, 'TECNICO', false), s).toBe(false);
         expect(podeExecutar(s, 'COMERCIAL', true), s).toBe(false);
       }
-    });
-  });
-
-  describe('concluidaPorOutro (M2P1-R28): a última transição para CONCLUIDA no histórico foi de outro usuário', () => {
-    const h = (statusDe: StatusOs | null, statusPara: StatusOs, usuarioId: string) =>
-      ({ statusDe, statusPara, usuarioId, em: '2026-10-01T12:00:00Z', observacao: null });
-
-    it('pela ordem do histórico (a do pull), sem contar os registros sem transição (R26)', () => {
-      const inicio = [h(null, 'ABERTA', 'u2'), h('ABERTA', 'EM_ANDAMENTO', 'u1')];
-      expect(concluidaPorOutro({ historico: inicio }, 'u1')).toBe(false);
-      expect(concluidaPorOutro({ historico: [...inicio, h('EM_ANDAMENTO', 'CONCLUIDA', 'u1')] }, 'u1')).toBe(false);
-      expect(concluidaPorOutro({ historico: [...inicio, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9')] }, 'u1')).toBe(true);
-      expect(concluidaPorOutro({ historico: [...inicio, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9'), h('CONCLUIDA', 'CONCLUIDA', 'u1')] }, 'u1'))
-        .toBe(true);
-      const reconcluida = [...inicio, h('EM_ANDAMENTO', 'CONCLUIDA', 'u9'), h('CONCLUIDA', 'EM_ANDAMENTO', 'u9'), h('EM_ANDAMENTO', 'CONCLUIDA', 'u1')];
-      expect(concluidaPorOutro({ historico: reconcluida }, 'u1')).toBe(false);
-      expect(concluidaPorOutro({ historico: reconcluida }, 'u9')).toBe(true);
     });
   });
 
