@@ -9,6 +9,13 @@ import { PendenciasService } from '../../core/sync/pendencias-service';
 import { Pendencia } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { Toasts } from '../../shared/ui/toasts';
+import { TIPOS_BLOCO } from '../templates/template-models';
+
+const ROTULO_TIPO_BLOCO = new Map<string, string>(TIPOS_BLOCO.map((t) => [t.valor, t.rotulo]));
+const ROTULO_CAMPO_TEMPLATE: Record<string, string> = {
+  nome: 'Nome', tipoProposta: 'Tipo de proposta', ativo: 'Ativo', padrao: 'Padrão', blocos: 'Blocos',
+};
+const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
 
 @Component({
   selector: 'app-pendencias-page',
@@ -45,8 +52,8 @@ import { Toasts } from '../../shared/ui/toasts';
           </p>
           @if (p.erro?.campos; as campos) {
             <ul class="mt-1 text-sm text-red-700">
-              @for (c of listarCampos(campos); track c[0]) {
-                <li>{{ c[0] }}: {{ c[1] }}</li>
+              @for (c of listarCampos(p, campos); track c[0]) {
+                <li>{{ c[1] }}: {{ c[2] }}</li>
               }
             </ul>
           }
@@ -129,8 +136,20 @@ export class PendenciasPage {
     return this.excluidoNoServidor(p) ? 'Excluído por outra pessoa.' : 'Alterado por outra pessoa enquanto você editava.';
   }
 
-  protected listarCampos(campos: Record<string, string>): [string, string][] {
-    return Object.entries(campos);
+  /** [caminho, rótulo, mensagem]; nos templates o caminho vira texto (`blocos[0].config…` → "Bloco 1 (Itens)"). */
+  protected listarCampos(p: Pendencia, campos: Record<string, string>): [string, string, string][] {
+    return Object.entries(campos).map(([campo, msg]) => [campo, this.rotuloCampo(p, campo), msg]);
+  }
+
+  private rotuloCampo(p: Pendencia, campo: string): string {
+    if (p.entidade !== 'template_proposta') return campo;
+    const m = CAMINHO_BLOCO.exec(campo);
+    if (!m) return ROTULO_CAMPO_TEMPLATE[campo] ?? campo;
+    const i = Number(m[1]);
+    const blocos = (p.mutacao.dados as { blocos?: unknown } | null)?.blocos;
+    const tipo = Array.isArray(blocos) ? (blocos[i] as { tipo?: unknown } | null)?.tipo : undefined;
+    const rotulo = typeof tipo === 'string' ? ROTULO_TIPO_BLOCO.get(tipo) : undefined;
+    return rotulo ? `Bloco ${i + 1} (${rotulo})` : `Bloco ${i + 1}`;
   }
 
   protected sincronizar(): void {

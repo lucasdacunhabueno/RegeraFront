@@ -163,9 +163,38 @@ describe('PendenciasPage', () => {
   it('template: título com o nome e o admin abre /templates/id', () => {
     const { el, navegar } = montar([templateRejeitado]);
     expect(el.textContent).toContain('Template de proposta: Serviço padrão');
-    expect(el.textContent).toContain('blocos[0].config: Opção não permitida para este bloco.');
+    expect(el.textContent).toContain('Bloco 1: Opção não permitida para este bloco.');
     botao(el, 'Editar').click();
     expect(navegar).toHaveBeenCalledWith('/templates/t1');
+  });
+
+  it('template: caminhos de erro viram texto amigável, com o tipo do bloco quando há dados', () => {
+    const p: Pendencia = {
+      ...templateRejeitado,
+      erro: {
+        codigo: 'VALIDACAO', mensagem: 'Dados inválidos.',
+        campos: {
+          'blocos[0].config.colunas': 'Escolha pelo menos uma coluna.',
+          'blocos[2].tipo': 'Tipo de bloco desconhecido.',
+          blocos: 'No máximo 50 blocos.',
+          nome: 'Informe o nome.',
+          padrao: 'Um template inativo não pode ser o padrão.',
+        },
+      },
+      mutacao: {
+        ...templateRejeitado.mutacao,
+        dados: { nome: 'Serviço padrão', blocos: [{ id: 'a', tipo: 'ITENS', config: {} }, { id: 'b', tipo: 'TOTAIS', config: {} }, { id: 'c', tipo: 'X' }] },
+      },
+    };
+    const { el } = montar([p]);
+    const linhas = [...el.querySelectorAll('li li')].map((l) => l.textContent?.trim());
+    expect(linhas).toEqual([
+      'Bloco 1 (Itens): Escolha pelo menos uma coluna.',
+      'Bloco 3: Tipo de bloco desconhecido.',
+      'Blocos: No máximo 50 blocos.',
+      'Nome: Informe o nome.',
+      'Padrão: Um template inativo não pode ser o padrão.',
+    ]);
   });
 
   it('template: só o admin pode editar', () => {
