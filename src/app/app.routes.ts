@@ -37,6 +37,17 @@ export const routes: Routes = [
         loadComponent: wizardProposta,
       },
       {
+        path: 'propostas/:id/corrigir',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
+        data: { modo: 'corrigir' },
+        loadComponent: wizardProposta,
+      },
+      {
+        path: 'propostas/:id',
+        loadComponent: () => import('./features/propostas/proposta-detalhe-page').then((m) => m.PropostaDetalhePage),
+      },
+      {
         path: 'clientes/novo',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
         canDeactivate: [alteracoesGuard],

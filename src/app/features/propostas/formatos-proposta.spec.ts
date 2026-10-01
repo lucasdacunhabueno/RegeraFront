@@ -2,6 +2,7 @@ import { ErroCampo } from '../../core/util/erro-campo';
 import { paraClienteLocal } from '../clientes/cliente-models';
 import {
   correspondeABusca,
+  dataHoraBr,
   expirada,
   mensagemErroProposta,
   moedaCentavos,
@@ -151,6 +152,20 @@ describe('formatos-proposta', () => {
       expect(mensagemErroProposta(new Error('QuotaExceededError: internal'))).toBe(generico);
       expect(mensagemErroProposta('x')).toBe(generico);
       expect(mensagemErroProposta(undefined)).toBe(generico);
+    });
+  });
+
+  describe('dataHoraBr', () => {
+    it('instante ISO → dd/mm/aaaa hh:mm na hora de São Paulo (não a do aparelho nem a do UTC)', () => {
+      expect(dataHoraBr('2026-10-02T01:30:00Z')).toBe('01/10/2026 22:30');
+      expect(dataHoraBr('2026-09-20T13:05:09.123456Z')).toBe('20/09/2026 10:05');
+      expect(dataHoraBr('2026-09-20T00:00:00-03:00')).toBe('20/09/2026 00:00');
+    });
+
+    it('ausente ou inválido → texto vazio', () => {
+      expect(dataHoraBr(null)).toBe('');
+      expect(dataHoraBr('')).toBe('');
+      expect(dataHoraBr('ontem')).toBe('');
     });
   });
 });

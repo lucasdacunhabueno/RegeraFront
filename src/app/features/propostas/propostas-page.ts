@@ -1,4 +1,4 @@
-import { Component, computed, DestroyRef, DOCUMENT, effect, inject, signal } from '@angular/core';
+import { Component, computed, effect, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { AuthService } from '../../core/auth/auth-service';
@@ -7,7 +7,8 @@ import { TIPOS_PROPOSTA, TipoProposta } from '../templates/template-models';
 import { correspondeABusca, Selo, selosDaProposta } from './formatos-proposta';
 import { PropostaCard } from './proposta-card';
 import { PropostaLocal, STATUS_PROPOSTA, StatusProposta } from './proposta-models';
-import { EstadoSync, hojeEmSaoPaulo, msAteAmanhaEmSaoPaulo, PropostasRepo } from './propostas-repo';
+import { hojeReativo } from './hoje-reativo';
+import { EstadoSync, PropostasRepo } from './propostas-repo';
 
 type FiltroStatus = 'TODAS' | StatusProposta;
 type FiltroTipo = 'TODOS' | TipoProposta;
@@ -126,11 +127,8 @@ export class PropostasPage {
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>() } as EstadoSync,
   });
-  /**
-   * Data civil de São Paulo (selo Expirada). Refeita à meia-noite de São Paulo e quando a aba volta a ficar visível
-   * (o timer atrasa com o aparelho dormindo).
-   */
-  private readonly hoje = signal(hojeEmSaoPaulo());
+  /** Data civil de São Paulo (selo Expirada), refeita à meia-noite e quando a aba volta a ficar visível. */
+  private readonly hoje = hojeReativo();
 
   protected readonly carregando = computed(() => this.propostas() === undefined || this.clientes() === undefined);
 
@@ -171,19 +169,6 @@ export class PropostasPage {
   });
 
   constructor() {
-    const documento = inject(DOCUMENT);
-    const atualizar = () => this.hoje.set(hojeEmSaoPaulo());
-    const aoMudarVisibilidade = () => {
-      if (documento.visibilityState === 'visible') atualizar();
-    };
-    let timer: ReturnType<typeof setTimeout> | undefined;
-    // +1 s de folga para já estar no dia seguinte; se disparar cedo (dia com mudança de fuso), reagenda o resto.
-    const agendar = () => {
-      timer = setTimeout(() => {
-        atualizar();
-        agendar();
-      }, msAteAmanhaEmSaoPaulo() + 1000);
-    };
     // O técnico (ou a visão restrita) lê só as atribuídas a ele; a fonte troca se o usuário mudar. Um effect e não
     // toObservable + switchMap: estes levariam ~1 kB ao bundle inicial.
     const quem = computed(() => (this.restrito() ? `tecnico:${this.usuario()?.id ?? ''}` : 'todas'));
@@ -193,13 +178,6 @@ export class PropostasPage {
       const fonte = q === 'todas' ? this.repo.observarTodas() : this.repo.observarDoTecnico(q.slice('tecnico:'.length));
       const assinatura = fonte.subscribe((lista) => this.propostas.set(lista));
       aoLimpar(() => assinatura.unsubscribe());
-    });
-
-    documento.addEventListener('visibilitychange', aoMudarVisibilidade);
-    agendar();
-    inject(DestroyRef).onDestroy(() => {
-      clearTimeout(timer);
-      documento.removeEventListener('visibilitychange', aoMudarVisibilidade);
     });
   }
 

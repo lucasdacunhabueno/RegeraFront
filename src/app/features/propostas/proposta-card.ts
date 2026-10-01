@@ -4,7 +4,8 @@ import { RouterLink } from '@angular/router';
 import { moedaCentavos, rotuloCodigo, rotuloTipo, Selo } from './formatos-proposta';
 import { PropostaLocal, STATUS_PROPOSTA } from './proposta-models';
 
-const SELO: Readonly<Record<Selo['tipo'], { cor: string; icone: LucideIcon }>> = {
+/** Cor e ícone de cada selo (o card e o cabeçalho do detalhe). */
+export const ESTILO_SELO: Readonly<Record<Selo['tipo'], { cor: string; icone: LucideIcon }>> = {
   expirada: { cor: 'bg-orange-100 text-orange-800', icone: LucideClock },
   'nao-sincronizada': { cor: 'bg-amber-100 text-amber-800', icone: LucideRefreshCw },
   pendencia: { cor: 'bg-red-100 text-red-800', icone: LucideTriangleAlert },
@@ -66,6 +67,6 @@ export class PropostaCard {
   });
 
   protected estilo(s: Selo) {
-    return SELO[s.tipo];
+    return ESTILO_SELO[s.tipo];
   }
 }
