@@ -12,6 +12,7 @@ import { DadosUpload, ErroMutacao, Pendencia, TIPO_UPLOAD_DOCUMENTO, UsuarioResu
 import { SyncService } from '../../core/sync/sync-service';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { formatarCep } from '../../core/util/formatos';
+import { sha256Hex } from '../../core/util/sha256';
 import { uuidv7 } from '../../core/util/uuid';
 import type { ItemLocal } from '../catalogo/item-models';
 import type { ClienteLocal } from '../clientes/cliente-models';
@@ -430,11 +431,6 @@ function itemDoPdf(l: ItemPropostaLocal): ItemPdf {
 /** O documento de uma mutação de UPLOAD na fila (ou na pendência); null se ela não é um upload. */
 function documentoDoUpload(m: { entidade: string; dados: unknown }): string | null {
   return m.entidade === TIPO_UPLOAD_DOCUMENTO ? ((m.dados as DadosUpload | null)?.documentoId ?? null) : null;
-}
-
-async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
 }
 
 /**
