@@ -69,9 +69,18 @@ function secao(dd: TDocumentDefinitions, id: string): Record<string, unknown> | 
   return conteudo(dd).find((c) => (c as { id?: string }).id === id) as Record<string, unknown> | undefined;
 }
 
-interface TabelaFotos { table: { widths: unknown[]; dontBreakRows: boolean; body: unknown[][] } }
-const tabelaFotos = (dd: TDocumentDefinitions): TabelaFotos =>
-  (secao(dd, 'fotos')!['stack'] as unknown[]).find((x) => (x as { table?: unknown }).table) as TabelaFotos;
+interface Tabela { table: { widths: unknown[]; dontBreakRows: boolean; body: unknown[][] } }
+interface Bloco { stack: unknown[]; unbreakable?: boolean }
+/** As fotos: o bloco indivisível do título com a 1ª linha e, se houver mais, a tabela com o resto (mesmas larguras). */
+function tabelasFotos(dd: TDocumentDefinitions): { inicio: Bloco; tabelas: Tabela[]; linhas: unknown[][] } {
+  const [inicio, ...resto] = secao(dd, 'fotos')!['stack'] as unknown[];
+  const tabelas = [(inicio as Bloco).stack[1] as Tabela, ...(resto as Tabela[])];
+  return { inicio: inicio as Bloco, tabelas, linhas: tabelas.flatMap((t) => t.table.body) };
+}
+interface TabelaItens {
+  table: { headerRows: number; keepWithHeaderRows: number; dontBreakRows: boolean; widths: unknown[]; body: unknown[][] };
+}
+const tabelaItens = (dd: TDocumentDefinitions): TabelaItens => secao(dd, 'itens') as unknown as TabelaItens;
 
 describe('gerarDocumentoOs', () => {
   it('página A4, Roboto e estilos com a cor primária da empresa', () => {
@@ -148,6 +157,16 @@ describe('gerarDocumentoOs', () => {
     expect(t.join('|')).not.toContain('Rua do Cliente');
   });
 
+  it('cliente e dados: rótulos em largura fixa, para o pdfmake partir uma palavra longa sem estourar a página', () => {
+    const longo = 'a'.repeat(150);
+    const dd = gerarDocumentoOs(entrada({ cliente: { ...entrada().cliente!, nome: longo } }));
+    for (const id of ['cliente', 'dados']) {
+      const tabela = (secao(dd, id)!['stack'] as unknown[])[1] as Tabela;
+      expect(tabela.table.widths).toEqual([95, 412]);
+    }
+    expect(textos(secao(dd, 'cliente'))).toContain(longo);
+  });
+
   it('cliente: sem o endereço do serviço, o do cliente; sem cliente no aparelho, um traço', () => {
     const semEndereco = textos(secao(gerarDocumentoOs(entrada({}, { endereco: null })), 'cliente'));
     expect(semEndereco).toContain('Rua do Cliente, 1');
@@ -188,17 +207,25 @@ describe('gerarDocumentoOs', () => {
     expect(tudo(dd)).not.toMatch(/undefined|null/);
   });
 
-  it('itens: código, item, unidade e quantidade prevista; linha inteira na mesma página', () => {
-    const it = secao(gerarDocumentoOs(entrada()), 'itens')!;
-    const tabela = (it['stack'] as unknown[]).find((x) => (x as { table?: unknown }).table) as {
-      table: { headerRows: number; dontBreakRows: boolean; widths: unknown[]; body: unknown[][] };
-    };
-    expect(tabela.table.headerRows).toBe(1);
+  it('itens: código, item, unidade e quantidade prevista, em larguras fixas; linha inteira na mesma página', () => {
+    const tabela = tabelaItens(gerarDocumentoOs(entrada()));
     expect(tabela.table.dontBreakRows).toBe(true);
-    expect(tabela.table.widths).toEqual(['auto', '*', 'auto', 'auto']);
-    expect(textos(tabela.table.body[0])).toEqual(['Código', 'Item', 'Unidade', 'Qtd. prevista']);
-    expect(textos(tabela.table.body[1])).toEqual(['P1', 'Inversor 5 kW', 'UN', '1']);
-    expect(textos(tabela.table.body[2])).toEqual(['S1', 'Mão de obra', 'H', '2,5']);
+    expect(tabela.table.widths).toEqual([70, 277, 50, 70]);
+    expect(textos(tabela.table.body[1])).toEqual(['Código', 'Item', 'Unidade', 'Qtd. prevista']);
+    expect(textos(tabela.table.body[2])).toEqual(['P1', 'Inversor 5 kW', 'UN', '1']);
+    expect(textos(tabela.table.body[3])).toEqual(['S1', 'Mão de obra', 'H', '2,5']);
+  });
+
+  it('itens: o título é a 1ª linha de cabeçalho, preso aos rótulos e ao 1º item (não fica órfão; repete com os rótulos)', () => {
+    const tabela = tabelaItens(gerarDocumentoOs(entrada()));
+    expect(tabela.table.headerRows).toBe(2);
+    expect(tabela.table.keepWithHeaderRows).toBe(1);
+    expect(tabela.table.body[0][0]).toMatchObject({ text: 'Itens', style: 'h2', colSpan: 4 });
+    expect(textos(tabela.table.body[0])).toEqual(['Itens']);
+    // a lista vazia também: título, rótulos e "Nenhum item." juntos
+    const vazia = tabelaItens(gerarDocumentoOs(entrada({ itens: [] })));
+    expect(vazia.table.body).toHaveLength(3);
+    expect(vazia.table.keepWithHeaderRows).toBe(1);
   });
 
   it('itens: lista vazia mostra "Nenhum item."', () => {
@@ -222,6 +249,30 @@ describe('gerarDocumentoOs', () => {
     expect(t.join('|')).not.toMatch(/undefined|null/);
   });
 
+  it('notas: o título vai no bloco indivisível do começo da 1ª nota, e só o começo de cada nota é indivisível', () => {
+    const notas = secao(gerarDocumentoOs(entrada()), 'notas')!['stack'] as Bloco[];
+    expect(notas).toHaveLength(2);
+    for (const [i, nota] of notas.entries()) {
+      expect(nota.unbreakable).toBeUndefined();
+      const inicio = nota.stack[0] as Bloco;
+      expect(inicio.unbreakable).toBe(true);
+      expect(textos(inicio)[0]).toBe(i === 0 ? 'Notas' : 'Nota sem autor');
+    }
+    expect((notas[0].stack[0] as Bloco).stack[0]).toMatchObject({ text: 'Notas', style: 'h2' });
+  });
+
+  it('nota longa (400 linhas) não some: o texto inteiro fica no documento, fora do bloco indivisível', () => {
+    const linhas = Array.from({ length: 400 }, (_, i) => 'L' + String(i).padStart(3, '0'));
+    const dd = gerarDocumentoOs(entrada({ notas: [{ texto: linhas.join('\n'), autorNome: 'Tiago', criadaEm: null }] }));
+    const [nota] = secao(dd, 'notas')!['stack'] as Bloco[];
+    expect(nota.unbreakable).toBeUndefined();
+    const [inicio, resto] = nota.stack as [Bloco, { text: string }];
+    expect(inicio.unbreakable).toBe(true);
+    expect(textos(inicio)).toEqual(['Notas', 'Tiago', 'L000']);
+    expect(resto.text).toBe(linhas.slice(1).join('\n'));
+    expect(JSON.stringify(inicio)).not.toContain('L001');
+  });
+
   it('notas e fotos vazias não geram seção', () => {
     const dd = gerarDocumentoOs(entrada({ notas: [], fotos: [] }));
     expect(secao(dd, 'notas')).toBeUndefined();
@@ -229,37 +280,56 @@ describe('gerarDocumentoOs', () => {
   });
 
   it('fotos: duas por linha, com momento, hora e legenda; o bloco não se parte entre páginas', () => {
-    const t = tabelaFotos(gerarDocumentoOs(entrada()));
-    expect(t.table.widths).toEqual(['*', '*']);
-    expect(t.table.dontBreakRows).toBe(true);
-    expect(t.table.body).toHaveLength(1);
-    const [a, b] = t.table.body[0] as { stack: unknown[] }[];
+    const { tabelas, linhas } = tabelasFotos(gerarDocumentoOs(entrada()));
+    expect(tabelas).toHaveLength(1);
+    expect(tabelas[0].table.widths).toEqual(['*', '*']);
+    expect(tabelas[0].table.dontBreakRows).toBe(true);
+    expect(linhas).toHaveLength(1);
+    const [a, b] = linhas[0] as { stack: unknown[] }[];
     expect(a.stack[0]).toEqual({ image: JPEG, fit: [240, 180], alignment: 'center' });
     expect(textos(a)).toEqual(expect.arrayContaining(['Antes · 01/10/2026 10:00', 'Foto 1']));
     expect(textos(b)).toContain('Depois · 01/10/2026 10:00');
     expect(textos(b).join('|')).not.toMatch(/undefined|null/);
   });
 
-  it('20 fotos geram 10 linhas; número ímpar completa a última com célula vazia', () => {
-    const vinte = gerarDocumentoOs(entrada({ fotos: Array.from({ length: 20 }, (_, i) => foto(i)) }));
-    expect(tabelaFotos(vinte).table.body).toHaveLength(10);
-    for (const linha of tabelaFotos(vinte).table.body) expect(linha).toHaveLength(2);
-    const tres = gerarDocumentoOs(entrada({ fotos: [foto(1), foto(2), foto(3)] }));
-    const corpo = tabelaFotos(tres).table.body;
+  it('20 fotos geram 10 linhas (1 com o título + 9); número ímpar completa a última com célula vazia', () => {
+    const vinte = tabelasFotos(gerarDocumentoOs(entrada({ fotos: Array.from({ length: 20 }, (_, i) => foto(i)) })));
+    expect(vinte.tabelas.map((t) => t.table.body.length)).toEqual([1, 9]);
+    expect(vinte.linhas).toHaveLength(10);
+    for (const linha of vinte.linhas) expect(linha).toHaveLength(2);
+    for (const t of vinte.tabelas) {
+      expect(t.table.widths).toEqual(['*', '*']);
+      expect(t.table.dontBreakRows).toBe(true);
+    }
+    const corpo = tabelasFotos(gerarDocumentoOs(entrada({ fotos: [foto(1), foto(2), foto(3)] }))).linhas;
     expect(corpo).toHaveLength(2);
     expect(corpo[1][1]).toEqual({ text: '' });
+  });
+
+  it('fotos: o título vai num bloco indivisível com a 1ª linha (não fica órfão no pé da página)', () => {
+    const { inicio } = tabelasFotos(gerarDocumentoOs(entrada({ fotos: [foto(1), foto(2), foto(3)] })));
+    expect(inicio.unbreakable).toBe(true);
+    expect(inicio.stack).toHaveLength(2);
+    expect(inicio.stack[0]).toMatchObject({ text: 'Fotos', style: 'h2' });
+    expect((inicio.stack[1] as Tabela).table.body).toHaveLength(1);
   });
 
   it('foto sem imagem (ou com imagem que não é data URL PNG/JPEG) vira a caixa "Foto indisponível"', () => {
     const dd = gerarDocumentoOs(entrada({
       fotos: [foto(1, { imagem: null }), foto(2, { imagem: 'https://exemplo.test/x.jpg' }), foto(3)],
     }));
-    const corpo = tabelaFotos(dd).table.body;
+    const corpo = tabelasFotos(dd).linhas;
     for (const celula of [corpo[0][0], corpo[0][1]] as { stack: unknown[] }[]) {
-      const caixa = celula.stack[0] as { table: { widths: unknown[]; heights: unknown[]; body: unknown[][] } };
-      expect(caixa.table.widths).toEqual(['*']);
-      expect(caixa.table.heights).toEqual([180]);
-      expect(textos(caixa)).toEqual(['Foto indisponível']);
+      // centrada entre colunas elásticas; 240 x 180 com o enchimento e as bordas (230 + 4 + 4 + 1 + 1; 176 + 2 + 2)
+      const { columns } = celula.stack[0] as {
+        columns: [unknown, { width: string; table: { widths: unknown[]; heights: unknown[] } }, unknown];
+      };
+      expect(columns[0]).toEqual({ width: '*', text: '' });
+      expect(columns[2]).toEqual({ width: '*', text: '' });
+      expect(columns[1].width).toBe('auto');
+      expect(columns[1].table.widths).toEqual([230]);
+      expect(columns[1].table.heights).toEqual([176]);
+      expect(textos(columns[1])).toEqual(['Foto indisponível']);
     }
     expect(tudo(dd)).not.toContain('https://');
     expect((corpo[1][0] as { stack: unknown[] }).stack[0]).toMatchObject({ image: JPEG });
@@ -286,6 +356,13 @@ describe('gerarDocumentoOs', () => {
     const ass = secao(gerarDocumentoOs(entrada({ assinatura: null, recusaAssinatura: 'Responsável ausente' })), 'assinatura')!;
     expect(textos(ass)).toContain('Cliente não assinou: Responsável ausente');
     expect(JSON.stringify(ass)).not.toContain('"image"');
+  });
+
+  it('recusa sem motivo: "Cliente não assinou."', () => {
+    for (const recusa of ['', '   ']) {
+      const ass = secao(gerarDocumentoOs(entrada({ assinatura: null, recusaAssinatura: recusa })), 'assinatura')!;
+      expect(textos(ass)).toEqual(['Assinatura', 'Cliente não assinou.']);
+    }
   });
 
   it('sem assinatura nem recusa: "Sem assinatura."', () => {

@@ -276,7 +276,7 @@ export interface EntradaPdfOs {
   notas: NotaPdfOs[];
   fotos: FotoPdfOs[];
   assinatura: AssinaturaPdfOs | null;
-  /** "Recusou assinar: motivo", quando não há assinatura. */
+  /** O motivo da recusa, quando não há assinatura; o PDF imprime "Cliente não assinou: motivo" (M2P3-R5). */
   recusaAssinatura: string | null;
 }
 

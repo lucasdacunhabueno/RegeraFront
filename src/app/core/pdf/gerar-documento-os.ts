@@ -1,4 +1,4 @@
-import type { Content, TableCell, TDocumentDefinitions } from 'pdfmake/interfaces';
+import type { Content, CustomTableLayout, TableCell, TDocumentDefinitions } from 'pdfmake/interfaces';
 import type { AssinaturaPdfOs, EntradaPdfOs, FotoPdfOs, ItemPdfOs, NotaPdfOs } from '../../features/os/os-repo';
 import type { MomentoFoto } from '../../features/os/os-models';
 import { dataBr, dataHoraBr, quantidadeBr } from './formatos-pdf';
@@ -22,6 +22,26 @@ const ROTULO_MOMENTO: Readonly<Record<MomentoFoto, string>> = { ANTES: 'Antes', 
 const FOTO_AJUSTE: [number, number] = [240, 180];
 const ASSINATURA_AJUSTE: [number, number] = [220, 90];
 const COR_SECUNDARIA = '#4b5563';
+/**
+ * Larguras fixas em todas as colunas de texto: o pdfmake só parte uma palavra longa numa coluna de largura fixa; numa
+ * `auto` ou `*` a coluna cresce até a palavra e a tabela passa da margem. A conta usa a largura útil do A4 (595 − 2 × 40)
+ * menos o enchimento do layout de cada tabela (`noBorders`: 4 entre colunas; `LAYOUT_ITENS`: 8 de cada lado entre colunas).
+ */
+const LARGURA_UTIL = 515;
+const ROTULO_CAMPO = 95;
+const LARGURAS_CAMPOS: [number, number] = [ROTULO_CAMPO, LARGURA_UTIL - ROTULO_CAMPO - 2 * 4];
+const LARGURAS_ITENS: [number, number, number, number] = [70, LARGURA_UTIL - 70 - 50 - 70 - 6 * 8, 50, 70];
+
+/**
+ * O `lightHorizontalLines` do pdfmake para a tabela de itens com o título da seção como 1ª linha de cabeçalho: sem
+ * linha entre o título e os rótulos, a grossa abaixo dos rótulos e as finas entre os itens.
+ */
+const LAYOUT_ITENS: CustomTableLayout = {
+  hLineWidth: (i, node) => (i <= 1 || i === node.table.body.length ? 0 : i === node.table.headerRows ? 2 : 1),
+  vLineWidth: () => 0,
+  paddingLeft: (i) => (i === 0 ? 0 : 8),
+  paddingRight: (i, node) => (i === (node.table.widths?.length ?? 0) - 1 ? 0 : 8),
+};
 
 const ouTraco = (v: string): string => (v.trim() !== '' ? v : TRACO);
 
@@ -70,7 +90,7 @@ function tituloSecao(texto: string): Content {
 /** Pares rótulo/valor em duas colunas, sem bordas. */
 function campos(pares: [string, string][]): Content {
   return {
-    table: { widths: ['auto', '*'], body: pares.map(([rotulo, valor]): TableCell[] => [{ text: rotulo, bold: true }, { text: valor }]) },
+    table: { widths: LARGURAS_CAMPOS, body: pares.map(([rotulo, valor]): TableCell[] => [{ text: rotulo, bold: true }, { text: valor }]) },
     layout: 'noBorders',
   };
 }
@@ -115,14 +135,21 @@ function dados(e: EntradaPdfOs): Content {
   return { stack: [tituloSecao('Dados da OS'), campos(pares)] };
 }
 
+/**
+ * O título "Itens" é a 1ª linha de cabeçalho da tabela, e `keepWithHeaderRows: 1` o prende aos rótulos e ao 1º item:
+ * o título nunca fica sozinho no pé da página, e título e rótulos se repetem nas páginas seguintes. Cada item fica
+ * inteiro numa página (`dontBreakRows`).
+ */
 function itens(lista: readonly ItemPdfOs[]): Content {
-  const cabecalho: TableCell[] = [
-    { text: 'Código', style: 'cabecalhoTabela' },
-    { text: 'Item', style: 'cabecalhoTabela' },
-    { text: 'Unidade', style: 'cabecalhoTabela' },
-    { text: 'Qtd. prevista', style: 'cabecalhoTabela', alignment: 'right' },
+  const body: TableCell[][] = [
+    [{ ...(tituloSecao('Itens') as object), colSpan: 4 } as TableCell, {}, {}, {}],
+    [
+      { text: 'Código', style: 'cabecalhoTabela' },
+      { text: 'Item', style: 'cabecalhoTabela' },
+      { text: 'Unidade', style: 'cabecalhoTabela' },
+      { text: 'Qtd. prevista', style: 'cabecalhoTabela', alignment: 'right' },
+    ],
   ];
-  const body: TableCell[][] = [cabecalho];
   if (lista.length === 0) {
     body.push([{ text: 'Nenhum item.', colSpan: 4 }, {}, {}, {}]);
   } else {
@@ -130,40 +157,44 @@ function itens(lista: readonly ItemPdfOs[]): Content {
       body.push([{ text: txt(i.codigo) }, { text: txt(i.nome) }, { text: txt(i.unidade) }, { text: quantidadeBr(i.quantidade), alignment: 'right' }]);
     }
   }
-  return {
-    stack: [
-      tituloSecao('Itens'),
-      // cabeçalho repetido em cada página e linha de item inteira na mesma página
-      { table: { headerRows: 1, dontBreakRows: true, widths: ['auto', '*', 'auto', 'auto'], body }, layout: 'lightHorizontalLines' },
-    ],
-  };
+  return { table: { headerRows: 2, keepWithHeaderRows: 1, dontBreakRows: true, widths: LARGURAS_ITENS, body }, layout: LAYOUT_ITENS };
 }
 
-/** Cada nota com "autor · hora" acima do texto (o que faltar some da linha), sem partir a nota entre páginas. */
+/**
+ * Cada nota com "autor · hora" acima do texto (o que faltar some da linha). Só o começo da nota (o título da seção, na
+ * 1ª, o "autor · hora" e o 1º parágrafo) é indivisível: o resto quebra entre páginas, porque o pdfmake descarta um
+ * bloco indivisível mais alto que a página (uma nota de checklist com muitas linhas sumia). O 1º parágrafo tem no
+ * máximo 2000 caracteres (o limite da nota), umas 20 linhas.
+ */
 function notas(lista: readonly NotaPdfOs[]): Content {
-  const stack: Content[] = [tituloSecao('Notas')];
-  for (const n of lista) {
+  const stack: Content[] = [];
+  lista.forEach((n, i) => {
     const meta = [txt(n.autorNome), dataHoraBr(n.criadaEm)].filter((s) => s.trim() !== '').join(' · ');
-    const nota: Content[] = [];
-    if (meta) nota.push({ text: meta, style: 'pequeno', color: COR_SECUNDARIA });
-    nota.push({ text: txt(n.texto) });
-    stack.push({ stack: nota, unbreakable: true, margin: [0, 0, 0, 6] });
-  }
+    const [primeiro, ...resto] = txt(n.texto).split('\n');
+    const inicio: Content[] = [];
+    if (i === 0) inicio.push(tituloSecao('Notas'));
+    if (meta) inicio.push({ text: meta, style: 'pequeno', color: COR_SECUNDARIA });
+    inicio.push({ text: primeiro });
+    const nota: Content[] = [{ stack: inicio, unbreakable: true }];
+    if (resto.length > 0) nota.push({ text: resto.join('\n') });
+    stack.push({ stack: nota, margin: [0, 0, 0, 6] });
+  });
   return { stack };
 }
 
-/** Duas fotos por linha; cada linha inteira na mesma página (`dontBreakRows`). */
+/**
+ * Duas fotos por linha; cada linha inteira na mesma página (`dontBreakRows`). O título vai num bloco indivisível com a
+ * 1ª linha (não fica sozinho no pé da página); as outras linhas seguem numa tabela de mesmas larguras.
+ */
 function fotos(lista: readonly FotoPdfOs[]): Content {
   const body: TableCell[][] = [];
   for (let i = 0; i < lista.length; i += 2) {
     body.push([celulaFoto(lista[i]), i + 1 < lista.length ? celulaFoto(lista[i + 1]) : { text: '' }]);
   }
-  return {
-    stack: [
-      tituloSecao('Fotos'),
-      { table: { widths: ['*', '*'], dontBreakRows: true, body }, layout: 'noBorders' },
-    ],
-  };
+  const tabela = (linhas: TableCell[][]): Content => ({ table: { widths: ['*', '*'], dontBreakRows: true, body: linhas }, layout: 'noBorders' });
+  const stack: Content[] = [{ stack: [tituloSecao('Fotos'), tabela(body.slice(0, 1))], unbreakable: true }];
+  if (body.length > 1) stack.push(tabela(body.slice(1)));
+  return { stack };
 }
 
 function celulaFoto(f: FotoPdfOs): TableCell {
@@ -171,20 +202,34 @@ function celulaFoto(f: FotoPdfOs): TableCell {
   const stack: Content[] = [
     imagem
       ? { image: imagem, fit: FOTO_AJUSTE, alignment: 'center' }
-      : {
-          // caixa do tamanho da foto, para a grade não pular
-          table: {
-            widths: ['*'],
-            heights: [FOTO_AJUSTE[1]],
-            body: [[{ text: 'Foto indisponível', alignment: 'center', color: COR_SECUNDARIA, margin: [0, FOTO_AJUSTE[1] / 2 - 8, 0, 0] }]],
-          },
-        },
+      : caixaFotoIndisponivel(),
   ];
   const momento = f.momento ? ROTULO_MOMENTO[f.momento] ?? '' : '';
   const meta = [momento, dataHoraBr(f.tiradaEm)].filter((s) => s !== '').join(' · ');
   if (meta) stack.push({ text: meta, style: 'pequeno', bold: true, margin: [0, 4, 0, 0] });
   if (txt(f.legenda).trim() !== '') stack.push({ text: txt(f.legenda), style: 'pequeno' });
   return { stack, margin: [0, 0, 0, 10] };
+}
+
+/**
+ * Caixa do tamanho da área da foto (240 × 180), centrada, para a grade não pular. Os descontos são o enchimento e as
+ * bordas do layout padrão da tabela: 4 + 4 e 1 + 1 na largura, 2 + 2 na altura.
+ */
+function caixaFotoIndisponivel(): Content {
+  return {
+    columns: [
+      { width: '*', text: '' },
+      {
+        width: 'auto',
+        table: {
+          widths: [FOTO_AJUSTE[0] - 10],
+          heights: [FOTO_AJUSTE[1] - 4],
+          body: [[{ text: 'Foto indisponível', alignment: 'center', color: COR_SECUNDARIA, margin: [0, FOTO_AJUSTE[1] / 2 - 10, 0, 0] }]],
+        },
+      },
+      { width: '*', text: '' },
+    ],
+  };
 }
 
 /** A assinatura (imagem, nome, papel, data/hora), a recusa ou, sem nenhuma, "Sem assinatura."; num bloco só. */
