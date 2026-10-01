@@ -952,7 +952,7 @@ describe('OsRepo', () => {
           versaoOs: 4,
         };
         const local = (await db.os.get('o1'))!;
-        await db.os.put({ ...local, ...tipoUploadDe(TIPO_UPLOAD_ANEXO_OS)!.noAgregado(local, resp, 4) } as OsLocal);
+        await db.os.put({ ...local, ...tipoUploadDe(TIPO_UPLOAD_ANEXO_OS)!.noAgregado(local, resp, 4, TECNICO) } as OsLocal);
         expect(await db.os.get('o1')).toMatchObject({ version: 4, assinaturaAnexoId: s1, assinanteNome: 'Maria', assinantePapel: 'Síndica' });
         return new Blob([PDF]);
       });

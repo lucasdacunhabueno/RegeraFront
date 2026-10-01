@@ -19,6 +19,12 @@ export interface RegistroUpload {
   arquivoId: string | null;
 }
 
+/** Quem envia o upload (o usuário da sessão deste aparelho). */
+export interface QuemEnvia {
+  id: string;
+  perfil: string;
+}
+
 /** As duas partes do multipart: `arquivo` e `metadados` (JSON). */
 export interface EnvioUpload {
   arquivo: Blob;
@@ -65,8 +71,8 @@ export interface TipoUpload<R extends RegistroUpload = RegistroUpload, S = unkno
   podar(db: RegeraDb, id: string, agregadoId: string, resp: S): Promise<void>;
   /** Apaga os registros e os bytes deles. Precisa das `tabelas` na transação de quem chama. */
   apagar(db: RegeraDb, ids: readonly string[]): Promise<void>;
-  /** As mudanças no registro local do agregado: a versão e o que o servidor passou a ter. */
-  noAgregado(local: RegistroLocal, resp: S, versao: number): Record<string, unknown>;
+  /** As mudanças no registro local do agregado: a versão e o que o servidor passou a ter. `quem`: quem enviou. */
+  noAgregado(local: RegistroLocal, resp: S, versao: number, quem: QuemEnvia | undefined): Record<string, unknown>;
 }
 
 /** O `codigo` e os `campos` do ProblemDetail, se houver. */
@@ -255,6 +261,10 @@ const ANEXO_OS: TipoUpload<AnexoOsLocal, RespostaAnexoOs> = {
     // M2-R3/R22: o técnico que perdeu a atribuição (o PDF dele, ou tudo depois de 7 dias, inclusive a repetição de
     // um upload já aceito) e a OS que sumiu; R28/R29: o PDF da OS concluída por outro usuário. O único caminho é descartar
     if (e.status === 403 && codigo === 'OS_CONCLUIDA_POR_OUTRO') return MENSAGEM_OS_CONCLUIDA_PELO_ESCRITORIO;
+    // N2: todo outro 403 vira "não está mais com você". Hoje é exato: o servidor só devolve 403 (`ACESSO_NEGADO`) ao PDF
+    // do técnico desatribuído e à FOTO ou ASSINATURA do COMERCIAL, que o aparelho nunca oferece (o `OsRepo` recusa
+    // antes). Uma tela que passe a oferecer ao COMERCIAL um upload que ele não pode fazer não pode contar com este
+    // texto: ele diria que a OS saiu dele
     if (e.status === 403 || e.status === 404) return MENSAGEM_OS_NAO_ESTA_COM_VOCE;
     return `${motivoDoAnexo(a, codigo, e.status, campos)} ${DESCARTE_UPLOAD_OS}`;
   }),
@@ -280,16 +290,20 @@ const ANEXO_OS: TipoUpload<AnexoOsLocal, RespostaAnexoOs> = {
     await db.anexosOs.bulkDelete([...ids]);
     await db.anexosOsBytes.bulkDelete([...ids]);
   },
-  noAgregado: (local, resp, versao) => {
+  noAgregado: (local, resp, versao, quem) => {
+    const os = local as OsLocal;
     const anexo = paraAnexoOsServidor(resp.anexo);
     const mudancas: Partial<OsLocal> = {
       version: versao,
-      anexos: [...(local as OsLocal).anexos.filter((x) => x.id !== anexo.id), anexo],
+      anexos: [...os.anexos.filter((x) => x.id !== anexo.id), anexo],
     };
     // como o servidor (M2P1-R10): a assinatura aceita passa a ser esta, e a recusa sai. M2P1-R26 (M6): a do técnico com a
     // OS encerrada é só evidência, e o servidor não muda a aceita; o aparelho não a espelha. Com a OS concluída no
-    // aparelho e o concluir ainda na fila, também não espelha: o OK do concluir traz o estado do servidor
-    if (anexo.tipo === 'ASSINATURA' && (local as OsLocal).status === 'EM_ANDAMENTO') {
+    // aparelho e o concluir ainda na fila, também não espelha: o OK do concluir traz o estado do servidor.
+    // M4: só quem a torna a aceita no servidor, o técnico atribuído ou o ADMIN. O técnico que perdeu a OS (M2-R3: o OK
+    // anterior trouxe outro técnico) envia a dele como evidência, e a OS não é mais dele
+    const tornaAceita = !!quem && (quem.perfil === 'ADMIN' || os.tecnicoId === quem.id);
+    if (anexo.tipo === 'ASSINATURA' && os.status === 'EM_ANDAMENTO' && tornaAceita) {
       Object.assign(mudancas, {
         assinaturaAnexoId: anexo.id, assinanteNome: anexo.assinanteNome, assinantePapel: anexo.assinantePapel,
         assinadaEm: anexo.tiradaEm, assinaturaRecusada: false, motivoRecusa: null,

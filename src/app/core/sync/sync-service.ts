@@ -1,11 +1,12 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
+import type { Table } from 'dexie';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom } from 'rxjs';
+import { gerarCodigoProvisorioOs } from '../../features/os/codigo-provisorio-os';
 import type { OsDados } from '../../features/os/os-models';
 import { quemNoServidor, rebaseFilaOs, rebaseOsLocal } from '../../features/os/rebase-os';
 import { gerarCodigoProvisorio } from '../../features/propostas/codigo-provisorio';
-import type { PropostaDados } from '../../features/propostas/proposta-models';
 import { Toasts } from '../../shared/ui/toasts';
 import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
@@ -34,8 +35,13 @@ const MAX_RODADAS_PUSH = 50;
 const MAX_REPETICOES = 3;
 /** Rejeições que o servidor não grava: é seguro reenviar a mesma mutação depois. */
 const CODIGOS_TRANSITORIOS = new Set(['ERRO_INTERNO', 'INTEGRIDADE']);
-/** Trocas automáticas de código provisório por proposta numa sincronização, antes de virar pendência. */
+/** Trocas automáticas de código provisório por proposta ou OS numa sincronização, antes de virar pendência. */
 const MAX_TROCAS_CODIGO = 3;
+/** Os agregados com código provisório gerado no aparelho (`PROV-` e `OSP-`) e o gerador de cada um. */
+const GERA_CODIGO_PROVISORIO: Readonly<Partial<Record<Entidade, () => string>>> = {
+  proposta: gerarCodigoProvisorio,
+  os: gerarCodigoProvisorioOs,
+};
 
 /** A marca de releitura (`CHAVE_RELER`) de um agregado. */
 export function marcaDeReleitura(entidade: string, id: string): string {
@@ -358,7 +364,7 @@ export class SyncService {
         transitorio = true;
         continue;
       }
-      if (r.status === 'REJEITADO' && r.erro?.codigo === 'CODIGO_PROVISORIO_DUPLICADO' && m.entidade === 'proposta') {
+      if (r.status === 'REJEITADO' && r.erro?.codigo === 'CODIGO_PROVISORIO_DUPLICADO' && Object.hasOwn(GERA_CODIGO_PROVISORIO, m.entidade)) {
         const trocas = trocasDeCodigo.get(m.agregadoId) ?? 0;
         if (trocas < MAX_TROCAS_CODIGO) {
           // colisão do código gerado no aparelho: gera outro e reenvia na próxima rodada, sem pendência
@@ -381,19 +387,23 @@ export class SyncService {
   }
 
   /**
-   * CODIGO_PROVISORIO_DUPLICADO: o código gerado no aparelho já existe no servidor. Gera outro e o grava na proposta
-   * local e em todas as mutações dela na fila que levam o antigo (senão a seguinte mudaria o código fora do rascunho);
-   * a rejeitada ganha outro `mutationId` e volta a ser elegível. Se ela mudou durante o envio (outro `mutationId`), a
-   * recusa é de uma versão que não existe mais: nada muda, e a versão nova sai e tem a própria resposta.
+   * CODIGO_PROVISORIO_DUPLICADO: o código gerado no aparelho (`PROV-` da proposta, `OSP-` da OS, M2-P2 M2) já existe no
+   * servidor. Gera outro e o grava no registro local e em todas as mutações dele na fila que levam o antigo (senão a
+   * seguinte mudaria o código); a rejeitada ganha outro `mutationId` e volta a ser elegível. Se ela mudou durante o
+   * envio (outro `mutationId`), a recusa é de uma versão que não existe mais: nada muda, e a versão nova sai e tem a
+   * própria resposta. Na OS, um PDF já gerado com o código antigo volta `CODIGO_EXIBIDO_INVALIDO` (o servidor só aceita
+   * o código dela): a pendência dele tem o "Gerar PDF novamente" (`OsRepo.regerarPdf`).
    */
   private async trocarCodigoProvisorio(m: MutacaoLocal): Promise<void> {
-    const antigo = (m.dados as PropostaDados | null)?.codigoProvisorio;
-    const novo = gerarCodigoProvisorio();
-    await this.db.transaction('rw', [this.db.outbox, this.db.propostas], async () => {
+    const entidade = m.entidade as Entidade;
+    const antigo = (m.dados as { codigoProvisorio?: string } | null)?.codigoProvisorio;
+    const novo = GERA_CODIGO_PROVISORIO[entidade]!();
+    const tabela = ADAPTADORES[entidade].tabela(this.db) as unknown as Table<{ id: string; codigoProvisorio: string }, string>;
+    await this.db.transaction('rw', [this.db.outbox, tabela], async () => {
       if ((await this.db.outbox.get(m.seq!))?.mutationId !== m.mutationId) return;
       for (const x of await this.db.outbox.where('agregadoId').equals(m.agregadoId).toArray()) {
-        const d = x.dados as PropostaDados | null;
-        if (x.entidade !== 'proposta' || !d || d.codigoProvisorio !== antigo) continue;
+        const d = x.dados as { codigoProvisorio?: string } | null;
+        if (x.entidade !== entidade || !d || d.codigoProvisorio !== antigo) continue;
         const dados = { ...d, codigoProvisorio: novo };
         if (x.mutationId === m.mutationId) {
           await this.db.outbox.update(x.seq!, { dados, mutationId: crypto.randomUUID(), enviando: false });
@@ -401,8 +411,8 @@ export class SyncService {
           await this.db.outbox.update(x.seq!, { dados });
         }
       }
-      const local = await this.db.propostas.get(m.agregadoId);
-      if (local && local.codigoProvisorio === antigo) await this.db.propostas.update(m.agregadoId, { codigoProvisorio: novo });
+      const local = await tabela.get(m.agregadoId);
+      if (local && local.codigoProvisorio === antigo) await tabela.update(m.agregadoId, { codigoProvisorio: novo });
     });
   }
 
@@ -468,7 +478,7 @@ export class SyncService {
       await tipo.podar(this.db, id, m.agregadoId, resp);
       const proxima = await this.db.outbox.where('agregadoId').equals(m.agregadoId).first();
       if (proxima) await this.db.outbox.update(proxima.seq!, { baseVersion: versao });
-      if (local) await agregados.update(m.agregadoId, tipo.noAgregado(local, resp, versao));
+      if (local) await agregados.update(m.agregadoId, tipo.noAgregado(local, resp, versao, this.auth.usuario?.() ?? undefined));
     });
   }
 

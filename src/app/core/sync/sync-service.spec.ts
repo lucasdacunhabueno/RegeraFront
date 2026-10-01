@@ -6,6 +6,7 @@ import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { ID_EMPRESA, paraEmpresaLocal } from '../../features/empresa/empresa-models';
+import { codigoProvisorioOsValido } from '../../features/os/codigo-provisorio-os';
 import { AnexoOsDados, AnexoOsLocal, OsDados, paraOsLocal, StatusOs } from '../../features/os/os-models';
 import { codigoProvisorioValido } from '../../features/propostas/codigo-provisorio';
 import {
@@ -1385,6 +1386,8 @@ describe('SyncService', () => {
     });
 
     it('assinatura: PNG com o assinante nos metadados; a OS local passa a ter a assinatura aceita, sem recusa', async () => {
+      // o técnico atribuído (M4: só ele, ou o ADMIN, faz da assinatura a aceita)
+      perfil = 'TECNICO';
       await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' })));
       await gravarAnexos(anexoLocal({
         id: 's1', tipo: 'ASSINATURA', legenda: null, momento: null, tiradaEm: '2026-10-01T13:00:00Z',
@@ -1698,6 +1701,83 @@ describe('SyncService', () => {
       ] as const)('ACESSO_NEGADO (a OS saiu do técnico: %s) continua "não está mais com você"', async (_, tecnicoId) => {
         const pend = await pdfRecusado('ACESSO_NEGADO', os('CONCLUIDA', { numero: 123, tecnicoId }));
         expect(pend.erro?.mensagem).toBe(NAO_ESTA_COM_VOCE);
+      });
+    });
+
+    describe('M4: o espelho da assinatura aceita só para quem a torna a aceita no servidor', () => {
+      async function assinaturaAceita(tecnicoId: string): Promise<void> {
+        await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { tecnicoId, assinaturaRecusada: true, motivoRecusa: 'Ausente' })));
+        await gravarAnexos(anexoLocal({
+          id: 's1', tipo: 'ASSINATURA', legenda: null, momento: null, tiradaEm: '2026-10-01T13:00:00Z', assinanteNome: 'Maria',
+          bytes: PNG, miniatura: PNG,
+        }));
+        await sync.registrarUploadAnexoOs('o1', 's1');
+        const p = sync.sincronizar();
+        (await upload()).flush({
+          anexo: anexoServidor({ id: 's1', tipo: 'ASSINATURA', arquivoId: 'as1', legenda: null, momento: null, assinanteNome: 'Maria' }),
+          versaoOs: 4,
+        }, { status: 201, statusText: 'Created' });
+        await pullVazio();
+        await p;
+      }
+
+      it('M2-R3: o técnico que perdeu a OS (o OK trouxe outro técnico): a assinatura dele entra como anexo, não como a aceita', async () => {
+        perfil = 'TECNICO';
+        await assinaturaAceita('u7');
+        expect(await db.os.get('o1')).toMatchObject({
+          version: 4, tecnicoId: 'u7', assinaturaAnexoId: null, assinanteNome: null, assinaturaRecusada: true, motivoRecusa: 'Ausente',
+          anexos: [{ id: 's1', tipo: 'ASSINATURA' }],
+        });
+      });
+
+      it('o ADMIN colhe a assinatura numa OS de outro técnico: ela é a aceita', async () => {
+        await assinaturaAceita('u7');
+        expect(await db.os.get('o1')).toMatchObject({ assinaturaAnexoId: 's1', assinanteNome: 'Maria', assinaturaRecusada: false });
+      });
+    });
+
+    describe('M2: CODIGO_PROVISORIO_DUPLICADO na criação da OS', () => {
+      const rejeitar = (req: TestRequest, codigo: string) => req.flush({
+        resultados: [{ mutationId: req.request.body.mutacoes[0].mutationId, status: 'REJEITADO', erro: { codigo, mensagem: 'x' } }],
+      });
+
+      it('gera outro OSP-, atualiza a OS local e a fila (o iniciar atrás) e reenvia na mesma sincronização, sem pendência', async () => {
+        await db.os.put(paraOsLocal('o1', null, os('ABERTA')));
+        await sync.registrar('os', 'o1', 'UPSERT', os('ABERTA'), null);
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO'), null, { separada: true });
+
+        const p = sync.sincronizar();
+        const push1 = await push();
+        const m1 = push1.request.body.mutacoes[0];
+        rejeitar(push1, 'CODIGO_PROVISORIO_DUPLICADO');
+        const push2 = await push();
+        const m2 = push2.request.body.mutacoes[0];
+        const novo = m2.dados.codigoProvisorio as string;
+        expect(m2.mutationId).not.toBe(m1.mutationId);
+        expect(m2.dados.status).toBe('ABERTA');
+        expect(codigoProvisorioOsValido(novo)).toBe(true);
+        expect(novo).not.toBe('OSP-0Z9XY7');
+        expect((await db.os.get('o1'))?.codigoProvisorio).toBe(novo);
+        expect((await fila()).map((m) => (m.dados as OsDados).codigoProvisorio)).toEqual([novo, novo]);
+        expect(await db.pendencias.count()).toBe(0);
+        ok(push2, 0, os('ABERTA', { codigoProvisorio: novo, numero: 9 }));
+        const push3 = await push();
+        expect(push3.request.body.mutacoes[0]).toMatchObject({ baseVersion: 0, dados: { status: 'EM_ANDAMENTO', codigoProvisorio: novo } });
+        ok(push3, 1, os('EM_ANDAMENTO', { codigoProvisorio: novo, numero: 9 }));
+        await pullVazio();
+        await p;
+        expect(await db.os.get('o1')).toMatchObject({ codigoProvisorio: novo, numero: 9, version: 1 });
+      });
+
+      it('repetido para no teto de trocas (o guarda) e vira pendência', async () => {
+        await db.os.put(paraOsLocal('o1', null, os('ABERTA')));
+        await sync.registrar('os', 'o1', 'UPSERT', os('ABERTA'), null);
+        const p = sync.sincronizar();
+        for (let i = 0; i < 4; i++) rejeitar(await push(), 'CODIGO_PROVISORIO_DUPLICADO');
+        await pullVazio();
+        await p;
+        http.expectNone('/api/sync/push');
+        expect(await db.pendencias.toArray()).toMatchObject([{ tipo: 'REJEITADO', entidade: 'os', erro: { codigo: 'CODIGO_PROVISORIO_DUPLICADO' } }]);
       });
     });
 
