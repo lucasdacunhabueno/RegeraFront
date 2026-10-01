@@ -5,6 +5,7 @@ import type { Perfil } from './core/auth/auth-models';
 import { AuthService } from './core/auth/auth-service';
 import { routes } from './app.routes';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
+import { KanbanPage } from './features/kanban/kanban-page';
 import { PropostaDetalhePage } from './features/propostas/proposta-detalhe-page';
 import { PropostasPage } from './features/propostas/propostas-page';
 import { WizardPropostaPage } from './features/propostas/wizard-proposta-page';
@@ -90,7 +91,22 @@ describe('app.routes', () => {
     expect(await (r.loadComponent as () => Promise<unknown>)()).toBe(PropostaDetalhePage);
   });
 
-  it('kanban continua só para ADMIN e COMERCIAL', () => {
-    expect(rota('kanban')?.canMatch?.length).toBe(1);
+  it('/kanban: o kanban lazy, só para ADMIN e COMERCIAL (o técnico e sem sessão voltam para a raiz)', async () => {
+    const r = rota('kanban')!;
+    expect(r.component).toBeUndefined();
+    expect(await (r.loadComponent as () => Promise<unknown>)()).toBe(KanbanPage);
+    expect(r.canMatch?.length).toBe(1);
+    const guard = r.canMatch![0] as CanMatchFn;
+    const passa = (perfil: Perfil | null) => {
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({
+        providers: [provideRouter([]), { provide: AuthService, useValue: { usuario: signal(perfil ? { id: 'u', perfil } : null) } }],
+      });
+      return TestBed.runInInjectionContext(() => guard({} as Route, [], {} as never));
+    };
+    expect(passa('ADMIN')).toBe(true);
+    expect(passa('COMERCIAL')).toBe(true);
+    expect(passa('TECNICO')).toBeInstanceOf(UrlTree);
+    expect(passa(null)).toBeInstanceOf(UrlTree);
   });
 });

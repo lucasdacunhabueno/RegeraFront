@@ -4,7 +4,6 @@ import { autenticadoGuard, perfilGuard } from './core/auth/auth-guards';
 import { AuthService } from './core/auth/auth-service';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 
-const emBreve = () => import('./features/em-breve/em-breve-page').then((m) => m.EmBrevePage);
 const wizardProposta = () => import('./features/propostas/wizard-proposta-page').then((m) => m.WizardPropostaPage);
 
 export const routes: Routes = [
@@ -19,7 +18,11 @@ export const routes: Routes = [
         pathMatch: 'full',
         redirectTo: () => (inject(AuthService).usuario()?.perfil === 'TECNICO' ? 'propostas' : 'kanban'),
       },
-      { path: 'kanban', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Kanban' } },
+      {
+        path: 'kanban',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        loadComponent: () => import('./features/kanban/kanban-page').then((m) => m.KanbanPage),
+      },
       { path: 'propostas', loadComponent: () => import('./features/propostas/propostas-page').then((m) => m.PropostasPage) },
       // ordem do P4c: propostas/nova, propostas/:id/editar, propostas/:id/corrigir, propostas/:id
       {
