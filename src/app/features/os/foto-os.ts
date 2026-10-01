@@ -1,5 +1,5 @@
 import { paraBytes } from '../../core/arquivos/arquivos-service';
-import { gerarImagens } from '../../core/arquivos/imagem-service';
+import { gerarImagens, SaidaImagem } from '../../core/arquivos/imagem-service';
 import { sha256Hex } from '../../core/util/sha256';
 import { ErroOs } from './erro-os';
 
@@ -9,6 +9,7 @@ export const FOTO_QUALIDADE = 0.75;
 /** Miniatura gerada na captura: é o que fica no aparelho depois do upload aceito (P4b-R26). */
 export const MINIATURA_LADO_MAXIMO = 320;
 export const MINIATURA_QUALIDADE = 0.7;
+const SAIDA_MINIATURA: SaidaImagem = { max: MINIATURA_LADO_MAXIMO, tipo: 'image/jpeg', qualidade: MINIATURA_QUALIDADE };
 /** O limite do servidor para FOTO (`AnexoOsService.MAX_FOTO_BYTES`): acima disso o upload voltaria 400. */
 export const FOTO_MAX_BYTES = 3 * 1024 * 1024;
 /** Abaixo disto livre no armazenamento do site, o aparelho recusa mais fotos. */
@@ -46,7 +47,7 @@ export async function prepararFoto(arquivo: Blob): Promise<FotoPreparada> {
   try {
     geradas = await gerarImagens(arquivo, [
       { max: FOTO_LADO_MAXIMO, tipo: 'image/jpeg', qualidade: FOTO_QUALIDADE },
-      { max: MINIATURA_LADO_MAXIMO, tipo: 'image/jpeg', qualidade: MINIATURA_QUALIDADE },
+      SAIDA_MINIATURA,
     ]);
   } catch (e) {
     // a mensagem ao técnico é genérica; a causa real (formato, decodificador, memória) fica para o suporte de campo
@@ -65,6 +66,15 @@ export async function prepararFoto(arquivo: Blob): Promise<FotoPreparada> {
     largura: foto.largura,
     altura: foto.altura,
   };
+}
+
+/**
+ * A miniatura (320 px, JPEG 0,7) de uma imagem que já está no aparelho, com a mesma rotina da captura: é como a foto
+ * que só o servidor tem entra no PDF da OS (M2P2-R10), nunca em tamanho cheio. Erro de decodificação propaga.
+ */
+export async function gerarMiniatura(imagem: Blob): Promise<ArrayBuffer> {
+  const [miniatura] = await gerarImagens(imagem, [SAIDA_MINIATURA]);
+  return paraBytes(miniatura.blob);
 }
 
 /** Menos de 100 MB livres pela estimativa do navegador. Sem a API, ou sem resposta completa, não bloqueia. */

@@ -1,6 +1,6 @@
 import { vi } from 'vitest';
 import { ErroOs } from './erro-os';
-import { FOTO_MAX_BYTES, prepararFoto } from './foto-os';
+import { FOTO_MAX_BYTES, gerarMiniatura, prepararFoto } from './foto-os';
 
 interface CanvasFalso {
   width: number;
@@ -209,5 +209,23 @@ describe('prepararFoto', () => {
       throw new DOMException('negado', 'SecurityError');
     });
     await expect(prepararFoto(foto())).resolves.toBeTruthy();
+  });
+});
+
+describe('gerarMiniatura (M2P2-R10: foto que só o servidor tem, no PDF)', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it('reduz ao tamanho da miniatura da captura (320 px, JPEG 0,7), sem canvas do tamanho original', async () => {
+    const { fn } = decodificador(1600, 1200);
+    const canvases = canvasesFalsos();
+    const imagem = new Blob([new Uint8Array(10)], { type: 'image/jpeg' });
+    const r = await gerarMiniatura(imagem);
+    expect(fn.mock.calls[0]).toEqual([imagem, { imageOrientation: 'from-image' }]);
+    expect(canvases.map((c) => c.noToBlob)).toEqual([[320, 240]]);
+    expect(canvases[0].toBlob).toHaveBeenCalledWith(expect.any(Function), 'image/jpeg', 0.7);
+    expect(new Uint8Array(r)[0]).toBe(1);
   });
 });

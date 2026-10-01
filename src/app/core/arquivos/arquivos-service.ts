@@ -117,6 +117,22 @@ export class ArquivosService {
     }
   }
 
+  /**
+   * Os bytes como Blob (com o mime), do cache local ou baixados com internet e sessão (e então gravados no cache), sem
+   * object URL: para reduzir uma imagem no aparelho (a foto da OS no PDF, M2P2-R10). Null nos mesmos casos do
+   * `obterDataUrl`. Nunca falha.
+   */
+  async obterBlob(id: string): Promise<Blob | null> {
+    const geracao = this.geracao;
+    try {
+      const cache = await this.lerOuBaixar(id);
+      if (!cache || geracao !== this.geracao) return null;
+      return new Blob([cache.bytes], { type: cache.mime });
+    } catch {
+      return null;
+    }
+  }
+
   /** Garante os bytes no cache local (para exibir/gerar PDF offline) sem criar object URL. Nunca falha. */
   async garantirCache(id: string): Promise<void> {
     try {

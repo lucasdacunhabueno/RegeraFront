@@ -20,9 +20,11 @@ import type { ItemPropostaLocal, PropostaLocal, StatusProposta } from '../propos
 import { codigoProvisorioOsValido } from './codigo-provisorio-os';
 import { ErroOs } from './erro-os';
 import type { FotoPreparada } from './foto-os';
-import { AnexoOsDados, AnexoOsLocal, NotaOsLocal, OsDados, OsLocal, paraOsLocal, StatusOs } from './os-models';
 import {
-  EntradaPdfOs, montarEntradaOs, ordenarParaTecnico, OsRepo, PREPARAR_FOTO,
+  AnexoOsDados, AnexoOsLocal, NotaOsLocal, OsDados, OsLocal, paraAnexoOsServidor, paraOsLocal, StatusOs,
+} from './os-models';
+import {
+  EntradaPdfOs, MINIATURA_FOTO, montarEntradaOs, ordenarParaTecnico, OsRepo, PREPARAR_FOTO,
 } from './os-repo';
 
 const ADMIN: UsuarioSessao = { id: 'u-adm', nome: 'Ana Admin', email: 'ana@regera.com', perfil: 'ADMIN', ativo: true };
@@ -84,17 +86,18 @@ describe('montarEntradaOs', () => {
     notas: [{ id: 'n1', texto: 'Cheguei', autorId: TECNICO.id, criadaEm: '2026-10-01T12:00:00Z' }],
   }));
 
-  it('monta a OS sem nenhum campo de valor, com o cliente sem documento (TECNICO), o técnico e as notas', () => {
-    const os: OsLocal = { ...base(), notas: [...base().notas, { id: 'n2', texto: 'Saí', autorId: null, criadaEm: null,
-      autorLocalId: TECNICO.id, criadaLocalEm: '2026-10-01T13:00:00Z' }] };
+  it('monta a OS sem nenhum campo de valor, sem o CPF/CNPJ do cliente (R8), com o técnico, o início local e as notas', () => {
+    const os: OsLocal = { ...base(), iniciadaLocalEm: '2026-10-01T11:30:00Z', notas: [...base().notas, { id: 'n2', texto: 'Saí',
+      autorId: null, criadaEm: null, autorLocalId: TECNICO.id, criadaLocalEm: '2026-10-01T13:00:00Z' }] };
     const e = montarEntradaOs({
-      os, cliente: { ...paraClienteLocal('c1', 1, cliente), documento: null }, empresa: null, logoDataUrl: null,
+      os, cliente: paraClienteLocal('c1', 1, cliente), empresa: null, logoDataUrl: null,
       usuarios: [{ id: TECNICO.id, nome: TECNICO.nome, perfil: 'TECNICO' }, { id: COMERCIAL.id, nome: COMERCIAL.nome, perfil: 'COMERCIAL' }],
       fotos: [], assinatura: null, emitidaEm: '2026-10-01T14:00:00Z',
     });
     expect(e.os).toMatchObject({
       codigoExibido: 'OS-000123', revisao: 1, tipo: 'INSTALACAO', rotuloTipo: 'Instalação', propostaNumero: 277,
       propostaCodigoExibido: '000277', resumoExecucao: 'Feito', concluidaEm: '2026-10-01T14:00:00Z',
+      iniciadaEm: '2026-10-01T11:30:00Z',
       endereco: 'Av. Paulista, 1000 - São Paulo/SP - CEP 01310-100', emitidaEm: '2026-10-01T14:00:00Z',
     });
     expect(e.cliente).toMatchObject({ nome: 'Cliente Ltda', documento: null, endereco: 'Av. Paulista, 1000 - cj 1 - Bela Vista - São Paulo/sp - CEP 01310-100' });
@@ -110,6 +113,12 @@ describe('montarEntradaOs', () => {
     const chaves = (v: unknown): string[] => (v && typeof v === 'object'
       ? Object.entries(v).flatMap(([k, x]) => [k, ...chaves(x)]) : []);
     expect(chaves(e).filter((k) => VALOR.test(k))).toEqual([]);
+    expect(JSON.stringify(e)).not.toContain('11444777000161');
+    // o do servidor vence o local
+    expect(montarEntradaOs({
+      os: { ...os, iniciadaEm: '2026-10-01T11:31:00Z' }, cliente: null, empresa: null, logoDataUrl: null, usuarios: [], fotos: [],
+      assinatura: null, emitidaEm: '2026-10-01T14:00:00Z',
+    }).os.iniciadaEm).toBe('2026-10-01T11:31:00Z');
   });
 
   it('com assinatura, a recusa não sai; sem cliente no aparelho, o bloco do cliente fica nulo', () => {
@@ -134,11 +143,12 @@ describe('OsRepo', () => {
   const online = signal(false);
   const pdf = { logoDataUrl: vi.fn() };
   const arquivos = {
-    obterDataUrl: vi.fn(), limpar: vi.fn(), geracaoAtual: () => 0, garantirCache: vi.fn(async () => undefined),
+    obterDataUrl: vi.fn(), obterBlob: vi.fn(), limpar: vi.fn(), geracaoAtual: () => 0, garantirCache: vi.fn(async () => undefined),
   };
   let nFoto = 0;
   const preparar = vi.fn<(arquivo: Blob) => Promise<FotoPreparada>>();
   const gerarPdf = vi.fn<(e: EntradaPdfOs) => Promise<Blob>>();
+  const reduzir = vi.fn<(imagem: Blob) => Promise<ArrayBuffer>>();
 
   beforeEach(async () => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -148,6 +158,8 @@ describe('OsRepo', () => {
     nFoto = 0;
     pdf.logoDataUrl.mockReset().mockResolvedValue('data:image/png;base64,TE9HTw==');
     arquivos.obterDataUrl.mockReset().mockResolvedValue(null);
+    arquivos.obterBlob.mockReset().mockResolvedValue(null);
+    reduzir.mockReset().mockResolvedValue(new Uint8Array([0xff, 0xd8, 0x99]).buffer as ArrayBuffer);
     preparar.mockReset().mockImplementation(async () => {
       const n = ++nFoto;
       return {
@@ -165,6 +177,7 @@ describe('OsRepo', () => {
         { provide: PdfService, useValue: pdf },
         { provide: ArquivosService, useValue: arquivos },
         { provide: PREPARAR_FOTO, useValue: preparar },
+        { provide: MINIATURA_FOTO, useValue: reduzir },
       ],
     });
     repo = TestBed.inject(OsRepo);
@@ -346,6 +359,18 @@ describe('OsRepo', () => {
       expect(chaves(d).filter((k) => VALOR.test(k))).toEqual([]);
     });
 
+    it('linha com item fora do catálogo do aparelho ou inativo vai sem vínculo; a natureza ausente vem do catálogo', async () => {
+      usuario.set(ADMIN);
+      const base = await proposta('APROVADA');
+      await proposta('APROVADA', { itens: [
+        { ...base.itens[0], id: 'l3', itemCatalogoId: 'i-sumiu', natureza: null },
+        { ...base.itens[1], id: 'l4', natureza: null },
+        { ...base.itens[0], id: 'l5', natureza: null },
+      ] });
+      const os = (await db.os.get(await repo.gerarDaProposta('p1')))!;
+      expect(os.itens.map((i) => [i.itemCatalogoId, i.natureza])).toEqual([[null, 'PRODUTO'], [null, 'SERVICO'], ['i1', 'PRODUTO']]);
+    });
+
     it.each([
       ['VENDA', 'ENTREGA'], ['SERVICO', 'SERVICO'], ['MANUTENCAO', 'MANUTENCAO'], ['LOCACAO', 'ENTREGA'],
     ] as const)('tipo derivado: %s → %s; o parâmetro troca o tipo e o concluiProposta', async (tipoProposta, tipoOs) => {
@@ -433,6 +458,17 @@ describe('OsRepo', () => {
       expect([semTecnico.codigo, semTecnico.campo]).toEqual(['VALIDACAO', 'tecnicoId']);
     });
 
+    it('Q21: em andamento, o técnico atribuído desmarca "conclui a proposta"; o COMERCIAL, não', async () => {
+      await noAparelho('EM_ANDAMENTO');
+      usuario.set(COMERCIAL);
+      const com = await erroDe(repo.salvarCabecalho('o1', { concluiProposta: false }));
+      expect([com.codigo, com.campo]).toEqual(['OS_NAO_EDITAVEL', 'concluiProposta']);
+      usuario.set(TECNICO);
+      await repo.salvarCabecalho('o1', { concluiProposta: false });
+      expect(dadosDe((await fila())[0])).toMatchObject({ status: 'EM_ANDAMENTO', concluiProposta: false });
+      expect((await db.os.get('o1'))!.concluiProposta).toBe(false);
+    });
+
     it('TECNICO não altera o cabeçalho; comercial de outra OS recebe ACESSO_NEGADO; técnico inativo e item recusados', async () => {
       await noAparelho('ABERTA');
       const tec = await erroDe(repo.salvarCabecalho('o1', { dataPrevista: '2026-10-09' }));
@@ -497,7 +533,10 @@ describe('OsRepo', () => {
       const [m] = await fila();
       expect(m).toMatchObject({ separada: true, baseVersion: 2 });
       expect(dadosDe(m).status).toBe('EM_ANDAMENTO');
-      expect((await db.os.get('o1'))!.status).toBe('EM_ANDAMENTO');
+      // o início fica no aparelho para o PDF offline (iniciadaEm é [srv]) e não vai para a rede
+      expect(await db.os.get('o1')).toMatchObject({ status: 'EM_ANDAMENTO', iniciadaEm: null, iniciadaLocalEm: AGORA.toISOString() });
+      expect(chaves(m.dados)).not.toContain('iniciadaLocalEm');
+      expect(dadosDe(m).iniciadaEm).toBeNull();
       await db.os.put(paraOsLocal('o2', 1, osDados('ABERTA', { codigoProvisorio: 'OSP-222222', tecnicoId: null })));
       usuario.set(ADMIN);
       const e = await erroDe(repo.iniciar('o2'));
@@ -678,6 +717,15 @@ describe('OsRepo', () => {
       expect(await db.anexosOs.count()).toBe(0);
     });
 
+    it('QuotaExceededError ao gravar a assinatura: SEM_ESPACO, sem anexo, upload nem mudança na recusa', async () => {
+      await noAparelho('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+      vi.spyOn(db.anexosOs, 'add').mockRejectedValue(new DOMException('cheio', 'QuotaExceededError'));
+      const e = await erroDe(repo.assinar('o1', { png: { bytes: PNG, sha256: SHA_PNG }, nome: 'Maria' }));
+      expect([e.codigo, e.campo, e.message]).toEqual(['SEM_ESPACO', 'assinatura', 'Pouco espaço no aparelho para gravar a assinatura.']);
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.os.get('o1')).toMatchObject({ assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+    });
+
     it('recusarAssinatura: UPSERT com a recusa e o motivo; recusada se já há assinatura; motivo de 3 a 500', async () => {
       await noAparelho('EM_ANDAMENTO');
       expect((await erroDe(repo.recusarAssinatura('o1', 'ab'))).campos).toEqual({ motivoRecusa: 'O motivo da recusa tem de 3 a 500 caracteres.' });
@@ -736,16 +784,30 @@ describe('OsRepo', () => {
     });
 
     it('a assinatura do aparelho e as fotos (miniaturas) vão para o PDF, sem imagens no snapshot', async () => {
-      await noAparelho('EM_ANDAMENTO', { anexos: [anexoServidor({ legenda: 'Do servidor' })] });
-      arquivos.obterDataUrl.mockResolvedValue('data:image/jpeg;base64,U0VSVg==');
+      await noAparelho('EM_ANDAMENTO', { anexos: [
+        anexoServidor({ legenda: 'Do servidor' }),
+        anexoServidor({ id: 'fs2', arquivoId: 'a-fs2', legenda: 'Fora do cache', tiradaEm: '2026-10-01T11:01:00Z' }),
+        anexoServidor({ id: 'fs3', arquivoId: 'a-fs3', legenda: 'Ilegível', tiradaEm: '2026-10-01T11:02:00Z' }),
+      ] });
+      const cheia = new Blob([new Uint8Array(2_000_000)], { type: 'image/jpeg' });
+      const ilegivel = new Blob([new Uint8Array(1)], { type: 'image/jpeg' });
+      arquivos.obterBlob.mockImplementation(async (id: string) => (id === 'a-fs1' ? cheia : id === 'a-fs3' ? ilegivel : null));
+      reduzir.mockImplementation(async (b: Blob) => {
+        if (b === ilegivel) throw new Error('decodificador');
+        return new Uint8Array([0xff, 0xd8, 0x99]).buffer as ArrayBuffer;
+      });
+      vi.spyOn(console, 'warn').mockImplementation(() => undefined);
       await repo.adicionarFoto('o1', arquivo(), { legenda: 'Depois', momento: 'DEPOIS' });
       await repo.assinar('o1', { png: { bytes: PNG, sha256: SHA_PNG }, nome: 'Maria', papel: 'Síndica' });
       await repo.concluir('o1', 'Feito', gerarPdf);
       const e = gerarPdf.mock.calls[0][0];
+      // M2P2-R10: a foto que só o servidor tem entra reduzida à miniatura, nunca em tamanho cheio
       expect(e.fotos.map((f) => [f.legenda, f.imagem])).toEqual([
-        ['Do servidor', 'data:image/jpeg;base64,U0VSVg=='], ['Depois', 'data:image/jpeg;base64,/9gR'],
+        ['Do servidor', 'data:image/jpeg;base64,/9iZ'], ['Fora do cache', null], ['Ilegível', null],
+        ['Depois', 'data:image/jpeg;base64,/9gR'],
       ]);
-      expect(arquivos.obterDataUrl).toHaveBeenCalledWith('a-fs1');
+      expect(reduzir).toHaveBeenCalledWith(cheia);
+      expect(arquivos.obterDataUrl).not.toHaveBeenCalled();
       expect(e.assinatura).toMatchObject({ nome: 'Maria', papel: 'Síndica', assinadaEm: AGORA.toISOString(), imagem: 'data:image/png;base64,iVBORwECAw==' });
       expect(e.recusaAssinatura).toBeNull();
       const doc = (await db.anexosOs.toArray()).find((a) => a.tipo === 'DOCUMENTO')!;
@@ -778,6 +840,74 @@ describe('OsRepo', () => {
       expect((await erroDe(repo.concluir('o1', 'Feito', gerarPdf))).codigo).toBe('OS_ALTERADA');
       expect(await db.outbox.count()).toBe(0);
       expect(await db.anexosOs.count()).toBe(0);
+    });
+
+    it('M2P2-R9: um upload aceito durante a geração não muda o PDF: grava de primeira, sobre a versão nova', async () => {
+      const os = await noAparelho('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' }, 3);
+      const f1 = await repo.adicionarFoto('o1', arquivo(), { legenda: 'Quadro' });
+      gerarPdf.mockImplementationOnce(async () => {
+        // o que o aplicarUpload do SyncService faz com a foto aceita
+        const a = (await db.anexosOs.get(f1))!;
+        await db.anexosOs.put({ ...a, enviado: true, arquivoId: `a-${f1}`, bytes: null });
+        await db.os.update('o1', { version: 4, anexos: [...os.anexos, paraAnexoOsServidor(anexoServidor({ id: f1, arquivoId: `a-${f1}`, legenda: 'Quadro' }))] });
+        return new Blob([PDF]);
+      });
+      await repo.concluir('o1', 'Feito', gerarPdf);
+      expect(gerarPdf).toHaveBeenCalledTimes(1);
+      const concluir = (await fila()).find((m) => m.entidade === 'os')!;
+      expect(concluir).toMatchObject({ baseVersion: 4, separada: true });
+      expect(await db.os.get('o1')).toMatchObject({ version: 4, status: 'CONCLUIDA', anexos: [{ id: f1 }] });
+    });
+
+    it('uma foto gravada durante a geração faz gerar de novo, já com ela', async () => {
+      await noAparelho('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+      gerarPdf.mockImplementationOnce(async () => {
+        await db.anexosOs.put({
+          id: 'f9', osId: 'o1', tipo: 'FOTO', sha256: 'c'.repeat(64), legenda: 'Tarde', momento: null, tiradaEm: AGORA.toISOString(),
+          assinanteNome: null, assinantePapel: null, revisaoOs: null, codigoExibido: null, bytes: new ArrayBuffer(1),
+          miniatura: new ArrayBuffer(1), enviado: false, arquivoId: null,
+        });
+        return new Blob(['velho']);
+      });
+      await repo.concluir('o1', 'Feito', gerarPdf);
+      expect(gerarPdf).toHaveBeenCalledTimes(2);
+      expect(gerarPdf.mock.calls[0][0].fotos).toHaveLength(0);
+      expect(gerarPdf.mock.calls[1][0].fotos.map((f) => f.legenda)).toEqual(['Tarde']);
+    });
+
+    it('um CONFLITO que chega durante a geração trava na transação: nada é gravado', async () => {
+      await noAparelho('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+      gerarPdf.mockImplementationOnce(async () => {
+        await db.pendencias.put(conflito());
+        return new Blob([PDF]);
+      });
+      expect((await erroDe(repo.concluir('o1', 'Feito', gerarPdf))).codigo).toBe('RESOLVA_A_PENDENCIA');
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.anexosOs.count()).toBe(0);
+      expect((await db.os.get('o1'))!.status).toBe('EM_ANDAMENTO');
+    });
+
+    it('M2P2-R8: o PDF nunca leva o CPF/CNPJ do cliente, nem quando o ADMIN conclui (nem no snapshot); o CNPJ da empresa fica', async () => {
+      usuario.set(ADMIN);
+      await noAparelho('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+      expect((await db.clientes.get('c1'))!.documento).toBe('11444777000161');
+      await repo.concluir('o1', 'Feito', gerarPdf);
+      const e = gerarPdf.mock.calls[0][0];
+      expect(e.cliente).toMatchObject({ nome: 'Cliente Ltda', documento: null });
+      expect(JSON.stringify(e)).not.toContain('11444777000161');
+      expect(e.empresa.cnpj).toBe('11222333000181');
+      const doc = (await db.anexosOs.toArray()).find((a) => a.tipo === 'DOCUMENTO')!;
+      expect(JSON.stringify(doc.snapshot)).not.toContain('11444777000161');
+      expect(JSON.stringify(doc.snapshot)).toContain('11222333000181');
+    });
+
+    it('QuotaExceededError ao gravar o PDF: SEM_ESPACO, sem a conclusão na fila', async () => {
+      await noAparelho('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+      vi.spyOn(db.anexosOs, 'add').mockRejectedValue(new DOMException('cheio', 'QuotaExceededError'));
+      const e = await erroDe(repo.concluir('o1', 'Feito', gerarPdf));
+      expect([e.codigo, e.message]).toEqual(['SEM_ESPACO', 'Pouco espaço no aparelho para gravar o PDF.']);
+      expect(await db.outbox.count()).toBe(0);
+      expect((await db.os.get('o1'))!.status).toBe('EM_ANDAMENTO');
     });
 
     it('perfis e status: COMERCIAL e outro técnico não concluem; já concluída; snapshot e PDF grandes', async () => {
@@ -827,10 +957,36 @@ describe('OsRepo', () => {
       await repo.reabrir('o1', ' Faltou o quadro ');
       const [m] = await fila();
       expect(m.separada).toBe(true);
-      expect(dadosDe(m)).toMatchObject({ status: 'EM_ANDAMENTO', motivoReabertura: 'Faltou o quadro' });
+      // os [srv] vão com o valor do servidor; a revisão nova e a conclusão zerada ficam só no aparelho
+      expect(dadosDe(m)).toMatchObject({
+        status: 'EM_ANDAMENTO', motivoReabertura: 'Faltou o quadro', revisao: 1, concluidaEm: '2026-10-01T12:00:00Z',
+      });
       const os = (await db.os.get('o1'))!;
       expect(os).toMatchObject({ status: 'EM_ANDAMENTO', revisao: 2, concluidaEm: null });
       expect(chaves(os)).not.toContain('motivoReabertura');
+    });
+
+    it('reabrir só a OS concluída: em andamento e aberta (com técnico) dão TRANSICAO_INVALIDA, sem mexer em nada', async () => {
+      usuario.set(ADMIN);
+      for (const status of ['EM_ANDAMENTO', 'ABERTA'] as const) {
+        const antes = await noAparelho(status);
+        const e = await erroDe(repo.reabrir('o1', 'Faltou algo'));
+        expect([e.codigo, e.message]).toEqual(['TRANSICAO_INVALIDA', 'Só uma OS concluída pode ser reaberta.']);
+        expect(await db.os.get('o1')).toEqual(antes);
+      }
+      usuario.set(OUTRO_COMERCIAL);
+      expect((await erroDe(repo.reabrir('o1', 'Faltou algo'))).codigo).toBe('ACESSO_NEGADO');
+      expect(await db.outbox.count()).toBe(0);
+    });
+
+    it('cancelar a OS já cancelada é recusado antes de validar, sem mutação vazia', async () => {
+      usuario.set(ADMIN);
+      await noAparelho('CANCELADA', { motivoCancelamento: 'Desistiu' });
+      const e = await erroDe(repo.cancelar('o1', ''));
+      expect([e.codigo, e.message]).toEqual(['TRANSICAO_INVALIDA', 'Esta OS já está cancelada.']);
+      usuario.set(OUTRO_COMERCIAL);
+      expect((await erroDe(repo.cancelar('o1', 'Desistiu'))).codigo).toBe('ACESSO_NEGADO');
+      expect(await db.outbox.count()).toBe(0);
     });
 
     it('aceitarTrabalho: só o ADMIN, com a proposta cancelada; o comando vai separado e não fica no registro', async () => {
@@ -848,10 +1004,18 @@ describe('OsRepo', () => {
       expect(chaves(await db.os.get('o1'))).not.toContain('aceitarTrabalho');
       await repo.adicionarNota('o1', 'Depois do aceite');
       expect(await fila()).toHaveLength(2); // a nota não coalesce no comando
-      await proposta('APROVADA');
-      expect((await erroDe(repo.aceitarTrabalho('o1'))).codigo).toBe('PROPOSTA_NAO_CANCELADA');
+      // sem efeito no servidor: proposta não cancelada (RECUSADA nunca tem OS), OS avulsa e OS cancelada
+      for (const status of ['APROVADA', 'RECUSADA'] as const) {
+        await proposta(status);
+        expect((await erroDe(repo.aceitarTrabalho('o1'))).codigo).toBe('PROPOSTA_NAO_CANCELADA');
+      }
       await noAparelho('CONCLUIDA', { propostaId: null });
       expect((await erroDe(repo.aceitarTrabalho('o1'))).codigo).toBe('PROPOSTA_NAO_CANCELADA');
+      await proposta('CANCELADA');
+      await noAparelho('CANCELADA');
+      const cancelada = await erroDe(repo.aceitarTrabalho('o1'));
+      expect([cancelada.codigo, cancelada.message]).toEqual(['OS_CANCELADA', 'Esta OS foi cancelada: não há trabalho dela a aceitar.']);
+      expect(await fila()).toHaveLength(2);
     });
 
     it('excluir: só ABERTA sem técnico, pelo ADMIN ou pelo COMERCIAL responsável; apaga os anexos locais', async () => {

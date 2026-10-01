@@ -245,6 +245,12 @@ export interface OsLocal {
   enderecoCidade: string | null;
   enderecoUf: string | null;
   iniciadaEm: string | null;
+  /**
+   * Só no aparelho: quando o `iniciar` foi feito aqui, para o PDF da conclusão offline mostrar o início enquanto o
+   * `iniciadaEm` [srv] não chega. Nunca vai para a rede (`dadosDaOs`) e some quando o estado do servidor substitui o
+   * registro.
+   */
+  iniciadaLocalEm?: string | null;
   concluidaEm: string | null;
   resumoExecucao: string | null;
   motivoCancelamento: string | null;

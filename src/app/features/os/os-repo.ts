@@ -22,7 +22,7 @@ import type { EstadoSync } from '../propostas/propostas-repo';
 import type { TipoProposta } from '../templates/template-models';
 import { gerarCodigoProvisorioOs } from './codigo-provisorio-os';
 import { ErroOs } from './erro-os';
-import { FotoPreparada, prepararFoto } from './foto-os';
+import { FotoPreparada, gerarMiniatura, prepararFoto } from './foto-os';
 import {
   AnexoOsLocal,
   AnexoOsServidor,
@@ -58,6 +58,15 @@ export type { EstadoSync } from '../propostas/propostas-repo';
 export const PREPARAR_FOTO = new InjectionToken<(arquivo: Blob) => Promise<FotoPreparada>>('PREPARAR_FOTO', {
   providedIn: 'root',
   factory: () => prepararFoto,
+});
+
+/**
+ * Reduz uma imagem ao tamanho da miniatura (`gerarMiniatura`, a rotina da captura): a foto que só o servidor tem entra
+ * assim no PDF (M2P2-R10). Token pelo mesmo motivo do `PREPARAR_FOTO`.
+ */
+export const MINIATURA_FOTO = new InjectionToken<(imagem: Blob) => Promise<ArrayBuffer>>('MINIATURA_FOTO', {
+  providedIn: 'root',
+  factory: () => gerarMiniatura,
 });
 
 // --- limites (os do servidor: OsDados, ItemOsDados, NotaOsDados, AnexoOsService) ---
@@ -235,6 +244,7 @@ export interface EntradaPdfOs {
     rotuloTipo: string;
     urgente: boolean;
     dataPrevista: string | null;
+    /** Do servidor; antes dele, a hora do `iniciar` neste aparelho. */
     iniciadaEm: string | null;
     /** Do servidor; na conclusão offline, a hora da emissão. */
     concluidaEm: string | null;
@@ -247,7 +257,7 @@ export interface EntradaPdfOs {
     propostaNumero: number | null;
     propostaCodigoExibido: string | null;
   };
-  /** null se o cliente não está no aparelho. O `documento` vem null para o TECNICO (Q14). */
+  /** null se o cliente não está no aparelho. O `documento` é sempre null (M2P2-R8): o PDF da OS não leva o CPF/CNPJ. */
   cliente: ClientePdf | null;
   tecnicoNome: string | null;
   responsavelNome: string | null;
@@ -372,7 +382,7 @@ export function montarEntradaOs(f: FontesPdfOs): EntradaPdfOs {
       rotuloTipo: rotuloTipoOs(os.tipo),
       urgente: os.urgente,
       dataPrevista: os.dataPrevista,
-      iniciadaEm: os.iniciadaEm,
+      iniciadaEm: os.iniciadaEm ?? os.iniciadaLocalEm ?? null,
       concluidaEm: os.concluidaEm ?? f.emitidaEm,
       emitidaEm: f.emitidaEm,
       descricao: os.descricao,
@@ -383,7 +393,9 @@ export function montarEntradaOs(f: FontesPdfOs): EntradaPdfOs {
     },
     cliente: c
       ? {
-          nome: c.nome, documento: c.documento, endereco: enderecoCliente ? linhaDoEndereco(enderecoCliente) : null,
+          // M2P2-R8: o PDF da OS nunca leva o CPF/CNPJ do cliente, para nenhum perfil (como o TECNICO, Q14; o snapshot
+          // fica imutável no servidor). O CNPJ da própria empresa, no cabeçalho, continua
+          nome: c.nome, documento: null, endereco: enderecoCliente ? linhaDoEndereco(enderecoCliente) : null,
           contato: c.contatoNome, telefone: c.telefone, email: c.email,
         }
       : null,
@@ -552,6 +564,7 @@ export class OsRepo {
   private readonly pdf = inject(PdfService);
   private readonly arquivos = inject(ArquivosService);
   private readonly preparar = inject(PREPARAR_FOTO);
+  private readonly reduzir = inject(MINIATURA_FOTO);
   /** Uma foto de cada vez (pico de memória da decodificação; limite de 20 conferido na ordem). */
   private filaDeFotos: Promise<unknown> = Promise.resolve();
 
@@ -649,8 +662,9 @@ export class OsRepo {
   /**
    * OS da proposta APROVADA ou EM_EXECUCAO, pelo ADMIN ou pelo COMERCIAL responsável dela. Copia, sem nenhum valor:
    * - as linhas, como *snapshot* (`codigo`, `nome`, `unidade`, `natureza`, quantidade → `quantidadePrevista`, ordem),
-   *   cada uma com UUID novo (o servidor recusa id de linha de outra OS). Linha de item do catálogo inativo neste
-   *   aparelho vai sem o vínculo (`itemCatalogoId` null): a linha nova com item inativo seria recusada;
+   *   cada uma com UUID novo (o servidor recusa id de linha de outra OS). Linha de item do catálogo inativo ou que
+   *   não está neste aparelho vai sem o vínculo (`itemCatalogoId` null): a linha nova com item inativo ou inexistente
+   *   seria recusada. A natureza ausente vem do catálogo (ou PRODUTO);
    * - o endereço principal do cliente (ou o primeiro), como *snapshot*;
    * - a descrição: as observações e o prazo de execução da proposta (cortada em 4.000);
    * - o tipo derivado (VENDA → ENTREGA, SERVICO → SERVICO, MANUTENCAO → MANUTENCAO, LOCACAO → ENTREGA), que
@@ -667,11 +681,12 @@ export class OsRepo {
       const catalogo = await this.db.itens.get(l.itemCatalogoId);
       itens.push({
         id: uuidv7(),
-        itemCatalogoId: catalogo && !catalogo.ativo ? null : l.itemCatalogoId,
+        // a linha é nova para o servidor, que recusa o vínculo com item inativo ou inexistente: só vai com o ativo
+        itemCatalogoId: catalogo?.ativo ? l.itemCatalogoId : null,
         codigo: texto(l.codigo) ?? '',
         nome: texto(l.nome) ?? '',
         unidade: texto(l.unidade) ?? '',
-        natureza: l.natureza ?? 'PRODUTO',
+        natureza: l.natureza ?? catalogo?.natureza ?? 'PRODUTO',
         quantidadePrevistaMilesimos: l.quantidadeMilesimos,
         ordem: i,
       });
@@ -806,7 +821,10 @@ export class OsRepo {
 
   // ------------------------------------------------------------------ execução
 
-  /** ABERTA → EM_ANDAMENTO (mutação separada), pelo técnico atribuído ou pelo ADMIN; exige técnico. */
+  /**
+   * ABERTA → EM_ANDAMENTO (mutação separada), pelo técnico atribuído ou pelo ADMIN; exige técnico. Marca
+   * `iniciadaLocalEm` (só no aparelho), para o PDF de uma conclusão offline mostrar o início.
+   */
   async iniciar(id: string): Promise<void> {
     const u = this.usuario();
     const atual = await this.carregar(id);
@@ -814,7 +832,7 @@ export class OsRepo {
       this.exigirPosse(atual, u);
       throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Só uma OS aberta pode ser iniciada.');
     }
-    const novo: OsLocal = { ...atual, status: 'EM_ANDAMENTO' };
+    const novo: OsLocal = { ...atual, status: 'EM_ANDAMENTO', iniciadaLocalEm: new Date().toISOString() };
     this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
     validacao(await this.validarCampos(atual, novo));
     exigirSemConflito(await this.pendenciasDa(id), 'iniciar');
@@ -927,7 +945,9 @@ export class OsRepo {
    *    de `codigoOsExibido`, `revisaoOs` = revisão da OS e o snapshot) e o upload dele, que sai por último;
    * 4. dispara a sincronização e devolve o Blob e o código impresso nele.
    * `precisaVoltar` (Q21) desmarca `concluiProposta` na própria mutação; sem ele, o valor da OS fica (o do escritório).
-   * P4b-R21: se a OS mudou durante a geração (o ack que traz o número), gera de novo, até 3 vezes (`OS_ALTERADA`).
+   * P4b-R21: se o que o PDF mostra mudou durante a geração (o ack que traz o número, um anexo novo), gera de novo, até
+   * 3 vezes (`OS_ALTERADA`). M2P2-R9: um upload aceito no meio-tempo (versão e `enviado`) não conta; a conclusão vai
+   * sobre a versão de agora.
    * Com um CONFLITO da OS, `RESOLVA_A_PENDENCIA`, antes de gerar e na transação.
    */
   async concluir(
@@ -959,13 +979,17 @@ export class OsRepo {
       try {
         gravou = await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.outbox, this.db.pendencias], async () => {
           exigirSemConflito(await this.pendenciasDa(id), 'concluir');
-          // o PDF foi gerado fora da transação: se a OS ou os anexos mudaram, ele não os representa mais
+          // o PDF foi gerado fora da transação: se o conteúdo dele mudou (a OS ou um anexo novo), ele não a representa
+          // mais. M2P2-R9: um upload aceito nesse meio-tempo só muda a versão e o `enviado`, e o PDF continua valendo
           const agora = await this.db.os.get(id);
-          if (!agora || JSON.stringify(agora) !== JSON.stringify(atual)) return false;
-          if (chaveDosAnexos(await this.anexosLocais(id)) !== chaveDosAnexos(locais)) return false;
-          const concluida: OsLocal = { ...novo, atualizadoEm: new Date().toISOString() };
+          if (!agora || chaveDoPdf(agora, await this.anexosLocais(id)) !== chaveDoPdf(atual, locais)) return false;
+          // sobre o registro de agora (a versão e os anexos do upload aceito), com a mesma conclusão
+          const concluida: OsLocal = {
+            ...agora, status: novo.status, resumoExecucao: novo.resumoExecucao, concluiProposta: novo.concluiProposta,
+            atualizadoEm: new Date().toISOString(),
+          };
           await this.db.os.put(concluida);
-          await this.sync.registrar('os', id, 'UPSERT', paraEnvio(concluida), atual.version, { separada: true });
+          await this.sync.registrar('os', id, 'UPSERT', paraEnvio(concluida), agora.version, { separada: true });
           await this.db.anexosOs.add(documento);
           await this.sync.registrarUploadAnexoOs(id, documento.id);
           return true;
@@ -990,6 +1014,11 @@ export class OsRepo {
   async cancelar(id: string, motivo: string): Promise<void> {
     const u = this.usuario();
     const atual = await this.carregar(id);
+    if (atual.status === 'CANCELADA') {
+      // mesmo status: a transição aceitaria, e a fila levaria uma mutação vazia
+      this.exigirPosse(atual, u);
+      throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Esta OS já está cancelada.');
+    }
     const motivoLimpo = texto(motivo);
     const novo: OsLocal = { ...atual, status: 'CANCELADA', motivoCancelamento: motivoLimpo };
     this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual), motivoLimpo));
@@ -1000,23 +1029,38 @@ export class OsRepo {
 
   /**
    * CONCLUIDA → EM_ANDAMENTO (separada), só pelo ADMIN, com o motivo (3 a 500), que vai como o comando
-   * `motivoReabertura` só nesta mutação. A revisão sobe já no aparelho, como no servidor (M2P1-R3): o PDF de uma nova
-   * conclusão offline sai com o `-R<n>` certo; o servidor ignora o valor enviado.
+   * `motivoReabertura` só nesta mutação. A revisão sobe e a conclusão sai já no aparelho, como no servidor (M2P1-R3):
+   * o PDF de uma nova conclusão offline sai com o `-R<n>` certo. São [srv]: a mutação leva os valores do servidor.
+   * Só a OS concluída: em outro status a transição seria outra (de ABERTA, um início, que mexe na proposta).
    */
   async reabrir(id: string, motivo: string): Promise<void> {
     const u = this.usuario();
     const atual = await this.carregar(id);
+    if (atual.status !== 'CONCLUIDA') {
+      this.exigirPosse(atual, u);
+      throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Só uma OS concluída pode ser reaberta.');
+    }
     const motivoLimpo = texto(motivo);
     const novo: OsLocal = { ...atual, status: 'EM_ANDAMENTO', revisao: (atual.revisao ?? 1) + 1, concluidaEm: null };
     this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual), motivoLimpo));
     exigirSemConflito(await this.pendenciasDa(id), 'reabrir');
-    await this.gravar(novo, atual.version, { separada: true, semConflito: 'reabrir', comandos: { motivoReabertura: motivoLimpo } });
+    await this.gravar(novo, atual.version, {
+      separada: true, semConflito: 'reabrir', comandos: { motivoReabertura: motivoLimpo },
+      envio: { revisao: atual.revisao, concluidaEm: atual.concluidaEm },
+    });
   }
 
   /**
-   * M2-R4: o ADMIN aceita o trabalho de uma OS cuja proposta foi cancelada (ou recusada): o servidor reabre a proposta.
+   * M2-R4: o ADMIN aceita o trabalho de uma OS cuja proposta foi cancelada: o servidor reabre a proposta.
    * O comando `aceitarTrabalho` vai só nesta mutação (separada, para uma edição seguinte não o apagar ao coalescer) e
    * nunca fica no registro. Os outros perfis recebem `ACESSO_NEGADO`.
+   *
+   * Recusado no aparelho onde o servidor não teria efeito (o `EfeitoOsNaProposta` ignora o comando em silêncio):
+   * - a proposta não está CANCELADA. RECUSADA também fica de fora: só se cria OS em proposta APROVADA ou EM_EXECUCAO,
+   *   e nenhuma das duas chega a RECUSADA, então o servidor nunca reabre uma recusada;
+   * - a OS é avulsa (sem proposta);
+   * - a própria OS está CANCELADA (`OS_CANCELADA`). O servidor decide pelas OS não canceladas da proposta: sem nenhuma,
+   *   não há trabalho a aceitar; com outra em curso, o aceite é dela.
    */
   async aceitarTrabalho(id: string): Promise<void> {
     const u = this.usuario();
@@ -1029,8 +1073,11 @@ export class OsRepo {
     if (!proposta) {
       throw new ErroOs('NAO_ENCONTRADA', 'os', 'A proposta não está neste aparelho. Sincronize e tente de novo.');
     }
-    if (proposta.status !== 'CANCELADA' && proposta.status !== 'RECUSADA') {
+    if (proposta.status !== 'CANCELADA') {
       throw new ErroOs('PROPOSTA_NAO_CANCELADA', 'os', 'Só há trabalho a aceitar com a proposta cancelada.');
+    }
+    if (atual.status === 'CANCELADA') {
+      throw new ErroOs('OS_CANCELADA', 'os', 'Esta OS foi cancelada: não há trabalho dela a aceitar.');
     }
     const comandos: ComandosOs = { aceitarTrabalho: true };
     this.exigirMutacao(atual, atual, u, contexto(atual, await this.temAssinatura(atual)), comandos);
@@ -1282,19 +1329,20 @@ export class OsRepo {
   /**
    * Grava o local e enfileira o UPSERT, na mesma transação, com `atualizadoEm` otimista (P4b-R19). `separada`: não
    * coalesce (transição, comando); `semConflito`: recusa, dentro da transação, se a OS tem um CONFLITO (P4c-R15);
-   * `comandos`: só nesta mutação, nunca no registro.
+   * `comandos`: só nesta mutação, nunca no registro; `envio`: campos [srv] que a mutação leva com o valor do servidor
+   * em vez do local (o `reabrir` sobe a revisão só no aparelho).
    */
   private async gravar(
     os: OsLocal,
     baseVersion: number | null,
-    opcoes: { separada?: boolean; semConflito?: AcaoTravada; comandos?: ComandosOs } = {},
+    opcoes: { separada?: boolean; semConflito?: AcaoTravada; comandos?: ComandosOs; envio?: Partial<OsLocal> } = {},
   ): Promise<void> {
     const local: OsLocal = { ...os, atualizadoEm: new Date().toISOString() };
     await this.db.transaction('rw', [this.db.os, this.db.outbox, this.db.pendencias], async () => {
       if (opcoes.semConflito) exigirSemConflito(await this.pendenciasDa(local.id), opcoes.semConflito);
       const separada = opcoes.separada || (await this.estouraNotas(local));
       await this.db.os.put(local);
-      await this.sync.registrar('os', local.id, 'UPSERT', paraEnvio(local, opcoes.comandos), baseVersion,
+      await this.sync.registrar('os', local.id, 'UPSERT', paraEnvio({ ...local, ...opcoes.envio }, opcoes.comandos), baseVersion,
         separada ? { separada: true } : {});
     });
     void this.sync.sincronizar();
@@ -1342,8 +1390,8 @@ export class OsRepo {
 
   /**
    * As fotos para o PDF, por momento da captura: as do servidor e as do aparelho. A imagem é a miniatura (o PDF fica
-   * pequeno, e é o que o aparelho guarda depois do upload); sem ela, os bytes; só do servidor, o cache de arquivos
-   * (ou o download, com internet).
+   * pequeno, e é o que o aparelho guarda depois do upload); sem ela, os bytes; só do servidor, a imagem do cache de
+   * arquivos (ou baixada, com internet) reduzida ao tamanho da miniatura (M2P2-R10), nunca em tamanho cheio.
    */
   private async fotosDoPdf(os: OsLocal, locais: readonly AnexoOsLocal[]): Promise<FotoPdfOs[]> {
     const doAparelho = new Map(locais.filter((a) => a.tipo === 'FOTO').map((a) => [a.id, a]));
@@ -1353,7 +1401,7 @@ export class OsRepo {
     for (const a of doServidor) {
       fotos.push({
         quando: instante(a.tiradaEm ?? a.criadoEm),
-        foto: { id: a.id, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm, imagem: await this.arquivos.obterDataUrl(a.arquivoId) },
+        foto: { id: a.id, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm, imagem: await this.miniaturaDoServidor(a.arquivoId) },
       });
     }
     for (const a of doAparelho.values()) {
@@ -1366,6 +1414,19 @@ export class OsRepo {
     return fotos
       .sort((a, b) => a.quando - b.quando || (a.foto.id < b.foto.id ? -1 : a.foto.id > b.foto.id ? 1 : 0))
       .map((x) => x.foto);
+  }
+
+  /** A foto do servidor reduzida à miniatura (M2P2-R10); null sem a imagem no aparelho ou se ela não abre. */
+  private async miniaturaDoServidor(arquivoId: string): Promise<string | null> {
+    const imagem = await this.arquivos.obterBlob(arquivoId);
+    if (!imagem) return null;
+    try {
+      return paraDataUrl(await this.reduzir(imagem), MIME.FOTO);
+    } catch (e) {
+      // o PDF sai sem a imagem (só a legenda); a causa fica para o suporte de campo
+      console.warn(e);
+      return null;
+    }
   }
 
   /**
@@ -1398,7 +1459,17 @@ export class OsRepo {
   }
 }
 
-/** Os anexos do aparelho como mudam para o PDF (um novo, ou um que subiu). */
-function chaveDosAnexos(anexos: readonly AnexoOsLocal[]): string {
-  return anexos.map((a) => `${a.id}:${a.enviado}`).sort().join('|');
+/**
+ * O que o PDF da OS lê dela, para o P4b-R21 do `concluir` (M2P2-R9): tudo menos a versão e o que um upload aceito muda
+ * sem mudar o conteúdo, isto é, o `enviado` e a lista de anexos do servidor (conta o conjunto de ids, do servidor e do
+ * aparelho) e a assinatura aceita espelhada do mesmo anexo, que no PDF sai igual à que estava na fila.
+ */
+const FORA_DO_PDF: ReadonlySet<string> = new Set([
+  'version', 'anexos', 'assinaturaAnexoId', 'assinanteNome', 'assinantePapel', 'assinadaEm',
+]);
+
+function chaveDoPdf(os: OsLocal, locais: readonly AnexoOsLocal[]): string {
+  const campos = Object.entries(os).filter(([k]) => !FORA_DO_PDF.has(k)).sort(([a], [b]) => a.localeCompare(b));
+  const anexos = [...new Set([...os.anexos.map((a) => a.id), ...locais.map((a) => a.id)])].sort();
+  return JSON.stringify([campos, anexos]);
 }
