@@ -725,7 +725,7 @@ describe('SyncService', () => {
       [409, 'REVISAO_INVALIDA', 'outra revisão'],
       [409, 'DOCUMENTO_DIVERGENTE', 'outro conteúdo'],
       [422, 'SHA_DIVERGENTE', 'integridade'],
-      [422, 'CODIGO_EXIBIDO_INVALIDO', 'código impresso'],
+      [422, 'CODIGO_EXIBIDO_INVALIDO', 'O código da proposta mudou. Gere o PDF de novo e reenvie.'],
       [404, 'PROPOSTA_NAO_ENCONTRADA', 'não foi encontrada'],
       [403, undefined, 'permissão'],
       [413, undefined, '10 MB'],

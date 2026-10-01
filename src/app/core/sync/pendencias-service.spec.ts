@@ -310,6 +310,68 @@ describe('PendenciasService', () => {
       expect(TestBed.inject(SyncService).sincronizar).toHaveBeenCalled();
     });
 
+    const doc = (id: string, enviado: boolean) => ({
+      id, propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-0Z9XY7', sha256: 'a'.repeat(64), geradoEm: '',
+      geradoPor: 'u1', bytes: null, enviado, arquivoId: enviado ? `a-${id}` : null,
+    });
+    const upload = (mutationId: string, documentoId: string) => ({
+      mutationId, entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD' as const, baseVersion: null,
+      dados: { documentoId }, separada: true, criadaEm: '',
+    });
+    const pendenciaProposta = (p: Partial<Pendencia> & Pick<Pendencia, 'tipo'>): Pendencia => ({
+      mutationId: 'mp1', entidade: 'proposta', agregadoId: 'p1', criadaEm: '',
+      mutacao: { ...mutProposta('mp1', 'p1', 'c1'), baseVersion: 3 },
+      ...p,
+    });
+
+    it('P4b-R14: descartar a pendência da proposta apaga os PDFs não enviados cujos uploads saem da fila', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
+      await db.documentos.bulkPut([doc('d1', false), doc('d2', true), doc('d3', false)]);
+      await db.outbox.bulkAdd([upload('up1', 'd1'), upload('up2', 'd2')]);
+      const p = pendenciaProposta({ tipo: 'REJEITADO', erro: { codigo: 'TRANSICAO_INVALIDA', mensagem: 'x' } });
+      await db.pendencias.put(p);
+
+      const promessa = svc.descartar(p);
+      (await vi.waitFor(() => http.expectOne('/api/sync/agregado/proposta/p1')))
+        .flush({ entidade: 'proposta', id: 'p1', version: 3, deleted: false, dados: prop('c1') });
+      await promessa;
+
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.pendencias.count()).toBe(0);
+      // d1: upload saiu da fila, não enviado → apagado; d2: já enviado → fica; d3: sem upload na fila → fica
+      expect((await db.documentos.toArray()).map((d) => d.id).sort()).toEqual(['d2', 'd3']);
+    });
+
+    it('P4b-R14: descartar a criação rejeitada da proposta também apaga o PDF não enviado da fila', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', null, prop('c1')));
+      await db.documentos.put(doc('d1', false));
+      await db.outbox.add(upload('up1', 'd1'));
+      const p = pendenciaProposta({ tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } });
+      p.mutacao.baseVersion = null;
+      await db.pendencias.put(p);
+
+      await svc.descartar(p);
+
+      expect(await db.propostas.get('p1')).toBeUndefined();
+      expect(await db.documentos.count()).toBe(0);
+      expect(await db.outbox.count()).toBe(0);
+    });
+
+    it('P4b-R14: manter a minha na proposta tira o upload da fila e apaga o PDF não enviado', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
+      await db.documentos.bulkPut([doc('d1', false), doc('d2', true)]);
+      await db.outbox.bulkAdd([upload('up1', 'd1'), upload('up2', 'd2')]);
+      const p = pendenciaProposta({ tipo: 'CONFLITO', versionServidor: 5, dadosServidor: prop('c2') });
+      await db.pendencias.put(p);
+
+      await svc.manterMinha(p);
+
+      const fila = await db.outbox.toArray();
+      expect(fila).toHaveLength(1);
+      expect(fila[0]).toMatchObject({ entidade: 'proposta', baseVersion: 5 });
+      expect((await db.documentos.toArray()).map((d) => d.id)).toEqual(['d2']);
+    });
+
     it('manter a minha ou usar a do servidor não valem para upload', async () => {
       const p: Pendencia = {
         mutationId: 'up1', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '',

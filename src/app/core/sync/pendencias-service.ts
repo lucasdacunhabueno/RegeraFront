@@ -23,10 +23,9 @@ export class PendenciasService {
     const adaptador = this.adaptador(p);
     const tabela = adaptador.tabela(this.db);
     const base = p.versionServidor ?? null;
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
       const local = await tabela.get(p.agregadoId);
-      await this.db.pendencias.delete(p.mutationId);
-      await this.db.outbox.where('agregadoId').equals(p.agregadoId).delete();
+      await this.limparAgregado(p);
       if (local) {
         await tabela.put(adaptador.paraLocal(p.agregadoId, base, adaptador.dadosDe(local)));
       }
@@ -52,7 +51,7 @@ export class PendenciasService {
     if (p.entidade === TIPO_UPLOAD_DOCUMENTO) return this.descartarUpload(p);
     if (p.mutacao.baseVersion === null) {
       const tabela = this.adaptador(p).tabela(this.db);
-      await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
+      await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
         await this.limparAgregado(p);
         await tabela.delete(p.agregadoId);
       });
@@ -74,7 +73,7 @@ export class PendenciasService {
     // atualização: o agregado local existe no servidor, então restaura a cópia dele em vez de apagar
     const proprio = p.mutacao.baseVersion !== null ? await this.buscarNoServidor(p, p.agregadoId) : null;
     const tabela = adaptador.tabela(this.db);
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela, this.db.propostas], async () => {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela, this.db.propostas], async () => {
       await this.limparAgregado(p);
       if (proprio && !proprio.deleted) {
         await tabela.put(adaptador.paraLocal(p.agregadoId, proprio.version, proprio.dados));
@@ -131,16 +130,30 @@ export class PendenciasService {
     return adaptador;
   }
 
+  /**
+   * Tira da fila e das pendências tudo do agregado. P4b-R14: os uploads de PDF que saem junto não têm mais como ser
+   * enviados, então os documentos locais deles ainda não enviados são apagados; os já enviados ficam (cópia do servidor).
+   * Precisa de `documentos` na transação.
+   */
   private async limparAgregado(p: Pendencia): Promise<void> {
+    const naFila = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
+    const pendentes = await this.db.pendencias.where('agregadoId').equals(p.agregadoId).toArray();
+    const documentoIds = [...naFila, ...pendentes.map((x) => x.mutacao)]
+      .filter((m) => m.entidade === TIPO_UPLOAD_DOCUMENTO)
+      .map((m) => (m.dados as DadosUpload | null)?.documentoId)
+      .filter((id): id is string => !!id);
     await this.db.pendencias.where('agregadoId').equals(p.agregadoId).delete();
     await this.db.outbox.where('agregadoId').equals(p.agregadoId).delete();
+    if (documentoIds.length > 0) {
+      await this.db.documentos.where('id').anyOf(documentoIds).filter((d) => !d.enviado).delete();
+    }
   }
 
   /** Aplica o estado do servidor (null/deleted = apagar) e limpa o agregado, tudo numa transação. */
   private async aplicarEClear(p: Pendencia, id: string, m: Mudanca | null): Promise<void> {
     const adaptador = this.adaptador(p);
     const tabela = adaptador.tabela(this.db);
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
       await this.limparAgregado(p);
       if (!m || m.deleted) {
         await tabela.delete(id);

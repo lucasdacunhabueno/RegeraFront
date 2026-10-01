@@ -38,7 +38,8 @@ const MOTIVO_UPLOAD_POR_CODIGO: Readonly<Record<string, string>> = {
   REVISAO_INVALIDA: 'é de outra revisão da proposta e não foi aceito.',
   DOCUMENTO_DIVERGENTE: 'não foi aceito: já existe no servidor um documento com este identificador e outro conteúdo.',
   SHA_DIVERGENTE: 'chegou diferente do que foi gerado (falha de integridade) e não foi aceito.',
-  CODIGO_EXIBIDO_INVALIDO: 'não foi aceito: o código impresso nele não é o desta proposta.',
+  // P4b-R13: típico de PROV trocado por colisão depois de o PDF ter sido gerado offline
+  CODIGO_EXIBIDO_INVALIDO: 'não foi aceito. O código da proposta mudou. Gere o PDF de novo e reenvie.',
   PROPOSTA_NAO_ENCONTRADA: 'não foi aceito: a proposta não foi encontrada no servidor ou você não tem mais acesso a ela.',
 };
 /** Por status HTTP, quando o `codigo` não diz mais (ex.: 413/415 do limite de upload). */
