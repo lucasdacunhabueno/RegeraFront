@@ -1,5 +1,5 @@
 import { vi } from 'vitest';
-import { compartilharPdf } from './compartilhar';
+import { arquivoPdf, compartilharArquivo, compartilharPdf } from './compartilhar';
 
 type NavegadorComShare = Navigator & { share?: unknown; canShare?: unknown };
 
@@ -67,10 +67,42 @@ describe('compartilharPdf', () => {
     expect(baixar).not.toHaveBeenCalled();
   });
 
-  it('NotAllowedError (o gesto expirou durante a geração): baixa', async () => {
+  it('NotAllowedError (o gesto expirou durante a geração): precisa-toque, sem baixar (P4c-R8)', async () => {
     definir(vi.fn().mockRejectedValue(new DOMException('sem gesto', 'NotAllowedError')), vi.fn().mockReturnValue(true));
-    await expect(compartilharPdf(blob, 'Proposta-000277.pdf')).resolves.toBe('baixado');
-    expect(baixar).toHaveBeenCalledWith(blob, 'Proposta-000277.pdf');
+    await expect(compartilharPdf(blob, 'Proposta-000277.pdf')).resolves.toBe('precisa-toque');
+    expect(baixar).not.toHaveBeenCalled();
+  });
+
+  describe('compartilharArquivo (o toque do painel "PDF pronto")', () => {
+    it('chama navigator.share na hora, antes de qualquer await, com o mesmo File', async () => {
+      const share = vi.fn().mockResolvedValue(undefined);
+      definir(share, vi.fn().mockReturnValue(true));
+      const arquivo = arquivoPdf(blob, 'Proposta-PROV-ABC123.pdf');
+      const resultado = compartilharArquivo(arquivo);
+      // síncrono: ainda dentro do gesto do usuário
+      expect(share).toHaveBeenCalledTimes(1);
+      expect(share.mock.calls[0][0].files[0]).toBe(arquivo);
+      await expect(resultado).resolves.toBe('compartilhado');
+    });
+
+    it('cancelar é cancelado; NotAllowedError de novo é precisa-toque; outra falha baixa', async () => {
+      const arquivo = arquivoPdf(blob, 'Proposta-000277.pdf');
+      definir(vi.fn().mockRejectedValue(new DOMException('x', 'AbortError')), vi.fn().mockReturnValue(true));
+      await expect(compartilharArquivo(arquivo)).resolves.toBe('cancelado');
+      definir(vi.fn().mockRejectedValue(new DOMException('x', 'NotAllowedError')), vi.fn().mockReturnValue(true));
+      await expect(compartilharArquivo(arquivo)).resolves.toBe('precisa-toque');
+      expect(baixar).not.toHaveBeenCalled();
+      definir(vi.fn(() => {
+        throw new TypeError('x');
+      }), vi.fn().mockReturnValue(true));
+      await expect(compartilharArquivo(arquivo)).resolves.toBe('baixado');
+      expect(baixar).toHaveBeenCalledWith(arquivo, 'Proposta-000277.pdf');
+    });
+
+    it('sem Web Share: baixa', async () => {
+      definir(undefined, undefined);
+      await expect(compartilharArquivo(arquivoPdf(blob, 'a.pdf'))).resolves.toBe('baixado');
+    });
   });
 
   it('outra falha do share (ex.: DataError): baixa, para o PDF não se perder', async () => {
