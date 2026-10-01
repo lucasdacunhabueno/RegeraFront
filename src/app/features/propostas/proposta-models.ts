@@ -78,6 +78,7 @@ export interface DocumentoDados {
 /**
  * Linha guardada no Dexie. Valores em inteiros `number` (centavos, milésimos, centésimos): exatos até 2^53, o que
  * cobre os limites de entrada; o cálculo converte para `bigint`. `null` = o perfil não vê o valor.
+ * Totais acima de 2^53 centavos perdem precisão aqui (ruling P4b-R10, ver `inteiro`).
  */
 export interface ItemPropostaLocal {
   id: string;
@@ -144,6 +145,12 @@ export interface DocumentoLocal {
 
 // --- dados <-> local ---
 
+/**
+ * Ruling P4b-R10: o servidor manda decimais como número JSON, e `JSON.parse` já os lê como double. Acima de ~9×10^13
+ * reais (2^53 centavos) o valor lido perde precisão, e o inteiro em `number` aqui também. Aceito: está muito além
+ * de qualquer proposta real (as entradas de item cabem com folga). `calcular` é exato em `bigint`; quando a
+ * exatidão importa, use o resultado dele direto, sem passá-lo por estes campos `number` de `PropostaLocal`.
+ */
 function inteiro(v: Decimal | null | undefined, para: (x: Decimal) => bigint): number | null {
   return v === null || v === undefined ? null : Number(para(v));
 }
@@ -279,15 +286,15 @@ export interface ContextoTransicao {
 const MOTIVO_MIN = 3;
 const MOTIVO_MAX = 500;
 
-const TODOS: readonly Perfil[] = ['ADMIN', 'COMERCIAL'];
+const ADMIN_E_COMERCIAL: readonly Perfil[] = ['ADMIN', 'COMERCIAL'];
 const SO_ADMIN: readonly Perfil[] = ['ADMIN'];
 
 /** Destinos de cada origem, na ordem em que aparecem para o usuário, e quem pode. */
 const TABELA: Partial<Record<StatusProposta, readonly (readonly [StatusProposta, readonly Perfil[]])[]>> = {
-  RASCUNHO: [['ENVIADA', TODOS], ['CANCELADA', TODOS]],
-  ENVIADA: [['RASCUNHO', TODOS], ['APROVADA', TODOS], ['RECUSADA', TODOS], ['CANCELADA', TODOS]],
-  APROVADA: [['EM_EXECUCAO', TODOS], ['CANCELADA', TODOS]],
-  EM_EXECUCAO: [['FINALIZADA', TODOS], ['CANCELADA', SO_ADMIN]],
+  RASCUNHO: [['ENVIADA', ADMIN_E_COMERCIAL], ['CANCELADA', ADMIN_E_COMERCIAL]],
+  ENVIADA: [['RASCUNHO', ADMIN_E_COMERCIAL], ['APROVADA', ADMIN_E_COMERCIAL], ['RECUSADA', ADMIN_E_COMERCIAL], ['CANCELADA', ADMIN_E_COMERCIAL]],
+  APROVADA: [['EM_EXECUCAO', ADMIN_E_COMERCIAL], ['CANCELADA', ADMIN_E_COMERCIAL]],
+  EM_EXECUCAO: [['FINALIZADA', ADMIN_E_COMERCIAL], ['CANCELADA', SO_ADMIN]],
 };
 
 /** Só o rascunho aceita edição de campos. */

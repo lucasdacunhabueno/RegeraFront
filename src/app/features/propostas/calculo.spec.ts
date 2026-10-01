@@ -9,6 +9,7 @@ import {
   deCentesimos,
   deMilesimos,
   dividirHalfUp,
+  lerDecimalEstrito,
   LinhaCalculo,
   paraCentavos,
   paraCentesimos,
@@ -133,12 +134,61 @@ describe('calculo', () => {
       expect(paraCentavos('-0.005')).toBe(-1n);
     });
 
+    it('limita o expoente a ±30 (um "1e999999999" não trava o aparelho)', () => {
+      expect(paraEscalado('1e30', 0)).toBe(10n ** 30n);
+      expect(paraEscalado('1e-30', 30)).toBe(1n);
+      expect(() => paraEscalado('1e31', 0)).toThrow();
+      expect(() => paraEscalado('1e-31', 0)).toThrow();
+      expect(() => paraEscalado('1e999999999', 2)).toThrow();
+    });
+
     it('recusa o que não é decimal', () => {
       for (const v of ['', ' ', 'abc', '1,5', '1.2.3', '.', '-', '1e', 'NaN', 'Infinity']) {
         expect(() => paraCentavos(v), v).toThrow();
       }
       expect(() => paraCentavos(Number.NaN)).toThrow();
       expect(() => paraCentavos(Number.POSITIVE_INFINITY)).toThrow();
+    });
+  });
+
+  describe('lerDecimalEstrito (o que o usuário digita)', () => {
+    it('aceita inteiro, vírgula ou ponto decimal, e milhar com ponto só na forma pt-BR', () => {
+      expect(lerDecimalEstrito('1234', 2)).toBe(123400n);
+      expect(lerDecimalEstrito('1234,56', 2)).toBe(123456n);
+      expect(lerDecimalEstrito('1234.56', 2)).toBe(123456n);
+      expect(lerDecimalEstrito('1.234,56', 2)).toBe(123456n);
+      expect(lerDecimalEstrito('1.234.567,8', 2)).toBe(123456780n);
+      expect(lerDecimalEstrito('1.234', 3)).toBe(1234n); // sem vírgula, o ponto é decimal
+      expect(lerDecimalEstrito('0,5', 2)).toBe(50n);
+      expect(lerDecimalEstrito('007', 0)).toBe(7n);
+      expect(lerDecimalEstrito('  12,5  ', 3)).toBe(12500n);
+      expect(lerDecimalEstrito('999999999999,99', 2)).toBe(99999999999999n);
+      expect(lerDecimalEstrito('99999999999999999999,99', 2)).toBe(9999999999999999999999n);
+    });
+
+    it('vazio', () => {
+      expect(lerDecimalEstrito('', 2)).toBe('VAZIO');
+      expect(lerDecimalEstrito('   ', 2)).toBe('VAZIO');
+    });
+
+    it('sinal', () => {
+      expect(lerDecimalEstrito('-1', 2)).toBe('NEGATIVO');
+      expect(lerDecimalEstrito(' -1,5', 2)).toBe('NEGATIVO');
+      expect(lerDecimalEstrito('+1', 2)).toBe('INVALIDO');
+    });
+
+    it('mais casas que o permitido (mesmo zeros)', () => {
+      expect(lerDecimalEstrito('1,234', 2)).toBe('CASAS');
+      expect(lerDecimalEstrito('1.500', 2)).toBe('CASAS');
+      expect(lerDecimalEstrito('1,5', 0)).toBe('CASAS');
+      expect(lerDecimalEstrito('1.234,567', 2)).toBe('CASAS');
+    });
+
+    it('formato inválido', () => {
+      for (const v of ['abc', '1e3', '1E-2', '1,2,3', '1.2.3', '1.234.567', '1.23,45', '12.34,5', '1,234.56', ',5', '.5',
+        '1,', '1.', '1 234', '1_000', '١٢', 'Infinity', 'NaN', '0x10', '1.234,']) {
+        expect(lerDecimalEstrito(v, 2), v).toBe('INVALIDO');
+      }
     });
   });
 

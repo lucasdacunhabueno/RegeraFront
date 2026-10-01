@@ -12,6 +12,7 @@ import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
+import { Entidade, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
 
 const dados = (nome: string): ClienteDados => ({
@@ -333,7 +334,7 @@ describe('SyncService', () => {
     expect(await db.lerMeta('cursorDono')).toBe('u1:COMERCIAL');
   });
 
-  it('outro perfil também limpa propostas e os documentos já enviados (os não enviados esperam o upload)', async () => {
+  it('outro perfil (não técnico) limpa propostas e os documentos já enviados; os não enviados esperam o upload', async () => {
     await db.gravarMeta('cursor', 50);
     await db.gravarMeta('cursorDono', 'u1:ADMIN');
     await db.propostas.put(paraPropostaLocal('p1', 1, {
@@ -345,7 +346,7 @@ describe('SyncService', () => {
       { ...doc, id: 'd1', enviado: true, arquivoId: 'a1' },
       { ...doc, id: 'd2', enviado: false, arquivoId: null },
     ]);
-    perfil = 'TECNICO';
+    perfil = 'COMERCIAL';
 
     const promessa = sync.sincronizar();
     const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull' && r.params.get('cursor') === '0'));
@@ -353,6 +354,38 @@ describe('SyncService', () => {
     expect((await db.documentos.toArray()).map((d) => d.id)).toEqual(['d2']);
     pull.flush({ cursor: 8, temMais: false, mudancas: [], usuarios: [] });
     await promessa;
+  });
+
+  it('virou técnico: apaga todos os documentos e os uploads da outbox e das pendências, antes do push (§10)', async () => {
+    await db.gravarMeta('cursor', 50);
+    await db.gravarMeta('cursorDono', 'u1:COMERCIAL');
+    const doc = { propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-0Z9XY7', sha256: 'ab', geradoEm: '', geradoPor: 'u1', bytes: null };
+    await db.documentos.bulkPut([
+      { ...doc, id: 'd1', enviado: true, arquivoId: 'a1' },
+      { ...doc, id: 'd2', enviado: false, arquivoId: null },
+    ]);
+    const upload = (mutationId: string) => ({
+      mutationId, entidade: TIPO_UPLOAD_DOCUMENTO as unknown as Entidade, agregadoId: 'p1', op: 'UPSERT' as const,
+      baseVersion: null, dados: { id: 'd2' }, criadaEm: '',
+    });
+    await db.outbox.add(upload('up1'));
+    await db.pendencias.put({ mutationId: 'up0', entidade: TIPO_UPLOAD_DOCUMENTO as unknown as Entidade, agregadoId: 'p0',
+      tipo: 'REJEITADO', mutacao: upload('up0'), criadaEm: '' });
+    // uma mutação comum fica (bloqueada por pendência para não ir ao push neste teste)
+    const mut = { mutationId: 'mm', entidade: 'cliente' as const, agregadoId: 'o1', op: 'UPSERT' as const, baseVersion: null, dados: dados('O'), criadaEm: '' };
+    await db.outbox.add(mut);
+    await db.pendencias.put({ mutationId: 'mm', entidade: 'cliente', agregadoId: 'o1', tipo: 'REJEITADO', mutacao: mut, criadaEm: '' });
+    perfil = 'TECNICO';
+
+    const promessa = sync.sincronizar();
+    // sem push do upload: o primeiro pedido já é o pull do zero
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull' && r.params.get('cursor') === '0'));
+    expect(await db.documentos.count()).toBe(0);
+    expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['mm']);
+    expect((await db.pendencias.toArray()).map((p) => p.mutationId)).toEqual(['mm']);
+    pull.flush({ cursor: 8, temMais: false, mudancas: [], usuarios: [] });
+    await promessa;
+    expect(await db.lerMeta('cursorDono')).toBe('u1:TECNICO');
   });
 
   it('cursorDono no formato antigo (só o id) força um pull completo', async () => {

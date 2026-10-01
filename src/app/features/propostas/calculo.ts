@@ -53,9 +53,12 @@ export function dividirHalfUp(dividendo: bigint, divisor: bigint): bigint {
   return (dividendo % divisor) * 2n >= divisor ? quociente + 1n : quociente;
 }
 
+const EXPOENTE_MAXIMO = 30;
+
 const DECIMAL = /^([+-])?(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?$/;
 
 /**
+ * Para dados do servidor (e do próprio front). O que o usuário digita passa por {@link lerDecimalEstrito}.
  * Decimal (texto, ou `number` pelo seu texto mais curto) para inteiro escalado por 10^casas, sem passar por float.
  * Casas além da escala são arredondadas com HALF_UP. Aceita notação científica (`String(1e-7)` = `'1e-7'`).
  */
@@ -66,7 +69,10 @@ export function paraEscalado(valor: string | number, casas: number): bigint {
   const inteiro = m?.[2] ?? '';
   const fracao = m?.[3] ?? '';
   if (!m || inteiro.length + fracao.length === 0) throw new Error(`Decimal inválido: "${texto}"`);
-  const deslocamento = casas + Number(m[4] ?? '0') - fracao.length;
+  const expoente = Number(m[4] ?? '0');
+  // dado do servidor nunca chega perto disso; o limite impede que um "1e999999999" monte um bigint gigante
+  if (Math.abs(expoente) > EXPOENTE_MAXIMO) throw new Error(`Expoente fora do limite: "${texto}"`);
+  const deslocamento = casas + expoente - fracao.length;
   const digitos = BigInt(inteiro + fracao);
   const absoluto = deslocamento >= 0 ? digitos * 10n ** BigInt(deslocamento) : dividirHalfUp(digitos, 10n ** BigInt(-deslocamento));
   return m[1] === '-' ? -absoluto : absoluto;
@@ -89,3 +95,35 @@ export const paraMilesimos = (v: string | number): bigint => paraEscalado(v, 3);
 export const deMilesimos = (v: bigint): string => deEscalado(v, 3, false);
 export const paraCentesimos = (v: string | number): bigint => paraEscalado(v, 2);
 export const deCentesimos = (v: bigint): string => deEscalado(v, 2, false);
+
+/** Por que o texto digitado não é um decimal aceitável (a UI escolhe a mensagem). */
+export type ErroDecimal = 'VAZIO' | 'NEGATIVO' | 'CASAS' | 'INVALIDO';
+
+const SO_DIGITOS = /^\d+$/;
+const UM_SEPARADOR = /^(\d+)[.,](\d+)$/;
+const MILHAR_PT_BR = /^(\d{1,3}(?:\.\d{3})+),(\d+)$/;
+
+/**
+ * Valor digitado num formulário para inteiro escalado por 10^casas, sem arredondar. Tira os espaços das pontas e
+ * aceita: só dígitos (`1234`); vírgula ou ponto decimal (`1234,56`, `1234.56`); e ponto de milhar só na forma pt-BR
+ * com vírgula decimal (`1.234,56`). Sem vírgula, o ponto é decimal (`1.234` = 1,234). Recusa sinal, expoente,
+ * separador sem dígitos dos dois lados, mais casas que `casas` (mesmo zeros) e qualquer outro caractere.
+ */
+export function lerDecimalEstrito(texto: string, casas: number): bigint | ErroDecimal {
+  const t = texto.trim();
+  if (t === '') return 'VAZIO';
+  if (t.startsWith('-')) return 'NEGATIVO';
+  let inteiro: string;
+  let fracao = '';
+  const separado = MILHAR_PT_BR.exec(t) ?? UM_SEPARADOR.exec(t);
+  if (separado) {
+    inteiro = separado[1].replace(/\./g, '');
+    fracao = separado[2];
+  } else if (SO_DIGITOS.test(t)) {
+    inteiro = t;
+  } else {
+    return 'INVALIDO';
+  }
+  if (fracao.length > casas) return 'CASAS';
+  return BigInt(inteiro + fracao.padEnd(casas, '0'));
+}

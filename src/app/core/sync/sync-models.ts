@@ -3,6 +3,12 @@ import { Perfil } from '../auth/auth-models';
 export type Entidade = 'cliente' | 'item_catalogo' | 'empresa' | 'template_proposta' | 'proposta';
 export type Operacao = 'UPSERT' | 'DELETE';
 
+/**
+ * `entidade` das mutações de upload do PDF da proposta na outbox (Task 6 do P4b). Não é um agregado do pull (não tem
+ * adaptador); a troca de perfil para TECNICO apaga essas mutações (ver `SyncService`).
+ */
+export const TIPO_UPLOAD_DOCUMENTO = 'documento_proposta';
+
 export interface MutacaoLocal {
   seq?: number;
   mutationId: string;

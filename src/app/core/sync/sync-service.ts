@@ -9,7 +9,9 @@ import { observar } from '../db/observar';
 import { RegeraDb } from '../db/regera-db';
 import { mensagemDeErro } from '../http/erro-api';
 import { ADAPTADORES } from './adaptadores';
-import { Entidade, Mudanca, MutacaoLocal, Operacao, RespostaPull, RespostaPush, ResultadoMutacao } from './sync-models';
+import {
+  Entidade, Mudanca, MutacaoLocal, Operacao, RespostaPull, RespostaPush, ResultadoMutacao, TIPO_UPLOAD_DOCUMENTO,
+} from './sync-models';
 
 const CHAVE_CURSOR = 'cursor';
 const CHAVE_CURSOR_DONO = 'cursorDono';
@@ -125,6 +127,7 @@ export class SyncService {
     if (!this.conectividade.online() || !this.auth.autenticado() || this.auth.sessaoExpirada()) return;
     this.sincronizando.set(true);
     try {
+      await this.purgarDocumentosDoTecnico();
       await this.enviar();
       const aplicou = await this.receber();
       if (aplicou && this.conectividade.online()) {
@@ -232,6 +235,22 @@ export class SyncService {
         erro: r.erro,
         criadaEm: new Date().toISOString(),
       });
+    });
+  }
+
+  /**
+   * O técnico nunca vê valores (§10), e o PDF tem valores: com o perfil TECNICO (ex.: um comercial rebaixado), apaga
+   * todos os documentos locais, enviados ou não, e os uploads deles na outbox e nas pendências (falhariam com
+   * ACESSO_NEGADO). Roda antes do push, para o upload não sair. Os outros perfis seguem a regra da troca de dono
+   * em `receber`.
+   */
+  private async purgarDocumentosDoTecnico(): Promise<void> {
+    if (this.auth.usuario?.()?.perfil !== 'TECNICO') return;
+    const ehUpload = (m: { entidade: string }) => m.entidade === TIPO_UPLOAD_DOCUMENTO;
+    await this.db.transaction('rw', [this.db.documentos, this.db.outbox, this.db.pendencias], async () => {
+      await this.db.documentos.clear();
+      await this.db.outbox.filter(ehUpload).delete();
+      await this.db.pendencias.filter(ehUpload).delete();
     });
   }
 
