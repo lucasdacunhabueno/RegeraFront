@@ -912,6 +912,38 @@ describe('OsRepo', () => {
       expect(arquivos.baixarSemCache).not.toHaveBeenCalled();
     });
 
+    it('as fotos só do servidor vêm duas por vez, cada uma reduzida antes de a mesma vez baixar a próxima, e a ordem do PDF fica', async () => {
+      const anexos = [1, 2, 3, 4].map((n) => anexoServidor({ id: `fs${n}`, arquivoId: `a-fs${n}`, legenda: `F${n}`, tiradaEm: `2026-10-01T11:0${n}:00Z` }));
+      usuario.set(ADMIN);
+      await noAparelho('EM_ANDAMENTO', { anexos, assinaturaRecusada: true, motivoRecusa: 'Ausente' });
+      const eventos: string[] = [];
+      let emVoo = 0;
+      let pico = 0;
+      // a primeira é lenta: só chega depois de as outras três terem sido baixadas e reduzidas
+      let liberarPrimeira!: () => void;
+      const primeira = new Promise<void>((r) => (liberarPrimeira = r));
+      arquivos.baixarSemCache.mockImplementation(async (id: string) => {
+        eventos.push(`baixa ${id}`);
+        pico = Math.max(pico, ++emVoo);
+        if (id === 'a-fs1') await primeira;
+        emVoo--;
+        return new Blob([id], { type: 'image/jpeg' });
+      });
+      reduzir.mockImplementation(async (b: Blob) => {
+        const id = await b.text();
+        eventos.push(`reduz ${id}`);
+        if (id === 'a-fs4') liberarPrimeira();
+        return new TextEncoder().encode(id).buffer as ArrayBuffer;
+      });
+      await repo.concluir('o1', 'Feito', gerarPdf);
+      expect(pico).toBe(2);
+      expect(eventos).toEqual([
+        'baixa a-fs1', 'baixa a-fs2', 'reduz a-fs2', 'baixa a-fs3', 'reduz a-fs3', 'baixa a-fs4', 'reduz a-fs4', 'reduz a-fs1',
+      ]);
+      const e = gerarPdf.mock.calls[0][0];
+      expect(e.fotos.map((f) => [f.legenda, f.imagem])).toEqual([1, 2, 3, 4].map((n) => [`F${n}`, `data:image/jpeg;base64,${btoa(`a-fs${n}`)}`]));
+    });
+
     it('M2P2-R14: a miniatura do servidor não é gravada se a OS saiu do aparelho durante o download', async () => {
       await noAparelho('EM_ANDAMENTO', { anexos: [anexoServidor()], assinaturaRecusada: true, motivoRecusa: 'Ausente' });
       arquivos.baixarSemCache.mockImplementation(async () => {

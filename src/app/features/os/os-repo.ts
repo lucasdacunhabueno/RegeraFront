@@ -101,6 +101,8 @@ const ENDERECO_MAX: readonly [keyof OsLocal, number][] = [
   ['enderecoCep', 9], ['enderecoLogradouro', 160], ['enderecoNumero', 20], ['enderecoComplemento', 80],
   ['enderecoBairro', 80], ['enderecoCidade', 80],
 ];
+/** Fotos só do servidor baixadas ao mesmo tempo para o PDF (cada uma com o prazo de 60 s do `baixarSemCache`). */
+const DOWNLOADS_SIMULTANEOS = 2;
 /** Tentativas do `concluir` quando a OS muda enquanto o PDF é gerado (P4b-R21). */
 const TENTATIVAS_CONCLUIR = 3;
 const DATA = /^\d{4}-\d{2}-\d{2}$/;
@@ -1550,14 +1552,23 @@ export class OsRepo {
   /**
    * As fotos para o PDF, por momento da captura: as do servidor e as do aparelho. A imagem é a miniatura (o PDF fica
    * pequeno, e é o que o aparelho guarda depois do upload); sem ela, os bytes; só do servidor, a imagem baixada sem
-   * cache e reduzida ao tamanho da miniatura (M2P2-R10, R14: `imagemDoServidor`), nunca em tamanho cheio.
+   * cache e reduzida ao tamanho da miniatura (M2P2-R10, R14: `imagemDoServidor`), nunca em tamanho cheio. As do
+   * servidor vêm `DOWNLOADS_SIMULTANEOS` por vez: cada uma é baixada e reduzida antes de a mesma vez pegar a próxima, o
+   * que limita a memória a duas fotos cheias; a ordem do PDF é a de sempre.
    */
   private async fotosDoPdf(os: OsLocal, locais: readonly AnexoOsLocal[]): Promise<FotoPdfOs[]> {
     const doAparelho = new Map(locais.filter((a) => a.tipo === 'FOTO').map((a) => [a.id, a]));
     const fotos: { quando: number; foto: FotoPdfOs }[] = [];
     const instante = (t: string | null) => (t ? Date.parse(t) : Number.POSITIVE_INFINITY);
-    for (const a of os.anexos.filter((x) => x.tipo === 'FOTO' && !doAparelho.has(x.id))) {
-      const bytes = await this.imagemDoServidor(os.id, a);
+    const doServidor = os.anexos.filter((x) => x.tipo === 'FOTO' && !doAparelho.has(x.id));
+    const imagens: (ArrayBuffer | null)[] = new Array(doServidor.length).fill(null);
+    let proxima = 0;
+    const vez = async () => {
+      for (let i = proxima++; i < doServidor.length; i = proxima++) imagens[i] = await this.imagemDoServidor(os.id, doServidor[i]);
+    };
+    await Promise.all(Array.from({ length: Math.min(DOWNLOADS_SIMULTANEOS, doServidor.length) }, vez));
+    for (const [i, a] of doServidor.entries()) {
+      const bytes = imagens[i];
       fotos.push({
         quando: instante(a.tiradaEm ?? a.criadoEm),
         foto: { id: a.id, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm, imagem: bytes ? paraDataUrl(bytes, MIME.FOTO) : null },

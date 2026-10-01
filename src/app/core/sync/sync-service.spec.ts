@@ -1851,6 +1851,20 @@ describe('SyncService', () => {
         expect(await marcas()).toEqual([]);
       });
 
+      it('o que entra na fila durante a leitura protege a OS: a releitura não a sobrescreve, e a marca fica', async () => {
+        await pulada();
+        const r = sync.relerDesprotegidos();
+        const leitura = await vi.waitFor(() => http.expectOne(URL_AGREGADO));
+        // a nota escrita enquanto o GET estava no ar: a mutação e a OS local dela não podem ser desfeitas pela releitura
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'Cheguei' }] }), 3);
+        await db.os.update('o1', { notas: [{ id: 'n1', texto: 'Cheguei', autorId: null, criadaEm: null }] });
+        leitura.flush({ entidade: 'os', id: 'o1', version: 6, deleted: false, dados: os('EM_ANDAMENTO', { revisao: 2, urgente: true }) });
+        await r;
+        expect(await db.os.get('o1')).toMatchObject({ version: 3, urgente: false, notas: [{ id: 'n1', texto: 'Cheguei' }] });
+        expect((await fila()).map((m) => [m.entidade, m.baseVersion])).toEqual([['os', 3]]);
+        expect(await marcas()).toEqual(['os:o1']);
+      });
+
       it('sem internet, ou com erro de rede na leitura, a marca fica para a próxima', async () => {
         await pulada();
         online.set(false);
