@@ -1,7 +1,7 @@
 import { inject, Injectable } from '@angular/core';
 import { Observable } from 'rxjs';
 import { paraBytes } from '../../core/arquivos/arquivos-service';
-import type { UsuarioSessao } from '../../core/auth/auth-models';
+import type { Perfil, UsuarioSessao } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
 import { observar } from '../../core/db/observar';
 import { RegeraDb } from '../../core/db/regera-db';
@@ -32,6 +32,7 @@ import {
   podeAlterarTecnico,
   PropostaLocal,
   StatusProposta,
+  stripJava,
   transicoesPermitidas,
   validarTransicao,
 } from './proposta-models';
@@ -127,13 +128,24 @@ const TAMANHO_TEXTO: readonly ['condicoesPagamento' | 'prazoExecucao' | 'observa
 const inteiroEntre = (v: unknown, min: number, max: number): boolean =>
   typeof v === 'number' && Number.isSafeInteger(v) && v >= min && v <= max;
 
-/** Como o `texto()` do servidor: sem espaços nas pontas, e vazio vira null. */
+/** Como o `texto()` do servidor (`isBlank` → null, senão `strip()`), com o mesmo critério de espaço do Java. */
 function texto(v: string | null | undefined): string | null {
-  const t = (v ?? '').trim();
+  const t = stripJava(v ?? '');
   return t === '' ? null : t;
 }
 
+/** `meses` é obrigatório só em LOCACAO com item locável, e proibido nos outros casos (regra do servidor). */
+function exigeMeses(tipo: TipoProposta, catalogo: ItemLocal): boolean {
+  return tipo === 'LOCACAO' && catalogo.locavel;
+}
+
+/** Tentativas de `enviar` quando a proposta muda enquanto o PDF é gerado (P4b-R21). */
+const TENTATIVAS_ENVIO = 3;
+
+const jaEnviada = (): ErroProposta => new ErroProposta('PROPOSTA_JA_ENVIADA', 'proposta', 'Esta proposta já foi enviada.');
+
 /** Totais e subtotais para exibição imediata (`calcular`, em `bigint`); o servidor recalcula e prevalece no retorno. */
+// P4b-R10: os totais voltam a `number` (centavos); acima de 2^53 centavos perdem precisão, o que está aceito
 function comTotais(p: PropostaLocal): PropostaLocal {
   const r = calcular(
     p.itens.map((l) => ({
@@ -422,8 +434,9 @@ export class PropostasRepo {
       if (!podeAlterarResponsavel(atual.status, u.perfil)) {
         throw new ErroProposta('ACESSO_NEGADO', 'responsavelId', 'Só o administrador troca o responsável.');
       }
-      const r = await this.db.usuarios.get(responsavelId);
-      if (!r || r.perfil === 'TECNICO') validacao({ responsavelId: 'O responsável tem de ser um administrador ou comercial.' });
+      if (!(await this.usuarioAtivo(responsavelId, ['ADMIN', 'COMERCIAL']))) {
+        validacao({ responsavelId: 'O responsável tem de ser um administrador ou comercial ativo.' });
+      }
     }
     if (tecnicoId !== atual.tecnicoId) await this.conferirTecnico(atual, u, tecnicoId);
     await this.gravar({ ...atual, responsavelId, tecnicoId }, atual.version);
@@ -433,6 +446,9 @@ export class PropostasRepo {
    * Novo RASCUNHO a partir de qualquer proposta (o caminho para refazer uma encerrada): mesmo tipo, cliente,
    * template, técnico, condições e itens (com ids novos; preço e desconto mantidos), mesmo responsável, novo código
    * provisório, emissão e validade de hoje. Sem número, histórico, documentos nem motivo.
+   * As linhas são novas para o servidor, então valem as regras de hoje: sai a linha cujo item do catálogo está
+   * inativo ou não está no aparelho; `meses` some se o item deixou de ser locável (e vira 1 se passou a ser); sai o
+   * técnico inativo; responsável inativo dá lugar ao usuário atual (só o ADMIN chega aqui com outro responsável).
    */
   async duplicar(id: string): Promise<string> {
     const u = this.usuario();
@@ -440,8 +456,21 @@ export class PropostasRepo {
     this.checar(validarTransicao(null, 'RASCUNHO', u.perfil, original.responsavelId === u.id, contexto(original)));
     const empresa = await this.empresa();
     const hoje = hojeEmSaoPaulo();
+    const itens: ItemPropostaLocal[] = [];
+    for (const l of original.itens) {
+      const catalogo = await this.db.itens.get(l.itemCatalogoId);
+      if (!catalogo?.ativo) continue;
+      const meses = exigeMeses(original.tipo, catalogo) ? (l.meses ?? 1) : null;
+      itens.push({ ...l, id: uuidv7(), meses });
+    }
+    const tecnicoId = original.tecnicoId !== null && (await this.usuarioAtivo(original.tecnicoId, ['TECNICO']))
+      ? original.tecnicoId
+      : null;
+    const responsavelId = (await this.usuarioAtivo(original.responsavelId, ['ADMIN', 'COMERCIAL'])) ? original.responsavelId : u.id;
     const p = comTotais({
       ...original,
+      responsavelId,
+      tecnicoId,
       id: uuidv7(),
       version: null,
       codigoProvisorio: gerarCodigoProvisorio(),
@@ -451,11 +480,13 @@ export class PropostasRepo {
       dataEmissao: hoje,
       validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? 15),
       motivoEncerramento: null,
-      itens: original.itens.map((l) => ({ ...l, id: uuidv7() })),
+      itens,
       historico: [],
       documentos: [],
       atualizadoEm: null,
     });
+    // última barreira: as mesmas regras da edição, com todas as linhas como novas
+    validacao(await this.validarEdicao({ ...p, itens: [] }, p));
     await this.gravar(p, null);
     return p.id;
   }
@@ -468,12 +499,35 @@ export class PropostasRepo {
    * 4. numa transação só: grava o documento local (bytes, revisão, código exibido e o snapshot da entrada), passa a
    *    proposta a ENVIADA (mutação separada) e enfileira o UPLOAD, que por isso sai depois da transição;
    * 5. dispara a sincronização e devolve o Blob para compartilhar.
+   * P4b-R21: se a proposta mudou durante a geração (tipicamente o retorno do push da criação, que traz `version` e
+   * `numero`), recarrega e gera de novo com os dados novos, até 3 tentativas; se ela já não é rascunho (outro toque
+   * no botão, outra aba), `PROPOSTA_JA_ENVIADA`; se ainda muda na 3ª, `PROPOSTA_ALTERADA`.
    * Código exibido: o número (`000277`, com `-R<n>` na revisão > 1), se já existe; senão, o PROV (com o mesmo sufixo).
    * Com número e um documento PROV anterior, o PDF leva `(ref. PROV-xxxxxx)`.
    */
   async enviar(id: string, gerarPdf: (entrada: EntradaPdf) => Promise<Blob>): Promise<Blob> {
     const u = this.usuario();
-    const p = comTotais(await this.carregar(id));
+    for (let tentativa = 1; ; tentativa++) {
+      const p = comTotais(await this.carregar(id));
+      if (tentativa > 1 && p.status !== 'RASCUNHO') throw jaEnviada();
+      const blob = await this.tentarEnviar(p, u, gerarPdf);
+      if (blob) {
+        void this.sync.sincronizar();
+        return blob;
+      }
+      if (tentativa >= TENTATIVAS_ENVIO) {
+        throw new ErroProposta('PROPOSTA_ALTERADA', 'proposta', 'A proposta mudou enquanto o PDF era gerado. Envie de novo.');
+      }
+    }
+  }
+
+  /** Uma tentativa de `enviar` com a proposta `p` lida agora; null = ela mudou durante a geração (nada foi gravado). */
+  private async tentarEnviar(
+    p: PropostaLocal,
+    u: UsuarioSessao,
+    gerarPdf: (entrada: EntradaPdf) => Promise<Blob>,
+  ): Promise<Blob | null> {
+    const id = p.id;
     this.exigirTransicao(p, 'ENVIADA', u, contexto(p));
     const cliente = await this.db.clientes.get(p.clienteId!);
     if (!cliente) validacao({ clienteId: 'O cliente não está neste aparelho. Sincronize e tente de novo.' });
@@ -507,19 +561,18 @@ export class PropostasRepo {
       snapshot,
     };
     const enviada: PropostaLocal = { ...p, status: 'ENVIADA', atualizadoEm: new Date().toISOString() };
-    await this.db.transaction('rw', [this.db.propostas, this.db.documentos, this.db.outbox], async () => {
+    const gravou = await this.db.transaction('rw', [this.db.propostas, this.db.documentos, this.db.outbox], async () => {
       // o PDF foi gerado fora da transação: se a proposta mudou nesse meio-tempo, ele não a representa mais
       const agora = await this.db.propostas.get(id);
-      if (!agora || JSON.stringify(comTotais(agora)) !== JSON.stringify(p)) {
-        throw new ErroProposta('PROPOSTA_ALTERADA', 'proposta', 'A proposta mudou enquanto o PDF era gerado. Envie de novo.');
-      }
+      if (agora && agora.status !== 'RASCUNHO') throw jaEnviada();
+      if (!agora || JSON.stringify(comTotais(agora)) !== JSON.stringify(p)) return false;
       await this.db.documentos.add(documento);
       await this.db.propostas.put(enviada);
       await this.sync.registrar('proposta', id, 'UPSERT', dadosDaProposta(enviada), p.version, { separada: true });
       await this.sync.registrarUpload(id, documento.id);
+      return true;
     });
-    void this.sync.sincronizar();
-    return blob;
+    return gravou ? blob : null;
   }
 
   // --- internos ---
@@ -563,8 +616,13 @@ export class PropostasRepo {
       throw new ErroProposta('ACESSO_NEGADO', 'tecnicoId', 'Só o administrador ou o responsável troca o técnico.');
     }
     if (tecnicoId === null) return;
-    const t = await this.db.usuarios.get(tecnicoId);
-    if (t?.perfil !== 'TECNICO') validacao({ tecnicoId: 'Escolha um usuário técnico.' });
+    if (!(await this.usuarioAtivo(tecnicoId, ['TECNICO']))) validacao({ tecnicoId: 'Escolha um técnico ativo.' });
+  }
+
+  /** Está na lista de usuários do aparelho, com um dos perfis e ativo (linha antiga sem `ativo` conta como ativa). */
+  private async usuarioAtivo(id: string, perfis: readonly Perfil[]): Promise<boolean> {
+    const x = await this.db.usuarios.get(id);
+    return !!x && perfis.includes(x.perfil) && x.ativo !== false;
   }
 
   /** Limites de entrada do servidor (§7.3 e `PropostaDados`), com os mesmos nomes de campo. */
@@ -611,9 +669,9 @@ export class PropostasRepo {
         campos[pre + 'itemCatalogoId'] = 'Item do catálogo inativo.';
         continue;
       }
-      const exigeMeses = novo.tipo === 'LOCACAO' && catalogo.locavel;
-      if (exigeMeses && l.meses === null) campos[pre + 'meses'] = 'Informe os meses de locação.';
-      else if (!exigeMeses && l.meses !== null) campos[pre + 'meses'] = 'Meses só em proposta de locação com item locável.';
+      const exige = exigeMeses(novo.tipo, catalogo);
+      if (exige && l.meses === null) campos[pre + 'meses'] = 'Informe os meses de locação.';
+      else if (!exige && l.meses !== null) campos[pre + 'meses'] = 'Meses só em proposta de locação com item locável.';
     }
     return campos;
   }

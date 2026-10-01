@@ -75,6 +75,8 @@ export interface UsuarioResumo {
   /** P4b-R20: para `responsavel.email` no PDF. Ausente em linhas gravadas antes do servidor mandá-lo. */
   email?: string | null;
   perfil: Perfil;
+  /** false = inativo (não é oferecido nem copiado ao duplicar). Ausente em linhas antigas: tratado como ativo. */
+  ativo?: boolean;
 }
 
 export interface RespostaPull {

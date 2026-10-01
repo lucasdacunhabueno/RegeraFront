@@ -351,6 +351,20 @@ describe('PropostasRepo', () => {
       expect(sincronizar).toHaveBeenCalled();
     });
 
+    it('espaços das pontas como o String.strip() do Java: o espaço não separável (U+00A0) fica', async () => {
+      await existente('ENVIADA');
+      // NBSP + "ab": 3 caracteres no servidor (strip não tira o NBSP); o trim() do JS deixaria 2 e recusaria
+      await repo.transicionar('p1', 'RECUSADA', ' \u00A0ab\t');
+      expect((await db.propostas.get('p1'))!.motivoEncerramento).toBe('\u00A0ab');
+      await existente('ENVIADA');
+      expect((await erroDe(repo.transicionar('p1', 'RECUSADA', '\u2003ab\u3000'))).campo).toBe('motivoEncerramento');
+      await existente('RASCUNHO');
+      await repo.salvarRascunho('p1', { observacoes: '\u00A0Obs\u2007 ', prazoExecucao: '\u2028 \u3000', condicoesPagamento: '\u00A0' });
+      expect(await db.propostas.get('p1')).toMatchObject({
+        observacoes: '\u00A0Obs\u2007', prazoExecucao: null, condicoesPagamento: '\u00A0',
+      });
+    });
+
     it('RECUSADA e CANCELADA exigem motivo; o motivo vai sem os espaços das pontas', async () => {
       await existente('ENVIADA');
       expect((await erroDe(repo.transicionar('p1', 'RECUSADA'))).campo).toBe('motivoEncerramento');
@@ -401,6 +415,14 @@ describe('PropostasRepo', () => {
     it('recusa em status terminal e técnico que não é TECNICO', async () => {
       await existente('APROVADA');
       expect((await erroDe(repo.atribuir('p1', { tecnicoId: COMERCIAL.id }))).campo).toBe('tecnicoId');
+      await db.usuarios.bulkPut([
+        { id: 'u-tec-inativo', nome: 'Ex', email: null, perfil: 'TECNICO', ativo: false },
+        { id: 'u-com-inativo', nome: 'Ex C', email: null, perfil: 'COMERCIAL', ativo: false },
+      ]);
+      expect((await erroDe(repo.atribuir('p1', { tecnicoId: 'u-tec-inativo' }))).campo).toBe('tecnicoId');
+      usuario.set(ADMIN);
+      expect((await erroDe(repo.atribuir('p1', { responsavelId: 'u-com-inativo' }))).campo).toBe('responsavelId');
+      usuario.set(COMERCIAL);
       await existente('FINALIZADA');
       usuario.set(ADMIN);
       expect((await erroDe(repo.atribuir('p1', { tecnicoId: TECNICO.id }))).codigo).toBe('PROPOSTA_NAO_EDITAVEL');
@@ -435,6 +457,34 @@ describe('PropostasRepo', () => {
       const [m] = await fila();
       expect(m).toMatchObject({ entidade: 'proposta', agregadoId: novo, op: 'UPSERT', baseVersion: null });
       expect(sincronizar).toHaveBeenCalled();
+    });
+
+    it('duplicar confere o catálogo e o técnico de hoje: tira linhas inativas/ausentes, acerta meses, tira técnico inativo', async () => {
+      await db.itens.bulkPut([
+        paraItemLocal('i-ex-locavel', 1, item('L-2', { locavel: false, precoLocacaoMensal: null })),
+        paraItemLocal('i-novo-locavel', 1, item('L-3', { locavel: true, precoLocacaoMensal: 10 })),
+      ]);
+      await db.usuarios.put({ id: 'u-tec-inativo', nome: 'Ex', email: 'ex@regera.com', perfil: 'TECNICO', ativo: false });
+      const original = await existente('CANCELADA', { tipo: 'LOCACAO', tecnicoId: 'u-tec-inativo' });
+      const l = original.itens[0];
+      await db.propostas.put({
+        ...original,
+        itens: [
+          { ...l, id: 'a', itemCatalogoId: 'i-loc', meses: 6 },
+          { ...l, id: 'b', itemCatalogoId: 'i-inativo', meses: null },
+          { ...l, id: 'c', itemCatalogoId: 'i-ex-locavel', meses: 3 },
+          { ...l, id: 'd', itemCatalogoId: 'sumiu', meses: null },
+          { ...l, id: 'e', itemCatalogoId: 'i-novo-locavel', meses: null },
+          { ...l, id: 'f', itemCatalogoId: 'i-venda', meses: null, precoUnitarioCentavos: 777 },
+        ],
+      });
+      const p = (await db.propostas.get(await repo.duplicar('p1')))!;
+      expect(p.itens.map((i) => [i.itemCatalogoId, i.meses, i.ordem])).toEqual([
+        ['i-loc', 6, 0], ['i-ex-locavel', null, 1], ['i-novo-locavel', 1, 2], ['i-venda', null, 3],
+      ]);
+      expect(p.itens[3].precoUnitarioCentavos).toBe(777); // o preço da proposta original é mantido
+      expect(p.tecnicoId).toBeNull();
+      expect((await fila())[0].dados).toMatchObject({ tecnicoId: null });
     });
 
     it('técnico e comercial de outra proposta não duplicam', async () => {
@@ -566,16 +616,52 @@ describe('PropostasRepo', () => {
       expect((await db.documentos.toArray())[0].codigoExibido).toBe('PROV-ABCDEF-R2');
     });
 
-    it('a proposta mudou enquanto o PDF era gerado: nada é gravado', async () => {
+    it('P4b-R21: o retorno do push chega durante a geração: refaz o PDF, agora com o número', async () => {
+      await existente('RASCUNHO', { version: null });
+      const g = vi.fn<(e: EntradaPdf) => Promise<Blob>>(async () => {
+        if (g.mock.calls.length === 1) {
+          // o que o SyncService faz com o OK do UPSERT de criação
+          const p = (await db.propostas.get('p1'))!;
+          await db.propostas.put({ ...p, version: 0, numero: 277, atualizadoEm: '2026-10-02T01:29:59.123456Z' });
+        }
+        return new Blob([ABC]);
+      });
+      await repo.enviar('p1', g);
+      expect(g).toHaveBeenCalledTimes(2);
+      expect(g.mock.calls[0][0].proposta.codigoExibido).toBe('PROV-ABCDEF');
+      expect(g.mock.calls[1][0].proposta.codigoExibido).toBe('000277');
+      const docs = await db.documentos.toArray();
+      expect(docs.map((d) => d.codigoExibido)).toEqual(['000277']);
+      expect((docs[0].snapshot as { proposta: { codigoExibido: string } }).proposta.codigoExibido).toBe('000277');
+      const m = await fila();
+      expect(m.map((x) => [x.op, x.baseVersion])).toEqual([['UPSERT', 0], ['UPLOAD', null]]);
+      expect(await db.propostas.get('p1')).toMatchObject({ status: 'ENVIADA', numero: 277, version: 0 });
+    });
+
+    it('P4b-R21: a proposta muda a cada tentativa: PROPOSTA_ALTERADA depois da 3ª, nada é gravado', async () => {
       await existente('RASCUNHO');
-      const g = vi.fn(async () => {
-        await db.propostas.update('p1', { observacoes: 'editada em outra aba' });
+      const g = vi.fn<(e: EntradaPdf) => Promise<Blob>>(async () => {
+        await db.propostas.update('p1', { observacoes: `editada ${g.mock.calls.length}` });
         return new Blob([ABC]);
       });
       expect((await erroDe(repo.enviar('p1', g))).codigo).toBe('PROPOSTA_ALTERADA');
+      expect(g).toHaveBeenCalledTimes(3);
       expect(await db.documentos.count()).toBe(0);
       expect(await db.outbox.count()).toBe(0);
       expect((await db.propostas.get('p1'))!.status).toBe('RASCUNHO');
+    });
+
+    it('P4b-R21: toque duplo (dois envios ao mesmo tempo): o segundo recebe PROPOSTA_JA_ENVIADA, um documento só', async () => {
+      await existente('RASCUNHO');
+      const g = gerar();
+      const r = await Promise.allSettled([repo.enviar('p1', g), repo.enviar('p1', g)]);
+      expect(r.filter((x) => x.status === 'fulfilled')).toHaveLength(1);
+      const recusa = r.find((x) => x.status === 'rejected') as PromiseRejectedResult;
+      expect(recusa.reason).toBeInstanceOf(ErroProposta);
+      expect((recusa.reason as ErroProposta).codigo).toBe('PROPOSTA_JA_ENVIADA');
+      expect((recusa.reason as ErroProposta).message).toBe('Esta proposta já foi enviada.');
+      expect(await db.documentos.count()).toBe(1);
+      expect((await fila()).map((x) => x.op)).toEqual(['UPSERT', 'UPLOAD']);
     });
 
     it('snapshot acima de 512 KB é recusado antes de gerar o PDF', async () => {

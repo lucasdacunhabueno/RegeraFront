@@ -360,14 +360,20 @@ function espacoJava(c: number): boolean {
     || c === 0x2028 || c === 0x2029 || c === 0x205f || c === 0x3000;
 }
 
+/** `String.strip()` do Java: tira das pontas o que `Character.isWhitespace` aceita (o espaço não separável fica). */
+export function stripJava(texto: string): string {
+  let inicio = 0;
+  let fim = texto.length;
+  while (inicio < fim && espacoJava(texto.charCodeAt(inicio))) inicio++;
+  while (fim > inicio && espacoJava(texto.charCodeAt(fim - 1))) fim--;
+  return texto.slice(inicio, fim);
+}
+
 /** Tamanho sem os espaços das pontas, como `motivo.strip().length()` no servidor (unidades UTF-16 nos dois). */
 export function motivoValido(motivo: string | null): boolean {
   if (motivo === null) return false;
-  let inicio = 0;
-  let fim = motivo.length;
-  while (inicio < fim && espacoJava(motivo.charCodeAt(inicio))) inicio++;
-  while (fim > inicio && espacoJava(motivo.charCodeAt(fim - 1))) fim--;
-  return fim - inicio >= MOTIVO_MIN && fim - inicio <= MOTIVO_MAX;
+  const tamanho = stripJava(motivo).length;
+  return tamanho >= MOTIVO_MIN && tamanho <= MOTIVO_MAX;
 }
 
 function naoEditavel(de: StatusProposta | null, ctx: ContextoTransicao): ErroMutacao | null {

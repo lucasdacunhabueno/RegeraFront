@@ -19,6 +19,7 @@ import {
   PropostaDados,
   STATUS_PROPOSTA,
   StatusProposta,
+  stripJava,
   terminal,
   transicoesPermitidas,
   validarTransicao,
@@ -199,6 +200,13 @@ describe('proposta-models', () => {
     expect(numeroExibido(1234567, 3)).toBe('1234567-R3');
     expect(codigoExibido({ numero: 277, revisao: 2, codigoProvisorio: 'PROV-0Z9XY7' })).toBe('000277-R2');
     expect(codigoExibido({ numero: null, revisao: null, codigoProvisorio: 'PROV-0Z9XY7' })).toBe('PROV-0Z9XY7');
+  });
+
+  it('stripJava: tira só o que o Character.isWhitespace do Java aceita (NBSP e U+2007 ficam)', () => {
+    expect(stripJava(' \u00A0ab\u2007\t')).toBe('\u00A0ab\u2007');
+    expect(stripJava('\u2003\u3000\u2028ab\u205F\u001C')).toBe('ab');
+    expect(stripJava('\u0085x')).toBe('\u0085x'); // NEL não é whitespace no Java
+    expect(stripJava('   ')).toBe('');
   });
 
   it('P4b-R18: o PROV também leva -R<n> na revisão > 1 (como codigosExibidos do servidor); a base não leva', () => {
