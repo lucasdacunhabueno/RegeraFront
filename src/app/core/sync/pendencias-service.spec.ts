@@ -399,6 +399,40 @@ describe('PendenciasService', () => {
       expect(await db.pendencias.count()).toBe(0);
     });
 
+    it('manter a minha duas vezes ao mesmo tempo (toque duplo) devolve E1 uma vez só, a partir da pendência gravada', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
+      const e1 = { ...mutProposta('e1', 'p1', 'c1'), seq: 5, baseVersion: 3 };
+      await db.outbox.add({ ...mutProposta('t1', 'p1', 'c1'), seq: 6, separada: true });
+      const gravada: Pendencia = {
+        mutationId: 'e1', entidade: 'proposta', agregadoId: 'p1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 5, mutacao: e1,
+      };
+      await db.pendencias.put(gravada);
+      // a cópia da tela pode estar velha: vale a gravada
+      const daTela: Pendencia = { ...gravada, versionServidor: 1, mutacao: { ...e1, dados: prop('velho') } };
+
+      await Promise.all([svc.manterMinha(daTela), svc.manterMinha(daTela)]);
+
+      const fila = await db.outbox.orderBy('seq').toArray();
+      expect(fila).toHaveLength(2);
+      expect(fila[0]).toMatchObject({ seq: 5, baseVersion: 5, dados: { clienteId: 'c1' } });
+      expect(fila[1].mutationId).toBe('t1');
+      expect(await db.pendencias.count()).toBe(0);
+    });
+
+    it('ações sobre pendência que já não existe não fazem nada', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
+      await db.outbox.add(mutProposta('t1', 'p1', 'c1'));
+      const sumiu = pendenciaProposta({ tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } });
+
+      await svc.manterMinha({ ...sumiu, tipo: 'CONFLITO', versionServidor: 4 });
+      await svc.descartar(sumiu);
+      await svc.usarServidor(sumiu);
+
+      expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['t1']);
+      expect(await db.propostas.get('p1')).toBeDefined();
+      http.expectNone(() => true);
+    });
+
     it('P4b-R17: a mutação separada devolvida à fila continua separada', async () => {
       const t = { ...mutProposta('t1', 'p1', 'c1'), seq: 9, baseVersion: 3, dados: { ...prop('c1'), status: 'ENVIADA' }, separada: true };
       await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));

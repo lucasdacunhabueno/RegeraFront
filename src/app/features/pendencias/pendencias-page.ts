@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, inject } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
 import { AuthService } from '../../core/auth/auth-service';
@@ -60,19 +60,19 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
           <div class="mt-3 flex flex-wrap gap-2">
             @if (p.tipo === 'CONFLITO') {
               @if (excluidoNoServidor(p)) {
-                <button type="button" (click)="usarServidor(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Descartar</button>
+                <button type="button" (click)="usarServidor(p)" [disabled]="ocupada(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold disabled:opacity-60">Descartar</button>
               } @else {
-                <button type="button" (click)="manterMinha(p)" class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Manter a minha</button>
-                <button type="button" (click)="usarServidor(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Usar a do servidor</button>
+                <button type="button" (click)="manterMinha(p)" [disabled]="ocupada(p)" class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-60">Manter a minha</button>
+                <button type="button" (click)="usarServidor(p)" [disabled]="ocupada(p)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold disabled:opacity-60">Usar a do servidor</button>
               }
             } @else {
               @if (p.entidade === 'cliente' && p.erro?.codigo === 'DOCUMENTO_DUPLICADO' && p.erro?.idExistente) {
-                <button type="button" (click)="usarExistente(p)" class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Usar cadastro existente</button>
+                <button type="button" (click)="usarExistente(p)" [disabled]="ocupada(p)" class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-60">Usar cadastro existente</button>
               }
               @if (rotaEdicao(p); as rota) {
                 <button type="button" (click)="editar(rota)" class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold">Editar</button>
               }
-              <button type="button" (click)="descartar(p)" class="h-12 rounded-lg px-4 text-sm font-semibold text-red-600">Descartar</button>
+              <button type="button" (click)="descartar(p)" [disabled]="ocupada(p)" class="h-12 rounded-lg px-4 text-sm font-semibold text-red-600 disabled:opacity-60">Descartar</button>
             }
           </div>
         </li>
@@ -167,29 +167,44 @@ export class PendenciasPage {
   }
 
   protected manterMinha(p: Pendencia): Promise<void> {
-    return this.agir(() => this.servico.manterMinha(p));
+    return this.agir(p, () => this.servico.manterMinha(p));
   }
 
   protected usarServidor(p: Pendencia): Promise<void> {
-    return this.agir(() => this.servico.usarServidor(p));
+    return this.agir(p, () => this.servico.usarServidor(p));
   }
 
   protected descartar(p: Pendencia): Promise<void> {
-    return this.agir(() => this.servico.descartar(p));
+    return this.agir(p, () => this.servico.descartar(p));
   }
 
   protected async usarExistente(p: Pendencia): Promise<void> {
-    await this.agir(async () => {
+    await this.agir(p, async () => {
       const id = await this.servico.usarExistente(p);
       await this.router.navigateByUrl(`/clientes/${id}`);
     });
   }
 
-  protected async agir(acao: () => Promise<unknown>): Promise<void> {
+  /** mutationIds com ação em curso: os botões da pendência ficam desabilitados e um segundo toque não faz nada. */
+  private readonly emCurso = signal<ReadonlySet<string>>(new Set());
+
+  protected ocupada(p: Pendencia): boolean {
+    return this.emCurso().has(p.mutationId);
+  }
+
+  protected async agir(p: Pendencia, acao: () => Promise<unknown>): Promise<void> {
+    if (this.ocupada(p)) return;
+    this.emCurso.update((s) => new Set(s).add(p.mutationId));
     try {
       await acao();
     } catch (e) {
       this.toasts.erro(e instanceof Error && !(e instanceof HttpErrorResponse) ? e.message : mensagemDeErro(e));
+    } finally {
+      this.emCurso.update((s) => {
+        const resto = new Set(s);
+        resto.delete(p.mutationId);
+        return resto;
+      });
     }
   }
 }

@@ -14,7 +14,10 @@ function semSeq(m: MutacaoLocal): MutacaoLocal {
   return copia;
 }
 
-/** Decisões do usuário sobre conflitos e rejeições (§11.5). */
+/**
+ * Decisões do usuário sobre conflitos e rejeições (§11.5). Toda ação relê a pendência gravada dentro da própria
+ * transação e não faz nada se ela já não existe (toque duplo, outra aba): vale a `mutacao` gravada, não a cópia da tela.
+ */
 @Injectable({ providedIn: 'root' })
 export class PendenciasService {
   private readonly db = inject(RegeraDb);
@@ -31,11 +34,13 @@ export class PendenciasService {
    * pendência sai; as mutações seguintes e os documentos ficam. Se o registro local não existe mais e nada vem atrás,
    * vai como DELETE (como antes).
    */
-  async manterMinha(p: Pendencia): Promise<void> {
-    const adaptador = this.adaptador(p);
+  async manterMinha(daTela: Pendencia): Promise<void> {
+    const adaptador = this.adaptador(daTela);
     const tabela = adaptador.tabela(this.db);
-    const base = p.versionServidor ?? null;
     await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
+      const p = await this.db.pendencias.get(daTela.mutationId);
+      if (!p) return;
+      const base = p.versionServidor ?? null;
       const local = await tabela.get(p.agregadoId);
       const atras = await this.db.outbox.where('agregadoId').equals(p.agregadoId).count();
       await this.db.pendencias.delete(p.mutationId);
@@ -49,8 +54,10 @@ export class PendenciasService {
   }
 
   /** Busca o estado ATUAL do servidor (dadosServidor pode estar velho); sem rede, usa o que a pendência guardou. */
-  async usarServidor(p: Pendencia): Promise<void> {
-    this.adaptador(p);
+  async usarServidor(daTela: Pendencia): Promise<void> {
+    this.adaptador(daTela);
+    const p = await this.gravada(daTela);
+    if (!p) return;
     let atual: Mudanca | null | undefined;
     try {
       atual = await this.buscarNoServidor(p, p.agregadoId);
@@ -61,11 +68,14 @@ export class PendenciasService {
     await this.aplicarEClear(p, p.agregadoId, atual);
   }
 
-  async descartar(p: Pendencia): Promise<void> {
+  async descartar(daTela: Pendencia): Promise<void> {
+    const p = await this.gravada(daTela);
+    if (!p) return;
     if (p.entidade === TIPO_UPLOAD_DOCUMENTO) return this.descartarUpload(p);
     if (p.mutacao.baseVersion === null) {
       const tabela = this.adaptador(p).tabela(this.db);
       await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
+        if (!(await this.gravada(p))) return;
         await this.limparAgregado(p);
         await tabela.delete(p.agregadoId);
       });
@@ -79,16 +89,20 @@ export class PendenciasService {
    * nunca chegou ao servidor (some de vez), as propostas que apontavam para ele passam a apontar para o existente,
    * inclusive as já rejeitadas por isso, que voltam à fila (P4b-R16, §11.5 "reenvia as dependentes").
    */
-  async usarExistente(p: Pendencia): Promise<string> {
-    const idExistente = p.erro?.idExistente;
+  async usarExistente(daTela: Pendencia): Promise<string> {
+    const idExistente = daTela.erro?.idExistente;
     if (!idExistente) throw new Error('Pendência sem idExistente');
-    const adaptador = this.adaptador(p);
+    const adaptador = this.adaptador(daTela);
+    const p = await this.gravada(daTela);
+    // já resolvida (toque duplo): o cadastro existente é o mesmo
+    if (!p) return idExistente;
     const existente = await this.buscarNoServidor(p, idExistente);
     if (!existente || existente.deleted) throw new Error('O cadastro existente não foi encontrado no servidor.');
     // atualização: o agregado local existe no servidor, então restaura a cópia dele em vez de apagar
     const proprio = p.mutacao.baseVersion !== null ? await this.buscarNoServidor(p, p.agregadoId) : null;
     const tabela = adaptador.tabela(this.db);
     await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela, this.db.propostas], async () => {
+      if (!(await this.gravada(p))) return;
       await this.limparAgregado(p);
       if (proprio && !proprio.deleted) {
         await tabela.put(adaptador.paraLocal(p.agregadoId, proprio.version, proprio.dados));
@@ -151,6 +165,7 @@ export class PendenciasService {
   private async descartarUpload(p: Pendencia): Promise<void> {
     const documentoId = (p.mutacao.dados as DadosUpload | null)?.documentoId;
     await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos], async () => {
+      if (!(await this.gravada(p))) return;
       await this.db.pendencias.delete(p.mutationId);
       if (!documentoId) return;
       await this.db.outbox
@@ -160,6 +175,11 @@ export class PendenciasService {
       if (doc && !doc.enviado) await this.db.documentos.delete(documentoId);
     });
     void this.sync.sincronizar();
+  }
+
+  /** A pendência como está gravada; undefined se já foi resolvida. */
+  private gravada(p: Pendencia): Promise<Pendencia | undefined> {
+    return this.db.pendencias.get(p.mutationId);
   }
 
   /** O adaptador da entidade da pendência; o upload não tem (só "Descartar" vale para ele). */
@@ -193,6 +213,7 @@ export class PendenciasService {
     const adaptador = this.adaptador(p);
     const tabela = adaptador.tabela(this.db);
     await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
+      if (!(await this.gravada(p))) return;
       await this.limparAgregado(p);
       if (!m || m.deleted) {
         await tabela.delete(id);

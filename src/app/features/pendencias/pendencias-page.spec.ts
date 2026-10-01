@@ -75,7 +75,7 @@ function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMI
   const fixture = TestBed.createComponent(PendenciasPage);
   fixture.detectChanges();
   const navegar = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
-  return { el: fixture.nativeElement as HTMLElement, svc, sincronizar, navegar };
+  return { el: fixture.nativeElement as HTMLElement, svc, sincronizar, navegar, fixture };
 }
 
 const botao = (el: HTMLElement, texto: string) =>
@@ -89,12 +89,17 @@ describe('PendenciasPage', () => {
     expect(sincronizar).toHaveBeenCalled();
   });
 
-  it('conflito oferece manter a minha ou usar a do servidor', () => {
-    const { el, svc } = montar([conflito]);
+  it('conflito oferece manter a minha ou usar a do servidor', async () => {
+    const { el, svc, fixture } = montar([conflito]);
     expect(el.textContent).toContain('Maria');
     expect(el.textContent).toContain('Alterado por outra pessoa');
     botao(el, 'Manter a minha').click();
     expect(svc.manterMinha).toHaveBeenCalledWith(conflito);
+    // uma ação por vez na mesma pendência: espera a primeira terminar
+    await vi.waitFor(async () => {
+      await fixture.whenStable();
+      expect(botao(el, 'Usar a do servidor').disabled).toBe(false);
+    });
     botao(el, 'Usar a do servidor').click();
     expect(svc.usarServidor).toHaveBeenCalledWith(conflito);
   });
@@ -121,6 +126,25 @@ describe('PendenciasPage', () => {
     botao(el, 'Usar cadastro existente').click();
     await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/clientes/c9'));
     expect(svc.usarExistente).toHaveBeenCalledWith(duplicado);
+  });
+
+  it('ação em curso desabilita os botões daquela pendência (toque duplo não repete a ação)', async () => {
+    const { el, svc, fixture } = montar([conflito, duplicado]);
+    let terminar!: () => void;
+    svc.manterMinha.mockReturnValue(new Promise<void>((r) => (terminar = r)));
+    botao(el, 'Manter a minha').click();
+    botao(el, 'Manter a minha').click();
+    await fixture.whenStable();
+    expect(svc.manterMinha).toHaveBeenCalledTimes(1);
+    expect(botao(el, 'Manter a minha').disabled).toBe(true);
+    expect(botao(el, 'Usar a do servidor').disabled).toBe(true);
+    // a outra pendência continua livre
+    expect(botao(el, 'Usar cadastro existente').disabled).toBe(false);
+    terminar();
+    await vi.waitFor(async () => {
+      await fixture.whenStable();
+      expect(botao(el, 'Manter a minha').disabled).toBe(false);
+    });
   });
 
   it('rejeição permite editar ou descartar', () => {
