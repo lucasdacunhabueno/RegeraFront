@@ -1,4 +1,4 @@
-import type { Column, Content, TableCell, TDocumentDefinitions } from 'pdfmake/interfaces';
+import type { Content, TableCell, TDocumentDefinitions } from 'pdfmake/interfaces';
 import {
   Assinante,
   Bloco,
@@ -11,37 +11,25 @@ import {
   TIPOS_PROPOSTA,
   tokenTitulo,
 } from '../../features/templates/template-models';
-import { formatarDocumento, formatarTelefone } from '../util/formatos';
+import { formatarDocumento } from '../util/formatos';
 import { dataBr, linhasDeTotais, moedaCentavos, percentualBr, quantidadeBr } from './formatos-pdf';
+import { colunasEmpresa, corPrimaria, estilosPdf, nomeEmpresa, telefone, txt } from './partes-pdf';
 import { EntradaPdf, ItemPdf } from './pdf-models';
 import { tiptapParaPdf } from './tiptap-para-pdf';
 
-const COR_PADRAO = '#1d4ed8';
 const LINHA_ASSINATURA = '______________________________';
 const ROTULOS_COLUNA = new Map<string, string>(COLUNAS_ITENS.map((c) => [c.valor, c.rotulo]));
 const COLUNAS_NUMERICAS = new Set<ColunaItens>(['quantidade', 'precoUnitario', 'desconto', 'meses', 'subtotal']);
 const ROTULOS_TIPO = new Map<string, string>(TIPOS_PROPOSTA.map((t) => [t.valor, t.rotulo]));
 
-/** Texto ou ''; nunca `undefined`/`null` no PDF (Review Focus 2). */
-const txt = (v: string | null | undefined): string => (typeof v === 'string' ? v : '');
-const telefone = (v: string | null | undefined): string => (v ? formatarTelefone(v) : '');
 const documento = (v: string | null | undefined): string => (v ? formatarDocumento(v) : '');
-
-function nomeEmpresa(e: EntradaPdf): string {
-  return txt(e.empresa.nomeFantasia) || txt(e.empresa.razaoSocial);
-}
-
-function corPrimaria(e: EntradaPdf): string {
-  const cor = e.empresa.corPrimaria;
-  return typeof cor === 'string' && /^#[0-9a-fA-F]{6}$/.test(cor) ? cor : COR_PADRAO;
-}
 
 /** Valor de uma variável da lista fechada (§9.2), já formatado; ausente ou desconhecida → ''. */
 export function valorVariavel(e: EntradaPdf, nome: string): string {
   const { empresa, cliente, proposta } = e;
   switch (nome) {
     case 'empresa.nome':
-      return nomeEmpresa(e);
+      return nomeEmpresa(empresa);
     case 'empresa.cnpj':
       return documento(empresa.cnpj);
     case 'empresa.telefone':
@@ -94,8 +82,8 @@ export function valorVariavel(e: EntradaPdf, nome: string): string {
  * a mesma entrada gera o mesmo documento. Blocos de tipo desconhecido são ignorados (Review Focus 3).
  */
 export function gerarDocumento(e: EntradaPdf): TDocumentDefinitions {
-  const cor = corPrimaria(e);
-  const nome = nomeEmpresa(e);
+  const cor = corPrimaria(e.empresa);
+  const nome = nomeEmpresa(e.empresa);
   const revisao = e.proposta.revisao > 1 ? '-R' + e.proposta.revisao : '';
   const rotuloProposta = 'Proposta ' + txt(e.proposta.codigoExibido) + revisao;
 
@@ -118,13 +106,7 @@ export function gerarDocumento(e: EntradaPdf): TDocumentDefinitions {
     pageSize: 'A4',
     pageMargins: [40, 40, 40, 56],
     defaultStyle: { font: 'Roboto', fontSize: 10 },
-    styles: {
-      titulo: { fontSize: 16, bold: true, color: cor },
-      h2: { fontSize: 13, bold: true },
-      h3: { fontSize: 11, bold: true },
-      cabecalhoTabela: { bold: true, color: 'white', fillColor: cor },
-      pequeno: { fontSize: 8 },
-    },
+    styles: estilosPdf(cor),
     content,
     footer: (atual: number, total: number): Content => ({
       columns: [
@@ -167,21 +149,8 @@ function bloco(e: EntradaPdf, b: Bloco): Content | null {
 
 function cabecalho(e: EntradaPdf, config: ConfigCabecalho): Content {
   const stack: Content[] = [];
-  const colunas: Column[] = [];
   const logo = config.mostrarLogo === true && e.logoDataUrl ? e.logoDataUrl : null;
-  if (logo) colunas.push({ image: logo, fit: [140, 60], width: 140 });
-  if (config.mostrarDadosEmpresa === true) {
-    const emp = e.empresa;
-    const linhas: Content[] = [];
-    if (txt(emp.razaoSocial)) linhas.push({ text: emp.razaoSocial, bold: true });
-    const cnpj = documento(emp.cnpj);
-    if (cnpj) linhas.push('CNPJ ' + cnpj);
-    if (txt(emp.endereco)) linhas.push(emp.endereco!);
-    const contato = [telefone(emp.telefone), txt(emp.email)].filter((s) => s !== '').join(' · ');
-    if (contato) linhas.push(contato);
-    if (txt(emp.site)) linhas.push(emp.site!);
-    if (linhas.length > 0) colunas.push(logo ? { stack: linhas, width: '*', alignment: 'right' } : { stack: linhas, width: '*' });
-  }
+  const colunas = colunasEmpresa(e.empresa, logo, config.mostrarDadosEmpresa === true);
   if (colunas.length > 0) stack.push({ columns: colunas });
 
   const titulo = txt(config.titulo).replace(tokenTitulo(), (_token, nome: string) => valorVariavel(e, nome));

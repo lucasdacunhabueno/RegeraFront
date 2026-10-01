@@ -1,6 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
 import { paraEmpresaLocal } from '../../features/empresa/empresa-models';
+import type { EntradaPdfOs } from '../../features/os/os-repo';
 import { ArquivosService } from '../arquivos/arquivos-service';
 import { entradaFicticia } from './dados-ficticios';
 import { PdfService } from './pdf-service';
@@ -22,6 +23,19 @@ vi.mock('pdfmake/build/vfs_fonts', () => {
   pdf.carregamentos.vfs++;
   return { default: { 'Roboto-Regular.ttf': 'AAAA' } };
 });
+
+function entradaOs(): EntradaPdfOs {
+  return {
+    empresa: { razaoSocial: 'Regera', nomeFantasia: null, cnpj: null, endereco: null, telefone: null, email: null, site: null, corPrimaria: '#0f766e' },
+    logoDataUrl: null,
+    os: {
+      codigoExibido: 'OS-000123-R2', revisao: 2, tipo: 'INSTALACAO', rotuloTipo: 'Instalação', urgente: false, dataPrevista: null,
+      iniciadaEm: null, concluidaEm: null, emitidaEm: '2026-10-05T18:31:00Z', descricao: null, endereco: null, resumoExecucao: null,
+      propostaNumero: null, propostaCodigoExibido: null,
+    },
+    cliente: null, tecnicoNome: null, responsavelNome: null, itens: [], notas: [], fotos: [], assinatura: null, recusaAssinatura: null,
+  };
+}
 
 describe('PdfService', () => {
   const obterDataUrl = vi.fn<(id: string) => Promise<string | null>>();
@@ -45,6 +59,38 @@ describe('PdfService', () => {
     expect(pdf.createPdf).toHaveBeenCalledTimes(2);
     expect(pdf.createPdf.mock.calls[0][0]).toMatchObject({ pageSize: 'A4', watermark: { text: 'PRÉVIA' } });
     expect(pdf.getBlob).toHaveBeenCalledTimes(2);
+  });
+
+  it('gerarBlobOs desenha a OS com o pdfmake carregado sob demanda, o mesmo do gerarBlob, uma vez só', async () => {
+    pdf.addVirtualFileSystem.mockClear();
+    pdf.createPdf.mockClear();
+    pdf.getBlob.mockClear();
+    await svc.gerarBlob(entradaFicticia([], null, null));
+
+    const b1 = await svc.gerarBlobOs(entradaOs());
+    const b2 = await svc.gerarBlobOs(entradaOs());
+    expect(b1).toBe(pdf.blob);
+    expect(b2).toBe(pdf.blob);
+    expect(pdf.carregamentos).toEqual({ pdfmake: 1, vfs: 1 });
+    expect(pdf.addVirtualFileSystem).toHaveBeenCalledTimes(1);
+    expect(pdf.createPdf).toHaveBeenCalledTimes(3);
+    const dd = pdf.createPdf.mock.calls[1][0] as { pageSize: string; content: { id?: string; stack?: { text: string }[] }[] };
+    expect(dd.pageSize).toBe('A4');
+    expect(dd.content.find((c) => c.id === 'titulo')?.stack?.[0].text).toBe('Ordem de serviço OS-000123-R2');
+    expect(pdf.getBlob).toHaveBeenCalledTimes(3);
+  });
+
+  it('gerarBlobOs: falha na carga do pdfmake não fica em cache, a chamada seguinte funciona', async () => {
+    pdf.addVirtualFileSystem.mockClear();
+    pdf.createPdf.mockClear();
+    pdf.addVirtualFileSystem.mockImplementationOnce(() => {
+      throw new Error('chunk indisponível');
+    });
+    await expect(svc.gerarBlobOs(entradaOs())).rejects.toThrow('chunk indisponível');
+    expect(pdf.createPdf).not.toHaveBeenCalled();
+    await expect(svc.gerarBlobOs(entradaOs())).resolves.toBe(pdf.blob);
+    expect(pdf.addVirtualFileSystem).toHaveBeenCalledTimes(2);
+    expect(pdf.createPdf).toHaveBeenCalledTimes(1);
   });
 
   it('falha na carga do pdfmake não fica em cache: a chamada seguinte tenta de novo e funciona', async () => {

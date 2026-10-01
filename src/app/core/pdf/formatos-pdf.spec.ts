@@ -1,6 +1,13 @@
-import { dataBr, linhasDeTotais, moedaCentavos, percentualBr, quantidadeBr } from './formatos-pdf';
+import { dataBr, dataHoraBr, linhasDeTotais, moedaCentavos, percentualBr, quantidadeBr } from './formatos-pdf';
 
 describe('formatos-pdf', () => {
+  it('dataHoraBr: instante ISO → dd/mm/aaaa hh:mm na hora de São Paulo; ausente ou inválido → vazio', () => {
+    expect(dataHoraBr('2026-10-02T01:30:00Z')).toBe('01/10/2026 22:30');
+    expect(dataHoraBr('2026-09-20T00:00:00-03:00')).toBe('20/09/2026 00:00');
+    expect(dataHoraBr(null)).toBe('');
+    expect(dataHoraBr('ontem')).toBe('');
+  });
+
   it('moedaCentavos formata centavos inteiros em pt-BR com espaço comum', () => {
     expect(moedaCentavos(123456)).toBe('R$ 1.234,56');
     expect(moedaCentavos(0)).toBe('R$ 0,00');

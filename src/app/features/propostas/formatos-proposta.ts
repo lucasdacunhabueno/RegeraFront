@@ -32,23 +32,8 @@ export function moedaCentavos(centavos: number): string {
   return moedaPdf(centavos);
 }
 
-const DATA_HORA_SAO_PAULO = new Intl.DateTimeFormat('en-GB', {
-  timeZone: 'America/Sao_Paulo',
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hourCycle: 'h23',
-});
-
-/** Instante ISO → `dd/mm/aaaa hh:mm` na hora de São Paulo (histórico e documentos); ausente ou inválido → ''. */
-export function dataHoraBr(iso: string | null | undefined): string {
-  const instante = Date.parse(iso ?? '');
-  if (Number.isNaN(instante)) return '';
-  const p = new Map(DATA_HORA_SAO_PAULO.formatToParts(new Date(instante)).map((x) => [x.type, x.value]));
-  return `${p.get('day')}/${p.get('month')}/${p.get('year')} ${p.get('hour')}:${p.get('minute')}`;
-}
+/** Instante ISO → `dd/mm/aaaa hh:mm` na hora de São Paulo (o mesmo texto dos PDFs). */
+export { dataHoraBr } from '../../core/pdf/formatos-pdf';
 
 /** Os campos da proposta pelos nomes do servidor (`campos` das recusas), como a tela os chama. */
 const ROTULO_CAMPO: Readonly<Record<string, string>> = {
