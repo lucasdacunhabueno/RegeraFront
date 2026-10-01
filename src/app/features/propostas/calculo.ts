@@ -97,22 +97,26 @@ export const paraCentesimos = (v: string | number): bigint => paraEscalado(v, 2)
 export const deCentesimos = (v: bigint): string => deEscalado(v, 2, false);
 
 /** Por que o texto digitado não é um decimal aceitável (a UI escolhe a mensagem). */
-export type ErroDecimal = 'VAZIO' | 'NEGATIVO' | 'CASAS' | 'INVALIDO';
+export type ErroDecimal = 'VAZIO' | 'NEGATIVO' | 'CASAS' | 'AMBIGUO' | 'INVALIDO';
 
 const SO_DIGITOS = /^\d+$/;
 const UM_SEPARADOR = /^(\d+)[.,](\d+)$/;
+/** P4b-R12: `1.234` pode ser milhar (pt-BR) ou decimal; como o `parseMoeda` do P3, não adivinha. */
+const AMBIGUO = /^\d+\.\d{3}$/;
 const MILHAR_PT_BR = /^(\d{1,3}(?:\.\d{3})+),(\d+)$/;
 
 /**
  * Valor digitado num formulário para inteiro escalado por 10^casas, sem arredondar. Tira os espaços das pontas e
  * aceita: só dígitos (`1234`); vírgula ou ponto decimal (`1234,56`, `1234.56`); e ponto de milhar só na forma pt-BR
- * com vírgula decimal (`1.234,56`). Sem vírgula, o ponto é decimal (`1.234` = 1,234). Recusa sinal, expoente,
- * separador sem dígitos dos dois lados, mais casas que `casas` (mesmo zeros) e qualquer outro caractere.
+ * com vírgula decimal (`1.234,56`). Sem vírgula, o ponto é decimal (`1.5`, `1.25`), exceto um ponto seguido de
+ * exatamente 3 dígitos (`1.234`, `12.500`): ambíguo, `AMBIGUO` (P4b-R12). Recusa sinal, expoente, separador sem
+ * dígitos dos dois lados, mais casas que `casas` (mesmo zeros) e qualquer outro caractere.
  */
 export function lerDecimalEstrito(texto: string, casas: number): bigint | ErroDecimal {
   const t = texto.trim();
   if (t === '') return 'VAZIO';
   if (t.startsWith('-')) return 'NEGATIVO';
+  if (AMBIGUO.test(t)) return 'AMBIGUO';
   let inteiro: string;
   let fracao = '';
   const separado = MILHAR_PT_BR.exec(t) ?? UM_SEPARADOR.exec(t);

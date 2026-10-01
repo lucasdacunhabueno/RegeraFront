@@ -158,7 +158,12 @@ describe('calculo', () => {
       expect(lerDecimalEstrito('1234.56', 2)).toBe(123456n);
       expect(lerDecimalEstrito('1.234,56', 2)).toBe(123456n);
       expect(lerDecimalEstrito('1.234.567,8', 2)).toBe(123456780n);
-      expect(lerDecimalEstrito('1.234', 3)).toBe(1234n); // sem vírgula, o ponto é decimal
+      expect(lerDecimalEstrito('1,234', 3)).toBe(1234n);
+      expect(lerDecimalEstrito('1.234,5', 2)).toBe(123450n);
+      expect(lerDecimalEstrito('1.5', 2)).toBe(150n);
+      expect(lerDecimalEstrito('1.25', 2)).toBe(125n);
+      expect(lerDecimalEstrito('0.5', 2)).toBe(50n);
+      expect(lerDecimalEstrito('1.2345', 4)).toBe(12345n);
       expect(lerDecimalEstrito('0,5', 2)).toBe(50n);
       expect(lerDecimalEstrito('007', 0)).toBe(7n);
       expect(lerDecimalEstrito('  12,5  ', 3)).toBe(12500n);
@@ -177,9 +182,16 @@ describe('calculo', () => {
       expect(lerDecimalEstrito('+1', 2)).toBe('INVALIDO');
     });
 
+    it('P4b-R12: um ponto seguido de exatamente 3 dígitos, sem vírgula, é ambíguo (milhar ou decimal?)', () => {
+      for (const v of ['1.234', '12.500', '123.456', '1234.567', '0.500', ' 1.000 ']) {
+        expect(lerDecimalEstrito(v, 3), v).toBe('AMBIGUO');
+        expect(lerDecimalEstrito(v, 2), v).toBe('AMBIGUO');
+      }
+    });
+
     it('mais casas que o permitido (mesmo zeros)', () => {
       expect(lerDecimalEstrito('1,234', 2)).toBe('CASAS');
-      expect(lerDecimalEstrito('1.500', 2)).toBe('CASAS');
+      expect(lerDecimalEstrito('1.5000', 3)).toBe('CASAS');
       expect(lerDecimalEstrito('1,5', 0)).toBe('CASAS');
       expect(lerDecimalEstrito('1.234,567', 2)).toBe('CASAS');
     });
