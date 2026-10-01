@@ -38,6 +38,7 @@ const LARGURAS_ITENS: [number, number, number, number] = [70, LARGURA_UTIL - 70 
  */
 const LAYOUT_ITENS: CustomTableLayout = {
   hLineWidth: (i, node) => (i <= 1 || i === node.table.body.length ? 0 : i === node.table.headerRows ? 2 : 1),
+  hLineColor: (i, node) => (i === node.table.headerRows ? 'black' : '#aaa'),
   vLineWidth: () => 0,
   paddingLeft: (i) => (i === 0 ? 0 : 8),
   paddingRight: (i, node) => (i === (node.table.widths?.length ?? 0) - 1 ? 0 : 8),
