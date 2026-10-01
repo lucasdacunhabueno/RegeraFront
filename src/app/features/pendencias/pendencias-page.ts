@@ -12,7 +12,7 @@ import { DadosUploadAnexoOs, Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUME
 import { SyncService } from '../../core/sync/sync-service';
 import { MENSAGEM_OS_NAO_ESTA_COM_VOCE } from '../../core/sync/tipos-upload';
 import { Toasts } from '../../shared/ui/toasts';
-import { mensagemErroOs } from '../os/formatos-os';
+import { mensagemErroOs, rotuloCampoOs, textoPerdaOs } from '../os/formatos-os';
 import { codigoOsExibido, OsDados, OsLocal, TipoAnexoOs } from '../os/os-models';
 import { compartilharArquivo, ResultadoCompartilhar } from '../propostas/compartilhar';
 import { DialogoMotivo } from '../propostas/dialogo-motivo';
@@ -32,13 +32,6 @@ const ROTULO_ANEXO_OS: Readonly<Record<TipoAnexoOs, string>> = { FOTO: 'Foto', A
 
 /** P4c-R15: o texto da confirmação quando a ação levaria o que foi feito neste aparelho e ainda não foi enviado. */
 const AVISO_PROPOSTA = 'Isto descarta o envio e o PDF gerado neste aparelho.';
-
-/** Na OS, o que ela levaria (`perdaDaOs`): as notas (e o resumo) e os anexos ainda não enviados. */
-function avisoDaOs(perda: { anexos: boolean; notas: boolean }): string {
-  const oQue = perda.notas && perda.anexos ? 'as notas, o resumo, as fotos, a assinatura e o PDF'
-    : perda.notas ? 'as notas e o resumo' : 'as fotos, a assinatura e o PDF';
-  return `Isto descarta ${oQue} desta OS que ainda não foram enviados deste aparelho.`;
-}
 
 /** M2P1-R19: o "Manter a minha" tirou notas que o perfil não acrescenta na OS encerrada no servidor. */
 const NOTAS_DESCARTADAS = 'As notas não puderam ser acrescentadas: a OS está encerrada.';
@@ -345,12 +338,16 @@ export class PendenciasPage {
     return 'Alterado por outra pessoa enquanto você editava.';
   }
 
-  /** [caminho, rótulo, mensagem]; nos templates o caminho vira texto (`blocos[0].config…` → "Bloco 1 (Itens)"). */
+  /**
+   * [caminho, rótulo, mensagem]; nos templates o caminho vira texto (`blocos[0].config…` → "Bloco 1 (Itens)"); na OS e
+   * nos anexos dela, pelo `rotuloCampoOs` (N1: `notas[0].texto` → "Nota", `itens[1].codigo` → "Item 2 (código)").
+   */
   protected listarCampos(p: Pendencia, campos: Record<string, string>): [string, string, string][] {
     return Object.entries(campos).map(([campo, msg]) => [campo, this.rotuloCampo(p, campo), msg]);
   }
 
   private rotuloCampo(p: Pendencia, campo: string): string {
+    if (p.entidade === 'os' || p.entidade === TIPO_UPLOAD_ANEXO_OS) return rotuloCampoOs(campo);
     if (p.entidade !== 'template_proposta') return campo;
     const m = CAMINHO_BLOCO.exec(campo);
     if (!m) return ROTULO_CAMPO_TEMPLATE[campo] ?? campo;
@@ -467,8 +464,9 @@ export class PendenciasPage {
   /** O texto da confirmação, ou null quando a ação não leva nada feito aqui. */
   private async avisoDoDescarte(p: Pendencia): Promise<string | null> {
     if (p.entidade === 'os' || osNaoEncontrada(p)) {
+      // M1: o aviso nomeia o que sai (o início, as notas, a recusa, a conclusão e o resumo, as fotos, o PDF…)
       const perda = await this.servico.perdaDaOs(p);
-      return perda.anexos || perda.notas ? avisoDaOs(perda) : null;
+      return perda.length > 0 ? textoPerdaOs(perda) : null;
     }
     return (await this.servico.descartaEnvio(p)) ? AVISO_PROPOSTA : null;
   }

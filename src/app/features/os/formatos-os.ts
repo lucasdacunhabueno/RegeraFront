@@ -1,3 +1,4 @@
+import { ROTULO_CAMPO_ANEXO } from '../../core/sync/tipos-upload';
 import { ErroCampo } from '../../core/util/erro-campo';
 
 /**
@@ -64,4 +65,106 @@ export function mensagemErroOs(e: unknown): string {
   if (e.message.trim()) return e.message;
   const codigo = (e as ErroCampo & { codigo?: unknown }).codigo;
   return (typeof codigo === 'string' && POR_CODIGO.get(codigo)) || GENERICA;
+}
+
+/**
+ * O que "Usar a do servidor" ou "Descartar" de uma pendência levaria de uma OS, feito neste aparelho e ainda não enviado
+ * (P4c-R15, M2-P2 M1; `PendenciasService.perdaDaOs`).
+ */
+export type ItemPerdaOs =
+  | 'inicio' | 'notas' | 'fotos' | 'assinatura' | 'recusa' | 'precisaVoltar' | 'conclusao' | 'resumo' | 'pdf'
+  | 'cancelamento' | 'reabertura';
+
+/** Na ordem do trabalho de campo (a da fila: iniciar, notas, fotos, assinatura, concluir, PDF), e depois o escritório. */
+const ROTULO_PERDA: Readonly<Record<ItemPerdaOs, string>> = {
+  inicio: 'o início',
+  notas: 'as notas',
+  fotos: 'as fotos',
+  assinatura: 'a assinatura',
+  recusa: 'a recusa da assinatura',
+  precisaVoltar: 'o "Precisa voltar"',
+  conclusao: 'a conclusão',
+  resumo: 'o resumo',
+  pdf: 'o PDF',
+  cancelamento: 'o cancelamento',
+  reabertura: 'a reabertura',
+};
+/** A ordem canônica dos itens (a do `ROTULO_PERDA`). */
+export const ORDEM_PERDA_OS: readonly ItemPerdaOs[] = Object.keys(ROTULO_PERDA) as ItemPerdaOs[];
+
+/** "a, b e c". */
+function emLista(itens: readonly string[]): string {
+  return itens.length <= 1 ? itens.join('') : `${itens.slice(0, -1).join(', ')} e ${itens.at(-1)}`;
+}
+
+/** O aviso da confirmação (P4c-R15), nomeando o que sai, na ordem canônica. Não vazio. */
+export function textoPerdaOs(itens: readonly ItemPerdaOs[]): string {
+  const presentes = new Set(itens);
+  const nomes = ORDEM_PERDA_OS.filter((i) => presentes.has(i)).map((i) => ROTULO_PERDA[i]);
+  return `Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: ${emLista(nomes)}.`;
+}
+
+/** Os campos da OS nos `campos` de uma recusa VALIDACAO (do push e do upload de anexo), como o usuário os conhece. */
+const ROTULO_CAMPO_OS: Readonly<Record<string, string>> = {
+  ...ROTULO_CAMPO_ANEXO,
+  os: 'OS',
+  propostaId: 'Proposta',
+  clienteId: 'Cliente',
+  codigoProvisorio: 'Código provisório',
+  tipo: 'Tipo',
+  status: 'Status',
+  descricao: 'Descrição',
+  dataPrevista: 'Data prevista',
+  urgente: 'Urgente',
+  tecnicoId: 'Técnico',
+  responsavelId: 'Responsável',
+  endereco: 'Endereço',
+  enderecoId: 'Endereço',
+  enderecoCep: 'CEP',
+  enderecoLogradouro: 'Logradouro',
+  enderecoNumero: 'Número',
+  enderecoComplemento: 'Complemento',
+  enderecoBairro: 'Bairro',
+  enderecoCidade: 'Cidade',
+  enderecoUf: 'UF',
+  itens: 'Itens',
+  notas: 'Notas',
+  concluiProposta: 'Conclui a proposta',
+  resumoExecucao: 'Resumo da execução',
+  assinatura: 'Assinatura',
+  assinaturaRecusada: 'Recusa da assinatura',
+  motivoRecusa: 'Motivo da recusa',
+  motivoCancelamento: 'Motivo do cancelamento',
+  motivoReabertura: 'Motivo da reabertura',
+  aceitarTrabalho: 'Aceite do trabalho',
+  foto: 'Foto',
+};
+/** Os campos de uma linha (`itens[i].campo`). */
+const ROTULO_CAMPO_ITEM: Readonly<Record<string, string>> = {
+  id: 'linha',
+  itemCatalogoId: 'item do catálogo',
+  codigo: 'código',
+  nome: 'nome',
+  unidade: 'unidade',
+  natureza: 'natureza',
+  quantidadePrevista: 'quantidade prevista',
+  ordem: 'ordem',
+};
+const CAMINHO_NOTA = /^notas\[\d+\](?:\.\w+)?$/;
+const CAMINHO_ITEM = /^itens\[(\d+)\](?:\.(\w+))?$/;
+
+/**
+ * N1: o rótulo de um campo da OS numa recusa (`notas[i].texto` → "Nota", `itens[i].quantidadePrevista` → "Item N
+ * (quantidade prevista)", `resumoExecucao` → "Resumo da execução"); o caminho cru quando não é conhecido.
+ */
+export function rotuloCampoOs(campo: string): string {
+  if (CAMINHO_NOTA.test(campo)) return 'Nota';
+  const item = CAMINHO_ITEM.exec(campo);
+  if (item) {
+    const n = Number(item[1]) + 1;
+    const sub = item[2];
+    if (sub === undefined) return `Item ${n}`;
+    return `Item ${n} (${Object.hasOwn(ROTULO_CAMPO_ITEM, sub) ? ROTULO_CAMPO_ITEM[sub] : sub})`;
+  }
+  return Object.hasOwn(ROTULO_CAMPO_OS, campo) ? ROTULO_CAMPO_OS[campo] : campo;
 }

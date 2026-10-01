@@ -182,7 +182,7 @@ const MOTIVO_ANEXO_POR_STATUS: Readonly<Record<number, string>> = {
 };
 
 /** Os campos dos metadados do upload (`campos` do 400 VALIDACAO), como o usuário os conhece. */
-const ROTULO_CAMPO_ANEXO: Readonly<Record<string, string>> = {
+export const ROTULO_CAMPO_ANEXO: Readonly<Record<string, string>> = {
   metadados: 'Metadados do anexo',
   anexoId: 'Identificador do anexo',
   tipo: 'Tipo do anexo',

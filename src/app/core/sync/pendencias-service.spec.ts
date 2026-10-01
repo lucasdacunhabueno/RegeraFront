@@ -639,22 +639,81 @@ describe('PendenciasService', () => {
           expect(((await db.outbox.get(5))!.dados as OsDados).notas.map((x) => x.id)).toEqual(['n0']);
         });
 
-        it('M3: perdaDaOs diz se a ação levaria notas (e o resumo) que o servidor não tem, além dos anexos', async () => {
+        it('M3/M1: perdaDaOs diz o que a ação levaria: as notas, a foto, a recusa, a conclusão e o resumo da fila', async () => {
           const p = await cenario();
-          expect(await svc.perdaDaOs(p)).toEqual({ anexos: true, notas: true });
+          expect(await svc.perdaDaOs(p)).toEqual(['notas', 'fotos', 'recusa', 'conclusao', 'resumo']);
           await db.anexosOs.clear();
           await db.outbox.delete(6);
-          expect(await svc.perdaDaOs(p)).toEqual({ anexos: false, notas: true });
+          expect(await svc.perdaDaOs(p)).toEqual(['notas', 'recusa', 'conclusao', 'resumo']);
           expect(await svc.descartaEnvio(p)).toBe(true);
           // as notas que o servidor já tem não contam
           await db.outbox.clear();
           const semNova = { ...p, mutacao: { ...p.mutacao, dados: doAparelho({ notas: [{ id: 'n0', texto: 'Do escritório', autorId: 'u-adm', criadaEm: 'x' }] }) } };
           await db.pendencias.put(semNova);
-          expect(await svc.perdaDaOs(semNova)).toEqual({ anexos: false, notas: false });
+          expect(await svc.perdaDaOs(semNova)).toEqual([]);
           await db.pendencias.put(p);
-          const jaLa = { ...p, dadosServidor: doServidor({ notas: [{ id: 'n1', texto: 'Cheguei', autorId: TEC, criadaEm: 'y' }] }) };
-          expect(await svc.perdaDaOs(jaLa)).toEqual({ anexos: false, notas: false });
+          // nem o resumo que o servidor já tem
+          const jaLa = { ...p, dadosServidor: doServidor({ resumoExecucao: 'Meu resumo', notas: [{ id: 'n1', texto: 'Cheguei', autorId: TEC, criadaEm: 'y' }] }) };
+          expect(await svc.perdaDaOs(jaLa)).toEqual([]);
           expect(await svc.descartaEnvio(jaLa)).toBe(false);
+        });
+
+        describe('M1: o resto do trabalho de campo na fila também conta', () => {
+          const conflitoCom = (dados: OsDados, extra: Partial<Pendencia> = {}, mutacao: Partial<MutacaoLocal> = {}): Pendencia => ({
+            mutationId: 'n', entidade: 'os', agregadoId: 'o1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 7,
+            dadosServidor: doServidor(), mutacao: mutOs('n', 5, dados, mutacao), ...extra,
+          });
+          const rejeitadaSemServidor = (dados: OsDados, mutacao: Partial<MutacaoLocal> = {}) => conflitoCom(dados,
+            { tipo: 'REJEITADO', dadosServidor: undefined, versionServidor: undefined, erro: { codigo: 'VALIDACAO', mensagem: 'x' } }, mutacao);
+
+          it('só um recusarAssinatura na fila: a recusa da assinatura (a mesma que o servidor já tem não conta)', async () => {
+            const p = conflitoCom(doAparelho({ resumoExecucao: null, assinaturaRecusada: true, motivoRecusa: 'Cliente ausente' }));
+            await db.pendencias.put(p);
+            expect(await svc.perdaDaOs(p)).toEqual(['recusa']);
+            expect(await svc.descartaEnvio(p)).toBe(true);
+            expect(await svc.perdaDaOs({ ...p, dadosServidor: doServidor({ assinaturaRecusada: true, motivoRecusa: 'Cliente ausente' }) })).toEqual([]);
+          });
+
+          it('o "Precisa voltar" (concluiProposta desmarcado aqui); desmarcado também no servidor, não', async () => {
+            const p = conflitoCom(doAparelho({ concluiProposta: false }));
+            await db.pendencias.put(p);
+            expect(await svc.perdaDaOs(p)).toEqual(['precisaVoltar']);
+            expect(await svc.perdaDaOs({ ...p, dadosServidor: doServidor({ concluiProposta: false }) })).toEqual([]);
+          });
+
+          it('um iniciar sozinho, recusado (sem o estado do servidor): o início', async () => {
+            const p = rejeitadaSemServidor(doAparelho({ status: 'EM_ANDAMENTO' }), { separada: true });
+            await db.pendencias.put(p);
+            expect(await svc.perdaDaOs(p)).toEqual(['inicio']);
+            // a mesma transição que o servidor já tem não é trabalho a perder (o status nunca volta, M2P1-R30 V2)
+            expect(await svc.perdaDaOs({ ...p, dadosServidor: doServidor({ status: 'EM_ANDAMENTO' }) })).toEqual([]);
+          });
+
+          it('o concluir com "Precisa voltar" e o PDF, sem o estado do servidor: a conclusão, o resumo, o "Precisa voltar" e o PDF', async () => {
+            const p = rejeitadaSemServidor(doAparelho({ status: 'CONCLUIDA', resumoExecucao: 'Falta peça', concluiProposta: false }), { separada: true });
+            await db.pendencias.put(p);
+            await gravarAnexos({ ...anexo('d1', 'o1', false), tipo: 'DOCUMENTO' });
+            await db.outbox.add(uploadOs('up-d1', 'd1'));
+            expect(await svc.perdaDaOs(p)).toEqual(['precisaVoltar', 'conclusao', 'resumo', 'pdf']);
+          });
+
+          it('as do escritório: a reabertura e o cancelamento', async () => {
+            const reabrir = conflitoCom(doAparelho({ status: 'EM_ANDAMENTO', motivoReabertura: 'Faltou um item' }),
+              { dadosServidor: doServidor({ status: 'CONCLUIDA' }) }, { separada: true });
+            expect(await svc.perdaDaOs(reabrir)).toEqual(['reabertura']);
+            const cancelar = conflitoCom(doAparelho({ status: 'CANCELADA', motivoCancelamento: 'Desistiu' }), {}, { separada: true });
+            expect(await svc.perdaDaOs(cancelar)).toEqual(['cancelamento']);
+            // o aceite do trabalho não é transição
+            expect(await svc.perdaDaOs(conflitoCom(doAparelho({ aceitarTrabalho: true }), {}, { separada: true }))).toEqual([]);
+          });
+
+          it('a assinatura colhida e a nota numa mutação separada (o teto de notas) depois do iniciar: um início só', async () => {
+            const p = rejeitadaSemServidor(doAparelho({ status: 'EM_ANDAMENTO' }), { separada: true });
+            await db.pendencias.put(p);
+            await db.outbox.add(mutOs('n2', 6, doAparelho({ status: 'EM_ANDAMENTO', notas: [nota('n1', 'Cheguei')] }), { separada: true }));
+            await gravarAnexos({ ...anexo('s1', 'o1', false), tipo: 'ASSINATURA' });
+            expect(await svc.perdaDaOs(p)).toEqual(['inicio', 'notas', 'assinatura']);
+          });
         });
 
         it('a do conflito sem os dados do servidor (excluída lá) ou um DELETE seguem a regra comum', async () => {
@@ -679,10 +738,12 @@ describe('PendenciasService', () => {
         await gravarAnexos([anexo('f0', 'o1', true), anexo('f9', 'o9', false)]);
         expect(await svc.descartaEnvio(conflitoOs)).toBe(false);
 
-        // o upload de um anexo na fila
+        // o upload de um anexo na fila (o anexo dele, gravado aqui e ainda não enviado)
         const u = await db.outbox.add(uploadOs('up1', 'f1'));
-        expect(await svc.descartaEnvio(conflitoOs)).toBe(true);
+        await gravarAnexos(anexo('f1', 'o1', false));
+        expect(await svc.perdaDaOs(conflitoOs)).toEqual(['fotos']);
         await db.outbox.delete(u);
+        await db.anexosOs.delete('f1');
 
         // o upload recusado de um anexo, nas pendências
         const recusado: Pendencia = {
@@ -690,13 +751,16 @@ describe('PendenciasService', () => {
           erro: { codigo: 'LIMITE_FOTOS', mensagem: 'x' }, mutacao: uploadOs('up2', 'f2'),
         };
         await db.pendencias.put(recusado);
-        expect(await svc.descartaEnvio(conflitoOs)).toBe(true);
+        await gravarAnexos({ ...anexo('f2', 'o1', false), tipo: 'ASSINATURA' });
+        expect(await svc.perdaDaOs(conflitoOs)).toEqual(['assinatura']);
         await db.pendencias.delete('up2');
+        await db.anexosOs.delete('f2');
 
         // uma foto, a assinatura ou o PDF gravados aqui e ainda não enviados
-        for (const tipo of ['FOTO', 'ASSINATURA', 'DOCUMENTO'] as const) {
+        for (const [tipo, item] of [['FOTO', 'fotos'], ['ASSINATURA', 'assinatura'], ['DOCUMENTO', 'pdf']] as const) {
           await gravarAnexos({ ...anexo('f3', 'o1', false), tipo });
           expect(await svc.descartaEnvio(conflitoOs)).toBe(true);
+          expect(await svc.perdaDaOs(conflitoOs)).toEqual([item]);
           await db.anexosOs.delete('f3');
         }
         expect(await svc.descartaEnvio(conflitoOs)).toBe(false);
@@ -847,7 +911,7 @@ describe('PendenciasService', () => {
           const p = recusa('up1', 'f1', 'OS_NAO_ENCONTRADA');
           await db.pendencias.put(p);
           // o que vai junto (fora a foto do próprio upload) é avisado antes (P4c-R15)
-          expect(await svc.perdaDaOs(p)).toEqual({ anexos: true, notas: true });
+          expect(await svc.perdaDaOs(p)).toEqual(['notas', 'fotos']);
           expect(await svc.descartaEnvio(p)).toBe(true);
 
           const descarte = svc.descartar(p);
@@ -865,7 +929,7 @@ describe('PendenciasService', () => {
           await gravarAnexos(anexo('f1', 'o1', false));
           const p = recusa('up1', 'f1', 'OS_NAO_ENCONTRADA');
           await db.pendencias.put(p);
-          expect(await svc.perdaDaOs(p)).toEqual({ anexos: false, notas: false });
+          expect(await svc.perdaDaOs(p)).toEqual([]);
           expect(await svc.descartaEnvio(p)).toBe(false);
         });
       });

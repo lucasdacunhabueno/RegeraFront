@@ -12,6 +12,7 @@ import { PdfService } from '../../core/pdf/pdf-service';
 import { PendenciasService } from '../../core/sync/pendencias-service';
 import { Toasts } from '../../shared/ui/toasts';
 import { ErroOs } from '../os/erro-os';
+import type { ItemPerdaOs } from '../os/formatos-os';
 import { OsDados, OsLocal, paraOsLocal, TipoAnexoOs } from '../os/os-models';
 import { PropostaLocal } from '../propostas/proposta-models';
 import { PropostasRepo } from '../propostas/propostas-repo';
@@ -80,8 +81,8 @@ interface OpcoesMontar {
   regerar?: ReturnType<typeof vi.fn>;
   /** P4c-R15: "Usar a do servidor" levaria um envio ou PDF feito no aparelho. */
   descartaEnvio?: boolean;
-  /** Na OS: o que a ação levaria (`perdaDaOs`); sem ele, os anexos seguem o `descartaEnvio`. */
-  perdaOs?: { anexos: boolean; notas: boolean };
+  /** Na OS: o que a ação levaria (`perdaDaOs`); sem ele, as fotos, a assinatura e o PDF seguem o `descartaEnvio`. */
+  perdaOs?: ItemPerdaOs[];
   /** M2: o "Manter a minha" tirou notas. */
   notasDescartadas?: boolean;
 }
@@ -99,7 +100,7 @@ function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMI
     descartar: vi.fn().mockResolvedValue(undefined),
     usarExistente: vi.fn().mockResolvedValue('c9'),
     descartaEnvio: vi.fn().mockResolvedValue(o.descartaEnvio ?? false),
-    perdaDaOs: vi.fn().mockResolvedValue(o.perdaOs ?? { anexos: o.descartaEnvio ?? false, notas: false }),
+    perdaDaOs: vi.fn().mockResolvedValue(o.perdaOs ?? (o.descartaEnvio ? ['fotos', 'assinatura', 'pdf'] : [])),
     observarOsDasPendencias: () => of({
       os: new Map((o.os ?? []).map((x) => [x.id, x] as const)), tiposDeAnexo: new Map(o.anexos ?? []),
     }),
@@ -625,7 +626,7 @@ describe('PendenciasPage', () => {
     const abrirOs = (el: HTMLElement) => [...el.querySelectorAll<HTMLAnchorElement>('[data-testid="abrir-os"]')];
     const titulos = (el: HTMLElement) => [...el.querySelectorAll(':scope > ul > li > p:first-child')].map((x) => x.textContent?.trim());
     const dialogo = (el: HTMLElement) => el.querySelector<HTMLElement>('[role=alertdialog]');
-    const AVISO_OS = 'Isto descarta as fotos, a assinatura e o PDF desta OS que ainda não foram enviados deste aparelho.';
+    const AVISO_OS = 'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: as fotos, a assinatura e o PDF.';
 
     it('conflito: título "OS " + código exibido, manter a minha / usar a do servidor e "Abrir OS" (/os/:id)', async () => {
       const c = pendenciaOs();
@@ -657,6 +658,20 @@ describe('PendenciasPage', () => {
       ]);
       expect(titulos(el)).toEqual(['OS OS-000123', 'OS OSP-AAAAAA', 'OS']);
       expect(abrirOs(el)).toEqual([]);
+    });
+
+    it('N1: a recusa VALIDACAO da OS lista os campos pelo nome (Nota, Item N …), e a do anexo também', () => {
+      const p = pendenciaOs({ tipo: 'REJEITADO', dadosServidor: undefined, erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: {
+        'notas[2].texto': 'Escreva a nota.', 'itens[1].quantidadePrevista': 'A quantidade vai de 0,001 a 999.999,999.',
+        resumoExecucao: 'Máximo de 4000 caracteres.', campoNovo: 'x',
+      } } });
+      const anexo = uploadOs('s1', { codigo: 'VALIDACAO', mensagem: 'Dados do anexo inválidos.', campos: { assinanteNome: 'Informe o nome.' } });
+      const { el } = montar([p, anexo], 0, 'TECNICO', { os: [osLocal()], anexos: [['s1', 'ASSINATURA']] });
+      const itens = [...el.querySelectorAll('li li')].map((x) => x.textContent?.trim());
+      expect(itens).toEqual([
+        'Nota: Escreva a nota.', 'Item 2 (quantidade prevista): A quantidade vai de 0,001 a 999.999,999.',
+        'Resumo da execução: Máximo de 4000 caracteres.', 'campoNovo: x', 'Nome de quem assina: Informe o nome.',
+      ]);
     });
 
     it('R30: a OS reaberta por outra pessoa diz o que "Manter a minha" faz', () => {
@@ -704,7 +719,7 @@ describe('PendenciasPage', () => {
 
     it('M2P2-R13: o upload da OS que não existe mais (404 OS_NAO_ENCONTRADA) leva a OS inteira: o Descartar pergunta antes', async () => {
       const p = uploadOs('f1', { codigo: 'OS_NAO_ENCONTRADA', mensagem: 'Esta OS não está mais com você.' });
-      const { el, svc, fixture } = montar([p], 0, 'TECNICO', { os: [osLocal()], anexos: [['f1', 'FOTO']], perdaOs: { anexos: true, notas: true } });
+      const { el, svc, fixture } = montar([p], 0, 'TECNICO', { os: [osLocal()], anexos: [['f1', 'FOTO']], perdaOs: ['notas', 'fotos'] });
       botao(el, 'Descartar').click();
       await vi.waitFor(() => {
         fixture.detectChanges();
@@ -749,10 +764,12 @@ describe('PendenciasPage', () => {
     });
 
     it.each([
-      [{ anexos: false, notas: true }, 'Isto descarta as notas e o resumo desta OS que ainda não foram enviados deste aparelho.'],
-      [{ anexos: true, notas: true },
-        'Isto descarta as notas, o resumo, as fotos, a assinatura e o PDF desta OS que ainda não foram enviados deste aparelho.'],
-    ])('M3: o aviso diz o que sai (%o)', async (perdaOs, aviso) => {
+      [['notas'], 'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: as notas.'],
+      // M1: a recusa sozinha, e a conclusão com o resumo e o PDF, pelo nome
+      [['recusa'], 'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: a recusa da assinatura.'],
+      [['inicio', 'notas', 'conclusao', 'resumo', 'pdf'],
+        'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: o início, as notas, a conclusão, o resumo e o PDF.'],
+    ] as [ItemPerdaOs[], string][])('M3/M1: o aviso diz o que sai (%o)', async (perdaOs, aviso) => {
       const { el, fixture } = montar([pendenciaOs()], 0, 'TECNICO', { os: [osLocal()], perdaOs });
       botao(el, 'Usar a do servidor').click();
       await vi.waitFor(() => {

@@ -5,7 +5,8 @@ import { firstValueFrom, Observable } from 'rxjs';
 import { AuthService } from '../auth/auth-service';
 import { observar } from '../db/observar';
 import { RegeraDb } from '../db/regera-db';
-import type { OsDados, OsLocal, TipoAnexoOs } from '../../features/os/os-models';
+import { ORDEM_PERDA_OS, type ItemPerdaOs } from '../../features/os/formatos-os';
+import type { OsDados, OsLocal, StatusOs, TipoAnexoOs } from '../../features/os/os-models';
 import { manterMinhaOs, quemNoServidor, rebaseFilaOs, rebaseOsLocal } from '../../features/os/rebase-os';
 import type { PropostaDados } from '../../features/propostas/proposta-models';
 import { EdicaoRascunho, PropostasRepo } from '../../features/propostas/propostas-repo';
@@ -22,6 +23,43 @@ import { apagarUploadsDasMutacoes, apagarUploadsDoAgregado, ehUpload, tabelasDeU
  */
 export function osNaoEncontrada(p: Pendencia): boolean {
   return p.entidade === TIPO_UPLOAD_ANEXO_OS && p.erro?.codigo === 'OS_NAO_ENCONTRADA';
+}
+
+const PERDA_DO_ANEXO: Readonly<Record<TipoAnexoOs, ItemPerdaOs>> = { FOTO: 'fotos', ASSINATURA: 'assinatura', DOCUMENTO: 'pdf' };
+
+/** A transição de uma mutação separada da OS para `status` (o comando de reabertura diz qual foi a volta). */
+function perdaDaTransicao(d: OsDados): ItemPerdaOs | null {
+  const porStatus: Partial<Record<StatusOs, ItemPerdaOs>> = { CONCLUIDA: 'conclusao', CANCELADA: 'cancelamento' };
+  if (d.status === 'EM_ANDAMENTO') return d.motivoReabertura ? 'reabertura' : 'inicio';
+  return porStatus[d.status] ?? null;
+}
+
+/**
+ * M1: o trabalho que as mutações da OS (na ordem da fila) levam e o servidor `servidor` ainda não tem. Cada uma é
+ * comparada com o servidor e com a anterior da fila:
+ * - a transição (`iniciar`, `concluir`, cancelar, reabrir): uma mutação separada que muda o status;
+ * - o resumo e a recusa da assinatura: o valor dela, preenchido e diferente do servidor;
+ * - o "Precisa voltar": `concluiProposta` desmarcado, com o servidor marcado.
+ * Sem o estado do servidor (a recusa de uma mutação, que não o traz), vale o que a fila leva: a primeira separada é uma
+ * transição, o resumo e a recusa preenchidos contam, e o "Precisa voltar" conta na conclusão desmarcada.
+ */
+function perdaDasMutacoes(mutacoes: readonly MutacaoLocal[], servidor: OsDados | null | undefined): Set<ItemPerdaOs> {
+  const r = new Set<ItemPerdaOs>();
+  let status: StatusOs | null = servidor?.status ?? null;
+  let conclui: boolean | null = servidor ? servidor.concluiProposta !== false : null;
+  for (const m of mutacoes) {
+    const d = m.dados as OsDados;
+    const transicao = m.separada && !d.aceitarTrabalho && d.status !== status ? perdaDaTransicao(d) : null;
+    if (transicao) r.add(transicao);
+    if (d.resumoExecucao && d.resumoExecucao !== (servidor?.resumoExecucao ?? null)) r.add('resumo');
+    if (d.assinaturaRecusada && !(servidor?.assinaturaRecusada && (servidor.motivoRecusa ?? null) === (d.motivoRecusa ?? null))) {
+      r.add('recusa');
+    }
+    if (d.concluiProposta === false && (conclui ?? transicao === 'conclusao')) r.add('precisaVoltar');
+    status = d.status;
+    conclui = d.concluiProposta !== false;
+  }
+  return r;
 }
 
 /** Os ids das notas das mutações que o servidor ainda não tem (sem a data dele e fora das notas de `servidor`). */
@@ -143,26 +181,38 @@ export class PendenciasService {
   }
 
   /**
-   * O que "Usar a do servidor" ou "Descartar" levaria de uma OS (P4c-R15): `anexos` = um upload de anexo na fila ou nas
-   * pendências dela, ou um anexo gravado aqui e ainda não enviado (fotos, assinatura, PDF); `notas` = uma mutação dela
-   * (a da pendência, na fila ou noutra pendência) com nota que o servidor ainda não tem (com ela vai o resumo). Não
-   * escreve nada.
+   * O que "Usar a do servidor" ou "Descartar" levaria de uma OS (P4c-R15, M2-P2 M1), feito aqui e ainda não enviado, na
+   * ordem canônica (`ORDEM_PERDA_OS`); vazio = nada. Conta toda mutação dela (a da pendência, as da fila, as de outras
+   * pendências) e os anexos:
+   * - as notas que o servidor ainda não tem;
+   * - o início, a conclusão (com o resumo), o cancelamento e a reabertura, a recusa da assinatura e o "Precisa voltar"
+   *   (`perdaDasMutacoes`);
+   * - as fotos, a assinatura e o PDF: um anexo gravado aqui e não enviado (o de todo upload na fila ou numa pendência).
+   * O Descartar do upload da OS que não existe mais (`osNaoEncontrada`, M2P2-R13) leva a OS inteira: conta o resto dela,
+   * não o próprio anexo. Não escreve nada.
    */
-  async perdaDaOs(p: Pendencia): Promise<{ anexos: boolean; notas: boolean }> {
-    if (p.entidade !== 'os' && !osNaoEncontrada(p)) return { anexos: false, notas: false };
+  async perdaDaOs(p: Pendencia): Promise<ItemPerdaOs[]> {
+    if (p.entidade !== 'os' && !osNaoEncontrada(p)) return [];
     const id = p.agregadoId;
-    // M2P2-R13: no Descartar do upload da OS que não existe mais, o próprio anexo dele não conta (é a ação)
     const proprio = p.entidade === TIPO_UPLOAD_ANEXO_OS ? (p.mutacao.dados as DadosUploadAnexoOs | null)?.anexoId : undefined;
+    const vistas = new Set<string>();
     const mutacoes = [
       p.mutacao,
       ...(await this.db.outbox.where('agregadoId').equals(id).toArray()),
       ...(await this.db.pendencias.where('agregadoId').equals(id).toArray()).map((x) => x.mutacao),
-    ].filter((m) => m.mutationId !== p.mutationId || p.entidade === 'os');
-    const anexos = mutacoes.some((m) => m.entidade === TIPO_UPLOAD_ANEXO_OS)
-      || (await this.db.anexosOs.where('osId').equals(id).filter((a) => !a.enviado && a.id !== proprio).count()) > 0;
-    const daOs = mutacoes.filter((m) => m.entidade === 'os' && !!m.dados).map((m) => m.dados as OsDados);
-    const notas = notasNovas(daOs, p.dadosServidor as OsDados | null | undefined).length > 0;
-    return { anexos, notas };
+    ].filter((m) => {
+      const nova = !vistas.has(m.mutationId) && (p.entidade === 'os' || m.mutationId !== p.mutationId);
+      vistas.add(m.mutationId);
+      return nova;
+    });
+    const servidor = p.dadosServidor as OsDados | null | undefined;
+    const daOs = mutacoes.filter((m) => m.entidade === 'os' && !!m.dados);
+    const r = perdaDasMutacoes(daOs, servidor);
+    if (notasNovas(daOs.map((m) => m.dados as OsDados), servidor).length > 0) r.add('notas');
+    // todo upload na fila ou numa pendência tem o anexo dele aqui, não enviado; sem o anexo, não há bytes a perder
+    const naoEnviados = await this.db.anexosOs.where('osId').equals(id).filter((a) => !a.enviado && a.id !== proprio).toArray();
+    for (const a of naoEnviados) r.add(PERDA_DO_ANEXO[a.tipo]);
+    return ORDEM_PERDA_OS.filter((i) => r.has(i));
   }
 
   /**
@@ -195,10 +245,7 @@ export class PendenciasService {
    * (`osNaoEncontrada`, M2P2-R13), cujo Descartar leva a OS inteira.
    */
   async descartaEnvio(p: Pendencia): Promise<boolean> {
-    if (p.entidade === 'os' || osNaoEncontrada(p)) {
-      const perda = await this.perdaDaOs(p);
-      return perda.anexos || perda.notas;
-    }
+    if (p.entidade === 'os' || osNaoEncontrada(p)) return (await this.perdaDaOs(p)).length > 0;
     if (p.entidade !== 'proposta') return false;
     const id = p.agregadoId;
     const mutacoes = [

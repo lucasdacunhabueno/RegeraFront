@@ -1,6 +1,6 @@
 import { ErroCampo } from '../../core/util/erro-campo';
 import { ErroOs } from './erro-os';
-import { CODIGOS_ERRO_OS, mensagemErroOs } from './formatos-os';
+import { CODIGOS_ERRO_OS, mensagemErroOs, rotuloCampoOs, textoPerdaOs } from './formatos-os';
 
 const GENERICA = 'Não foi possível concluir. Tente de novo.';
 
@@ -40,6 +40,41 @@ describe('formatos-os', () => {
       expect(mensagemErroOs('x')).toBe(GENERICA);
       expect(mensagemErroOs(new ErroOs('constructor', 'os', ''))).toBe(GENERICA);
       expect(mensagemErroOs(new ErroOs('NOVO_CODIGO', 'os', ' '))).toBe(GENERICA);
+    });
+  });
+
+  describe('textoPerdaOs (M1)', () => {
+    it('nomeia o que sai, na ordem do trabalho de campo, numa frase que vale para um item ou vários', () => {
+      expect(textoPerdaOs(['recusa'])).toBe('Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: a recusa da assinatura.');
+      expect(textoPerdaOs(['pdf', 'resumo', 'conclusao', 'notas', 'inicio'])).toBe(
+        'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: o início, as notas, a conclusão, o resumo e o PDF.');
+      expect(textoPerdaOs(['fotos', 'assinatura', 'precisaVoltar', 'cancelamento', 'reabertura'])).toBe(
+        'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: as fotos, a assinatura, o "Precisa voltar", '
+        + 'o cancelamento e a reabertura.');
+    });
+  });
+
+  describe('rotuloCampoOs (N1)', () => {
+    it.each([
+      ['notas[3].texto', 'Nota'],
+      ['notas[0]', 'Nota'],
+      ['itens[0].quantidadePrevista', 'Item 1 (quantidade prevista)'],
+      ['itens[11].codigo', 'Item 12 (código)'],
+      ['itens[2]', 'Item 3'],
+      ['itens[1].novo', 'Item 2 (novo)'],
+      ['resumoExecucao', 'Resumo da execução'],
+      ['motivoRecusa', 'Motivo da recusa'],
+      ['tecnicoId', 'Técnico'],
+      ['enderecoUf', 'UF'],
+      ['concluiProposta', 'Conclui a proposta'],
+      // os do upload de anexo, do mesmo mapa
+      ['assinanteNome', 'Nome de quem assina'],
+      ['revisaoOs', 'Revisão da OS'],
+      // desconhecido: o caminho cru; nada do protótipo
+      ['campoNovo', 'campoNovo'],
+      ['constructor', 'constructor'],
+    ])('%s → %s', (campo, rotulo) => {
+      expect(rotuloCampoOs(campo)).toBe(rotulo);
     });
   });
 });
