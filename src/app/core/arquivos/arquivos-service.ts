@@ -15,7 +15,7 @@ export interface ArquivoEnviado {
   sha256: string;
 }
 
-async function paraBytes(blob: Blob): Promise<ArrayBuffer> {
+export async function paraBytes(blob: Blob): Promise<ArrayBuffer> {
   if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
   return new Promise((resolve, reject) => {
     const leitor = new FileReader();
