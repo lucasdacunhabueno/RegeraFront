@@ -94,9 +94,18 @@ function repoFalso(iniciais: PropostaLocal[]) {
   const documentos: { propostaId: string; codigoExibido: string }[] = [];
   /** P4c-R4: a recusa corrigível de cada proposta (`recusaCorrigivel`). */
   const recusas = new Map<string, Pendencia>();
+  /** As pendências do aparelho (`observarPendencias`, P4c-R15). */
+  const pendencias$ = new BehaviorSubject<Pendencia[]>([]);
   return {
     store,
     recusas,
+    pendencias$,
+    observarPendencias: vi.fn((id: string) => pendencias$.pipe(map((l) => l.filter((x) => x.agregadoId === id)))),
+    /** Excluída em outro aparelho (o pull tira a proposta do aparelho). */
+    sumir(id: string) {
+      store.delete(id);
+      emitir(id);
+    },
     recusaCorrigivel: vi.fn(async (id: string) => recusas.get(id)),
     conferirAtribuicao: vi.fn<(id: string, m: { responsavelId?: string }) => Promise<void>>(async () => undefined),
     /** Como `corrigirPendencia`: a edição entra na cópia local (o status otimista fica) e a recusa sai. */
@@ -179,11 +188,14 @@ interface Opcoes {
   clienteId?: string;
   propostas?: PropostaLocal[];
   online?: boolean;
+  /** As pendências do aparelho (P4c-R15). */
+  pendencias?: Pendencia[];
 }
 
 async function montar(o: Opcoes = {}) {
   const repo = repoFalso(o.propostas ?? [proposta()]);
   if (o.recusa) repo.recusas.set(o.recusa.agregadoId, o.recusa);
+  if (o.pendencias) repo.pendencias$.next(o.pendencias);
   const pendencias = {
     corrigirProposta: vi.fn(async (pendenciaId: string, edicao: Partial<EdicaoRascunho>) => repo.corrigir(pendenciaId, edicao)),
   };
@@ -223,6 +235,9 @@ async function ate(fixture: ComponentFixture<unknown>, verificar: () => void) {
 }
 
 const botao = (el: HTMLElement, texto: string) => [...el.querySelectorAll('button')].find((b) => b.textContent?.trim() === texto);
+/** Navegou ao detalhe da p1 (com ou sem `replaceUrl`). */
+const foiAoDetalhe = (navegar: { mock: { calls: unknown[][] } }) =>
+  navegar.mock.calls.some(([comandos]) => JSON.stringify(comandos) === '["/propostas","p1"]');
 const titulo = (el: HTMLElement) => el.querySelector('#titulo-passo')?.textContent?.trim();
 
 function digitar(fixture: ComponentFixture<unknown>, campo: HTMLInputElement | HTMLTextAreaElement, valor: string) {
@@ -643,7 +658,7 @@ describe('WizardPropostaPage', () => {
         expect(el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.disabled).toBe(true);
         liberar(new Blob(['%PDF'], { type: 'application/pdf' }));
 
-        await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+        await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
         expect(repo.enviar).toHaveBeenCalledWith('p1', expect.any(Function));
         expect(pdf.gerarBlob).toHaveBeenCalledWith({ previa: false });
         expect(share).toHaveBeenCalledTimes(1);
@@ -657,7 +672,7 @@ describe('WizardPropostaPage', () => {
         const share = webShare();
         const { el, repo, navegar, toast } = await montar({ id: 'p1', passo: '4', online: true, propostas: [proposta({ numero: 277, revisao: 2 })] });
         el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
-        await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+        await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
         expect(repo.enviar).toHaveBeenCalled();
         expect((share.mock.calls[0][0] as { files: File[] }).files[0].name).toBe('Proposta-000277-R2.pdf');
         expect(toast).toHaveBeenCalledWith('Proposta enviada.');
@@ -686,11 +701,44 @@ describe('WizardPropostaPage', () => {
         expect(navegar).not.toHaveBeenCalled();
       });
 
+      it('com CONFLITO (P4c-R15): Enviar desabilitado com "Resolva a pendência primeiro." e o caminho para Pendências', async () => {
+        const conflito: Pendencia = {
+          mutationId: 'c1', entidade: 'proposta', agregadoId: 'p1', tipo: 'CONFLITO', criadaEm: '',
+          mutacao: { mutationId: 'c1', entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: 1, dados: null, criadaEm: '' },
+        };
+        const { fixture, el, repo, navegar } = await montar({ id: 'p1', passo: '4', pendencias: [conflito] });
+        const enviar = () => el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!;
+        await ate(fixture, () => expect(enviar().disabled).toBe(true));
+        expect(document.getElementById(enviar().getAttribute('aria-describedby')!)?.textContent?.trim()).toBe('Resolva a pendência primeiro.');
+        expect(el.querySelector('[data-testid=ir-pendencias]')?.getAttribute('href')).toBe('/pendencias');
+        enviar().click();
+        await fixture.whenStable();
+        expect(repo.enviar).not.toHaveBeenCalled();
+        expect(navegar).not.toHaveBeenCalled();
+        // a edição continua (P4b-R27): só o envio espera
+        expect(el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.disabled).toBe(false);
+
+        // resolvido em Pendências: o Enviar volta
+        repo.pendencias$.next([]);
+        await ate(fixture, () => expect(enviar().disabled).toBe(false));
+        expect(enviar().getAttribute('aria-describedby')).toBeNull();
+        expect(el.querySelector('[data-testid=ir-pendencias]')).toBeNull();
+      });
+
+      it('o CONFLITO que chega no meio: a recusa do repositório (RESOLVA_A_PENDENCIA) aparece e a tela fica na revisão', async () => {
+        const { el, repo, navegar, toastErro } = await montar({ id: 'p1', passo: '4' });
+        repo.enviar.mockRejectedValueOnce(new ErroProposta('RESOLVA_A_PENDENCIA', 'proposta', 'Resolva a pendência desta proposta antes de enviá-la.'));
+        el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
+        await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Resolva a pendência desta proposta antes de enviá-la.'));
+        expect(navegar).not.toHaveBeenCalled();
+        expect(titulo(el)).toBe('Revisão');
+      });
+
       it('PROPOSTA_JA_ENVIADA leva ao detalhe', async () => {
         const { el, repo, navegar, toastErro } = await montar({ id: 'p1', passo: '4' });
         repo.enviar.mockRejectedValueOnce(new ErroProposta('PROPOSTA_JA_ENVIADA', 'proposta', 'Esta proposta já foi enviada.'));
         el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
-        await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+        await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
         expect(toastErro).toHaveBeenCalledWith('Esta proposta já foi enviada.');
       });
     });
@@ -808,6 +856,34 @@ describe('WizardPropostaPage', () => {
       expect(versao).toBe(2);
       expect(el.querySelector('[data-testid=total-total]')?.textContent).toBe('R$ 2.000,00');
       expect(repo.store.get('p1')!.itens[0].precoUnitarioCentavos).toBe(200000);
+    });
+
+    it('M2: mudou de status em outro aparelho, sem nada por gravar aqui: sai com o aviso certo, sem falar em descarte', async () => {
+      const { fixture, repo, navegar, toastErro, pagina } = await montar({ id: 'p1', passo: '3' });
+      repo.foraDoAparelho('p1', (p) => (p.status = 'CANCELADA'));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
+      expect(toastErro).toHaveBeenCalledWith('Esta proposta mudou de status em outro aparelho.');
+      expect(toastErro).not.toHaveBeenCalledWith('Só rascunhos podem ser editados.');
+      fixture.detectChanges();
+      expect(pagina.temAlteracoes()).toBe(false);
+    });
+
+    it('M2: mudou de status em outro aparelho com alterações daqui: avisa que elas foram descartadas', async () => {
+      const { fixture, el, repo, navegar, toastErro } = await montar({ id: 'p1', passo: '3' });
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'Minha obs.');
+      repo.foraDoAparelho('p1', (p) => (p.status = 'ENVIADA'));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
+      expect(toastErro).toHaveBeenCalledWith(
+        'Esta proposta mudou de status em outro aparelho; suas alterações não salvas foram descartadas.',
+      );
+    });
+
+    it('M2: excluída em outro aparelho: volta à lista com o aviso da exclusão', async () => {
+      const { fixture, el, repo, navegar, toastErro } = await montar({ id: 'p1', passo: '3' });
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'Minha obs.');
+      repo.sumir('p1');
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas'], { replaceUrl: true }));
+      expect(toastErro).toHaveBeenCalledWith('Esta proposta foi excluída em outro aparelho; suas alterações não salvas foram descartadas.');
     });
 
     it('passo alterado aqui e lá: faixa; Continuar espera a escolha; "Recarregar" fica com a de lá', async () => {
@@ -1021,7 +1097,7 @@ describe('WizardPropostaPage', () => {
       const { fixture, el, navegar } = await montar({ id: 'p1', passo: '4' });
       el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
       await ate(fixture, () => expect(el.querySelector('[role=dialog]')?.textContent).toContain('PDF pronto'));
-      expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+      expect(foiAoDetalhe(navegar)).toBe(false);
       await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('[role=dialog]')));
 
       botao(el, 'Compartilhar')!.click();
@@ -1029,7 +1105,7 @@ describe('WizardPropostaPage', () => {
       const [primeira, segunda] = share.mock.calls.map((c) => (c[0] as { files: File[] }).files[0]);
       expect(segunda).toBe(primeira);
       expect(segunda.name).toBe('Proposta-PROV-ABC123.pdf');
-      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
     });
 
     it('a folha do rodapé respeita a área segura e a página ganha espaço para o fim da revisão (N-2)', async () => {
@@ -1050,7 +1126,7 @@ describe('WizardPropostaPage', () => {
       el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
       await ate(fixture, () => expect(el.querySelector('[role=dialog]')).not.toBeNull());
       botao(el, 'Fechar')!.click();
-      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
     });
 
     it('sem Web Share: baixa e avisa "PDF baixado: <nome>"; anuncia a geração', async () => {
@@ -1064,7 +1140,7 @@ describe('WizardPropostaPage', () => {
       el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
       await ate(fixture, () => expect(el.querySelector('[role=status]')?.textContent).toBe('Gerando o PDF da proposta…'));
       liberar(new Blob(['%PDF']));
-      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
       expect(toast).toHaveBeenCalledWith('PDF baixado: Proposta-PROV-ABC123.pdf');
     });
 
@@ -1080,7 +1156,7 @@ describe('WizardPropostaPage', () => {
         return blob;
       });
       el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
-      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
       expect((share.mock.calls[0][0] as { files: File[] }).files[0].name).toBe('Proposta-PROV-ABC123.pdf');
     });
   });
@@ -1169,7 +1245,7 @@ describe('WizardPropostaPage', () => {
 
       digitar(fixture, el.querySelector<HTMLInputElement>('#prazo-execucao')!, '10 dias');
       el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
-      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
       expect(pendencias.corrigirProposta).toHaveBeenCalledTimes(1);
       const [pendenciaId, edicao] = pendencias.corrigirProposta.mock.calls[0];
       expect(pendenciaId).toBe('e1');
@@ -1181,6 +1257,31 @@ describe('WizardPropostaPage', () => {
       expect(repo.atribuir).not.toHaveBeenCalled();
       expect(toast).toHaveBeenCalledWith('Correção gravada. A proposta volta a sincronizar.');
       expect(pagina.temAlteracoes()).toBe(false);
+    });
+
+    it('P4c-R16: com o PDF já enviado, a nota na tela e, depois de gravar, o aviso de usar Nova revisão (sem gerar outro PDF)', async () => {
+      const AVISO = 'O PDF já enviado ao cliente mostra os dados anteriores. Para mandar o PDF corrigido, use Nova revisão depois de sincronizar.';
+      const { fixture, el, pdf, navegar, toast } = await corrigir({ passo: '3' });
+      const nota = el.querySelector('[data-testid=nota-pdf-anterior]');
+      expect(nota?.textContent?.trim()).toBe(AVISO);
+      digitar(fixture, el.querySelector<HTMLInputElement>('#prazo-execucao')!, '10 dias');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
+      expect(toast).toHaveBeenCalledWith('Correção gravada. A proposta volta a sincronizar.');
+      // fixo: o texto é longo, fica até o usuário fechar
+      expect(toast).toHaveBeenCalledWith(AVISO, { fixo: true });
+      expect(pdf.gerarBlob).not.toHaveBeenCalled();
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+    });
+
+    it('P4c-R16: rascunho que nunca teve PDF (criação recusada antes do envio): sem a nota e sem o aviso', async () => {
+      const { fixture, el, navegar, toast } = await corrigir({ passo: '3', propostas: [proposta({ prazoExecucao: 'Em breve' })] });
+      expect(el.querySelector('[data-testid=nota-pdf-anterior]')).toBeNull();
+      digitar(fixture, el.querySelector<HTMLInputElement>('#prazo-execucao')!, '10 dias');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
+      expect(toast).toHaveBeenCalledTimes(1);
+      expect(toast).toHaveBeenCalledWith('Correção gravada. A proposta volta a sincronizar.');
     });
 
     it('Adicionar não grava na hora: a linha nova aparece e vai junto na correção', async () => {
@@ -1207,7 +1308,7 @@ describe('WizardPropostaPage', () => {
       el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
       await ate(fixture, () => expect(el.querySelector('#validade')?.getAttribute('aria-invalid')).toBe('true'));
       expect(titulo(el)).toBe('Condições');
-      expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+      expect(foiAoDetalhe(navegar)).toBe(false);
     });
 
     it('sem nenhum passo alterado, "Salvar e reenviar" não reenvia: anuncia "Corrija os campos destacados." uma vez só, sem toast (P4c-R10)', async () => {
@@ -1216,7 +1317,7 @@ describe('WizardPropostaPage', () => {
       await ate(fixture, () => expect(el.querySelector('[role=status]')?.textContent).toContain('Corrija os campos destacados.'));
       expect(toastErro).not.toHaveBeenCalled();
       expect(pendencias.corrigirProposta).not.toHaveBeenCalled();
-      expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+      expect(foiAoDetalhe(navegar)).toBe(false);
     });
 
     it('a recusa já resolvida (PENDENCIA_INEXISTENTE) no salvar: libera, avisa e volta ao detalhe (P4c-R10)', async () => {
@@ -1266,7 +1367,7 @@ describe('WizardPropostaPage', () => {
       expect(repo.conferirAtribuicao).toHaveBeenCalledWith('p1', { responsavelId: 'u-com2' });
       expect(pendencias.corrigirProposta).not.toHaveBeenCalled();
       expect(repo.atribuir).not.toHaveBeenCalled();
-      expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+      expect(foiAoDetalhe(navegar)).toBe(false);
     });
 
     it('a correção gravou e o atribuir falhou depois: avisa que o responsável não foi trocado e vai ao detalhe', async () => {
@@ -1274,7 +1375,7 @@ describe('WizardPropostaPage', () => {
       repo.atribuir.mockRejectedValueOnce(new ErroProposta('ACESSO_NEGADO', 'responsavelId', 'Só o administrador troca o responsável.'));
       escolher(fixture, el.querySelector<HTMLSelectElement>('#responsavel')!, 'u-com2');
       el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
-      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
       expect(pendencias.corrigirProposta).toHaveBeenCalled();
       expect(toastErro).toHaveBeenCalledWith('Correção gravada; o responsável não foi trocado: Só o administrador troca o responsável.');
       expect(toast).not.toHaveBeenCalledWith('Correção gravada. A proposta volta a sincronizar.');
@@ -1350,6 +1451,17 @@ describe('WizardPropostaPage', () => {
       el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
       await ate(fixture, () => expect(titulo(el)).toBe('Condições'));
       expect(repo.salvarRascunho.mock.calls[0][1].itens![0].precoUnitarioCentavos).toBe(125050);
+    });
+
+    it('M3: o link de volta ("← Propostas" / "← Proposta") tem alvo de 48 px', async () => {
+      let { el } = await montar();
+      expect(el.querySelector('a')?.textContent?.trim()).toBe('← Propostas');
+      expect(el.querySelector('a')!.classList).toContain('min-h-12');
+      expect(el.querySelector('a')!.classList).toContain('inline-flex');
+      TestBed.resetTestingModule();
+      ({ el } = await montar({ id: 'p1' }));
+      expect(el.querySelector('a')?.textContent?.trim()).toBe('← Proposta');
+      expect(el.querySelector('a')!.classList).toContain('min-h-12');
     });
 
     it('"Cadastrar cliente" tem alvo de 48 px (u3)', async () => {

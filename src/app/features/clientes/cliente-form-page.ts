@@ -41,9 +41,9 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
   imports: [ReactiveFormsModule, RouterLink, PropostasDoCliente],
   template: `
     @if (voltarPara(); as destino) {
-      <a [routerLink]="destino" class="text-sm text-blue-700">← Voltar à proposta</a>
+      <a [routerLink]="destino" class="inline-flex min-h-12 items-center text-sm text-blue-700">← Voltar à proposta</a>
     } @else {
-      <a routerLink="/clientes" class="text-sm text-blue-700">← Clientes</a>
+      <a routerLink="/clientes" class="inline-flex min-h-12 items-center text-sm text-blue-700">← Clientes</a>
     }
     <h1 class="mb-4 mt-2 text-xl font-semibold">{{ id() ? 'Editar cliente' : 'Novo cliente' }}</h1>
 

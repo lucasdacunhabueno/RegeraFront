@@ -263,6 +263,9 @@ describe('ClienteFormPage', () => {
       const link = el.querySelector<HTMLAnchorElement>('a')!;
       expect(link.textContent).toContain('Voltar à proposta');
       expect(link.getAttribute('href')).toBe('/propostas/p1/editar?passo=1');
+      // M3: alvo de 48 px, como o "← Propostas" do detalhe
+      expect(link.classList).toContain('min-h-12');
+      expect(link.classList).toContain('inline-flex');
     });
 
     it.each(['https://evil.example/propostas/nova', '//evil.example/propostas/nova', '/usuarios', '/propostas/../usuarios'])(
