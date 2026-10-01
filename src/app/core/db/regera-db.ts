@@ -34,8 +34,13 @@ interface ComId {
  *   tombstone; o servidor sobe o `sync_seq` de todo cliente, e a lista de usuários é trocada inteira a cada pull);
  * - os PDFs e anexos ainda não enviados (os bytes esperam o upload); os enviados são cópia do servidor e saem, como
  *   na troca de dono do cursor.
+ * M2P2-R15: só com a sessão guardada de TECNICO (ou sem sessão, ou num formato sem perfil). O ADMIN e o COMERCIAL
+ * mantêm tudo (a base offline do escritório, os PDFs enviados): o cursor zerado refaz o pull, que sobrescreve.
  */
 async function limparSincronizadasV6(tx: Transaction): Promise<void> {
+  // a chave `sessao` do `AuthService` (importá-lo aqui faria um ciclo)
+  const perfil = ((await tx.table('meta').get('sessao')) as { valor?: { perfil?: unknown } } | undefined)?.valor?.perfil;
+  if (perfil === 'ADMIN' || perfil === 'COMERCIAL') return;
   const naFila = (await tx.table('outbox').toArray()) as { agregadoId: string }[];
   const pendentes = (await tx.table('pendencias').toArray()) as { agregadoId: string }[];
   const protegidos = new Set([...naFila, ...pendentes].map((m) => m.agregadoId));

@@ -71,11 +71,11 @@ describe('RegeraDb v6', () => {
     db.close();
   });
 
-  it('N2 (Q18): o upgrade limpa as tabelas sincronizadas, menos o que a fila ou as pendências protegem', async () => {
+  it('N2 (Q18), sessão TECNICO: o upgrade limpa as tabelas sincronizadas, menos o que a fila ou as pendências protegem', async () => {
     const v5 = new Dexie('regera');
     v5.version(5).stores(V5);
     await v5.table('meta').bulkPut([
-      { chave: 'cursor', valor: 99 }, { chave: 'cursorDono', valor: 'u1:COMERCIAL' }, { chave: 'sessao', valor: { id: 'u1' } },
+      { chave: 'cursor', valor: 99 }, { chave: 'cursorDono', valor: 'u1:TECNICO' }, { chave: 'sessao', valor: { id: 'u1', perfil: 'TECNICO' } },
       { chave: 'ultimoSync', valor: '2026-10-01T10:00:00Z' },
     ]);
     await v5.table('clientes').bulkPut([
@@ -115,7 +115,7 @@ describe('RegeraDb v6', () => {
     // fila, pendências, sessão e o cache de arquivos ficam como estavam; o cursor recomeça do zero
     expect((await db.outbox.orderBy('seq').toArray()).map((m) => m.mutationId)).toEqual(['m1', 'm2', 'm3']);
     expect((await db.pendencias.toArray()).map((p) => p.mutationId)).toEqual(['m0']);
-    expect(await db.lerMeta('sessao')).toEqual({ id: 'u1' });
+    expect(await db.lerMeta('sessao')).toEqual({ id: 'u1', perfil: 'TECNICO' });
     expect(await db.lerMeta('ultimoSync')).toBe('2026-10-01T10:00:00Z');
     expect(await db.lerMeta('cursor')).toBeUndefined();
     expect(await db.arquivos.count()).toBe(1);
@@ -134,10 +134,14 @@ describe('RegeraDb v6', () => {
     db.close();
   });
 
-  it('N2: sem nada protegido, todas as tabelas sincronizadas ficam vazias (inclusive a empresa e os usuários)', async () => {
+  it.each([
+    ['sessão TECNICO', { id: 't1', perfil: 'TECNICO' }],
+    ['sem sessão', undefined],
+    ['sessão sem perfil (formato desconhecido)', { id: 't1' }],
+  ])('N2 (%s): sem nada protegido, todas as tabelas sincronizadas ficam vazias (inclusive a empresa e os usuários)', async (_, sessao) => {
     const v5 = new Dexie('regera');
     v5.version(5).stores(V5);
-    await v5.table('meta').put({ chave: 'sessao', valor: { id: 't1' } });
+    if (sessao) await v5.table('meta').put({ chave: 'sessao', valor: sessao });
     await v5.table('clientes').bulkPut([{ id: 'c1', documento: '1', nomeBusca: 'a' }, { id: 'c2', documento: '2', nomeBusca: 'b' }]);
     await v5.table('propostas').put({ id: 'p1', status: 'APROVADA', clienteId: 'c1', templateId: 't1' });
     await v5.table('templates').put({ id: 't1', tipoProposta: 'VENDA', nomeBusca: 't' });
@@ -152,7 +156,36 @@ describe('RegeraDb v6', () => {
       db.anexosOsBytes]) {
       expect(await t.count(), t.name).toBe(0);
     }
-    expect(await db.lerMeta('sessao')).toEqual({ id: 't1' });
+    expect(await db.lerMeta('sessao')).toEqual(sessao);
+    db.close();
+  });
+
+  it.each(['ADMIN', 'COMERCIAL'])('M2P2-R15: com a sessão %s, o upgrade mantém os dados (o cursor zerado refaz o pull e os sobrescreve)', async (perfil) => {
+    const v5 = new Dexie('regera');
+    v5.version(5).stores(V5);
+    await v5.table('meta').bulkPut([
+      { chave: 'cursor', valor: 99 }, { chave: 'cursorDono', valor: `u1:${perfil}` }, { chave: 'sessao', valor: { id: 'u1', perfil } },
+    ]);
+    await v5.table('clientes').bulkPut([{ id: 'c1', documento: '1', nomeBusca: 'a' }, { id: 'c2', documento: '2', nomeBusca: 'b' }]);
+    await v5.table('propostas').put({ id: 'p1', status: 'ENVIADA', clienteId: 'c1', templateId: 't1' });
+    await v5.table('templates').put({ id: 't1', tipoProposta: 'VENDA', nomeBusca: 't' });
+    await v5.table('itens').put({ id: 'i1', codigo: 'A', nomeBusca: 'a' });
+    await v5.table('empresa').put({ id: 'empresa-1', razaoSocial: 'Regera' });
+    await v5.table('usuarios').put({ id: 'u1', nome: 'Ana' });
+    // o PDF enviado fica: "compartilhar o PDF enviado" offline (P4b) continua até o pull
+    await v5.table('documentos').put({ id: 'd1', propostaId: 'p1', bytes: new Uint8Array([0x25]).buffer, enviado: true, arquivoId: 'a1' });
+    await v5.table('outbox').add({ mutationId: 'm1', agregadoId: 'c2', entidade: 'cliente', op: 'UPSERT', baseVersion: 2 });
+    v5.close();
+
+    const db = new RegeraDb();
+    expect(await db.lerMeta('cursor')).toBeUndefined();
+    expect(await db.lerMeta('cursorDono')).toBeUndefined();
+    for (const [t, n] of [[db.clientes, 2], [db.propostas, 1], [db.templates, 1], [db.itens, 1], [db.empresa, 1], [db.usuarios, 1],
+      [db.documentos, 1]] as const) {
+      expect(await t.count(), t.name).toBe(n);
+    }
+    expect(new Uint8Array((await db.documentos.get('d1'))!.bytes!)).toEqual(new Uint8Array([0x25]));
+    expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['m1']);
     db.close();
   });
 
