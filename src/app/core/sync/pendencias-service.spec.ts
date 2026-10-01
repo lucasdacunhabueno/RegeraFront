@@ -52,8 +52,8 @@ describe('PendenciasService', () => {
     await db.limparTudo();
   });
 
-  it('manter a minha reenfileira os dados locais sobre a versão do servidor', async () => {
-    await db.clientes.put(paraClienteLocal('c1', 1, dados('Minha')));
+  it('manter a minha devolve a mutação à fila sobre a versão do servidor, na frente da edição retida (P4b-R17)', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 1, dados('Minha mais nova')));
     const p = pendencia({ tipo: 'CONFLITO', versionServidor: 4, dadosServidor: dados('Servidor') });
     await db.pendencias.put(p);
     await db.outbox.add({ ...p.mutacao, mutationId: 'm2', dados: dados('Minha mais nova') });
@@ -61,10 +61,25 @@ describe('PendenciasService', () => {
     await svc.manterMinha(p);
 
     expect(await db.pendencias.count()).toBe(0);
+    const fila = await db.outbox.orderBy('seq').toArray();
+    expect(fila).toHaveLength(2);
+    expect(fila[0]).toMatchObject({ op: 'UPSERT', baseVersion: 4, dados: { nome: 'Minha' } });
+    expect(fila[0].mutationId).not.toBe('m1');
+    expect(fila[1]).toMatchObject({ mutationId: 'm2', dados: { nome: 'Minha mais nova' } });
+    expect((await db.clientes.get('c1'))?.version).toBe(4);
+  });
+
+  it('manter a minha sem edição retida deixa uma mutação só, como antes', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 1, dados('Minha')));
+    const p = pendencia({ tipo: 'CONFLITO', versionServidor: 4, dadosServidor: dados('Servidor') });
+    p.mutacao.seq = 17;
+    await db.pendencias.put(p);
+
+    await svc.manterMinha(p);
+
     const fila = await db.outbox.toArray();
     expect(fila).toHaveLength(1);
-    expect(fila[0]).toMatchObject({ op: 'UPSERT', baseVersion: 4, dados: { nome: 'Minha' } });
-    expect((await db.clientes.get('c1'))?.version).toBe(4);
+    expect(fila[0]).toMatchObject({ seq: 17, op: 'UPSERT', baseVersion: 4, dados: { nome: 'Minha' }, enviando: false });
   });
 
   const urlServidor = '/api/sync/agregado/cliente/c1';
@@ -357,19 +372,42 @@ describe('PendenciasService', () => {
       expect(await db.outbox.count()).toBe(0);
     });
 
-    it('P4b-R14: manter a minha na proposta tira o upload da fila e apaga o PDF não enviado', async () => {
+    it('P4b-R17: manter a minha rebaseia no lugar — [E1 CONFLITO, T ENVIADA, UPLOAD d1, T APROVADA]', async () => {
       await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
-      await db.documentos.bulkPut([doc('d1', false), doc('d2', true)]);
-      await db.outbox.bulkAdd([upload('up1', 'd1'), upload('up2', 'd2')]);
-      const p = pendenciaProposta({ tipo: 'CONFLITO', versionServidor: 5, dadosServidor: prop('c2') });
+      await db.documentos.put(doc('d1', false));
+      const e1 = { ...mutProposta('e1', 'p1', 'c1'), baseVersion: 3 };
+      const t1 = { ...mutProposta('t1', 'p1', 'c1'), baseVersion: 3, dados: { ...prop('c1'), status: 'ENVIADA' }, separada: true };
+      const t2 = { ...mutProposta('t2', 'p1', 'c1'), baseVersion: 3, dados: { ...prop('c1'), status: 'APROVADA' }, separada: true };
+      const [seqE1] = await db.outbox.bulkAdd([e1, t1, upload('up1', 'd1'), t2], { allKeys: true });
+      // E1 voltou CONFLITO: saiu da fila para a pendência (com o seq dela)
+      const mutacao = (await db.outbox.get(seqE1))!;
+      await db.outbox.delete(seqE1);
+      const p: Pendencia = {
+        mutationId: 'e1', entidade: 'proposta', agregadoId: 'p1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 5,
+        dadosServidor: prop('c2'), mutacao,
+      };
       await db.pendencias.put(p);
 
       await svc.manterMinha(p);
 
-      const fila = await db.outbox.toArray();
-      expect(fila).toHaveLength(1);
-      expect(fila[0]).toMatchObject({ entidade: 'proposta', baseVersion: 5 });
-      expect((await db.documentos.toArray()).map((d) => d.id)).toEqual(['d2']);
+      const fila = await db.outbox.orderBy('seq').toArray();
+      expect(fila.map((m) => m.mutationId).slice(1)).toEqual(['t1', 'up1', 't2']);
+      expect(fila[0]).toMatchObject({ seq: seqE1, entidade: 'proposta', baseVersion: 5, dados: { status: 'RASCUNHO' }, enviando: false });
+      expect(fila[0].mutationId).not.toBe('e1');
+      expect(fila[1]).toMatchObject({ baseVersion: 3, separada: true });
+      expect(await db.documentos.get('d1')).toBeDefined();
+      expect(await db.pendencias.count()).toBe(0);
+    });
+
+    it('P4b-R17: a mutação separada devolvida à fila continua separada', async () => {
+      const t = { ...mutProposta('t1', 'p1', 'c1'), seq: 9, baseVersion: 3, dados: { ...prop('c1'), status: 'ENVIADA' }, separada: true };
+      await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
+      const p: Pendencia = { mutationId: 't1', entidade: 'proposta', agregadoId: 'p1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 6, mutacao: t };
+      await db.pendencias.put(p);
+
+      await svc.manterMinha(p);
+
+      expect((await db.outbox.toArray())[0]).toMatchObject({ seq: 9, separada: true, baseVersion: 6, dados: { status: 'ENVIADA' } });
     });
 
     it('manter a minha ou usar a do servidor não valem para upload', async () => {

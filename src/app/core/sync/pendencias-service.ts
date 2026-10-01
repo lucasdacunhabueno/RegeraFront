@@ -5,8 +5,14 @@ import { observar } from '../db/observar';
 import { RegeraDb } from '../db/regera-db';
 import type { PropostaDados } from '../../features/propostas/proposta-models';
 import { Adaptador, adaptadorDe } from './adaptadores';
-import { DadosUpload, Entidade, Mudanca, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
+import { DadosUpload, Mudanca, MutacaoLocal, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
+
+function semSeq(m: MutacaoLocal): MutacaoLocal {
+  const copia = { ...m };
+  delete copia.seq;
+  return copia;
+}
 
 /** Decisões do usuário sobre conflitos e rejeições (§11.5). */
 @Injectable({ providedIn: 'root' })
@@ -19,17 +25,25 @@ export class PendenciasService {
     return observar(async () => (await this.db.pendencias.toArray()).sort((a, b) => a.criadaEm.localeCompare(b.criadaEm)));
   }
 
+  /**
+   * P4b-R17: rebase no lugar. A mutação da pendência volta à fila no `seq` dela (na frente das que ficaram retidas
+   * atrás), com outro `mutationId`, `baseVersion` = versão do servidor e os próprios `dados` e `separada`. Só esta
+   * pendência sai; as mutações seguintes e os documentos ficam. Se o registro local não existe mais e nada vem atrás,
+   * vai como DELETE (como antes).
+   */
   async manterMinha(p: Pendencia): Promise<void> {
     const adaptador = this.adaptador(p);
     const tabela = adaptador.tabela(this.db);
     const base = p.versionServidor ?? null;
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
       const local = await tabela.get(p.agregadoId);
-      await this.limparAgregado(p);
+      const atras = await this.db.outbox.where('agregadoId').equals(p.agregadoId).count();
+      await this.db.pendencias.delete(p.mutationId);
       if (local) {
         await tabela.put(adaptador.paraLocal(p.agregadoId, base, adaptador.dadosDe(local)));
       }
-      await this.sync.registrar(p.entidade as Entidade, p.agregadoId, local ? 'UPSERT' : 'DELETE', local ? adaptador.dadosDe(local) : null, base);
+      const excluido = !local && atras === 0;
+      await this.devolverAFila(p, { baseVersion: base, ...(excluido ? { op: 'DELETE' as const, dados: null } : {}) });
     });
     void this.sync.sincronizar();
   }
@@ -62,7 +76,8 @@ export class PendenciasService {
 
   /**
    * DOCUMENTO_DUPLICADO: fica com o cadastro que já existe no servidor e some com o duplicado local. Se o duplicado
-   * nunca chegou ao servidor (some de vez), as propostas que apontavam para ele passam a apontar para o existente.
+   * nunca chegou ao servidor (some de vez), as propostas que apontavam para ele passam a apontar para o existente,
+   * inclusive as já rejeitadas por isso, que voltam à fila (P4b-R16, §11.5 "reenvia as dependentes").
    */
   async usarExistente(p: Pendencia): Promise<string> {
     const idExistente = p.erro?.idExistente;
@@ -83,6 +98,7 @@ export class PendenciasService {
       }
       await tabela.put(adaptador.paraLocal(idExistente, existente.version, existente.dados));
     });
+    void this.sync.sincronizar();
     return idExistente;
   }
 
@@ -92,17 +108,40 @@ export class PendenciasService {
    * o resultado de um envio em curso com o id antigo não é aplicado por cima, e ela sai de novo.
    */
   private async remapearCliente(de: string, para: string): Promise<void> {
+    const trocar = (d: unknown): PropostaDados => ({ ...(d as PropostaDados), clienteId: para });
+    const doCliente = (x: { entidade: string; dados: unknown }) =>
+      x.entidade === 'proposta' && (x.dados as PropostaDados | null)?.clienteId === de;
     await this.db.propostas.where('clienteId').equals(de).modify({ clienteId: para });
-    const naFila = await this.db.outbox
-      .filter((m) => m.entidade === 'proposta' && (m.dados as PropostaDados | null)?.clienteId === de)
-      .toArray();
+    const naFila = await this.db.outbox.filter(doCliente).toArray();
     for (const m of naFila) {
-      await this.db.outbox.update(m.seq!, {
-        dados: { ...(m.dados as PropostaDados), clienteId: para },
-        mutationId: crypto.randomUUID(),
-        enviando: false,
-      });
+      await this.db.outbox.update(m.seq!, { dados: trocar(m.dados), mutationId: crypto.randomUUID(), enviando: false });
     }
+    // dependentes já recusadas (ex.: "Cliente não encontrado"): voltam à fila no lugar delas; num conflito, só a
+    // mutação guardada é corrigida (a decisão continua com o usuário)
+    for (const x of await this.db.pendencias.filter((x) => doCliente(x.mutacao)).toArray()) {
+      if (x.tipo === 'REJEITADO') {
+        await this.db.pendencias.delete(x.mutationId);
+        await this.devolverAFila(x, { dados: trocar(x.mutacao.dados) });
+      } else {
+        await this.db.pendencias.update(x.mutationId, { mutacao: { ...x.mutacao, dados: trocar(x.mutacao.dados) } });
+      }
+    }
+  }
+
+  /**
+   * Devolve a mutação da pendência à fila no lugar dela — o `seq` original, na frente das que ficaram retidas atrás —,
+   * com `mudancas`, outro `mutationId` e fora de voo. Sem `seq` livre, refaz a fila do agregado: ela primeiro e as
+   * outras na mesma ordem (a ordem entre agregados não importa). Precisa de `outbox` na transação.
+   */
+  private async devolverAFila(p: Pendencia, mudancas: Partial<MutacaoLocal>): Promise<void> {
+    const m: MutacaoLocal = { ...p.mutacao, ...mudancas, mutationId: crypto.randomUUID(), enviando: false };
+    if (m.seq !== undefined && !(await this.db.outbox.get(m.seq))) {
+      await this.db.outbox.put(m);
+      return;
+    }
+    const atras = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
+    await this.db.outbox.bulkDelete(atras.map((x) => x.seq!));
+    await this.db.outbox.bulkAdd([m, ...atras].map(semSeq));
   }
 
   /**

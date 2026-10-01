@@ -11,6 +11,7 @@ import {
   DocumentoLocal, paraPropostaLocal, PropostaDados, StatusProposta,
 } from '../../features/propostas/proposta-models';
 import { Toasts } from '../../shared/ui/toasts';
+import { PendenciasService } from './pendencias-service';
 import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
@@ -779,6 +780,65 @@ describe('SyncService', () => {
       expect(await db.documentos.get('d1')).toMatchObject({ enviado: false });
     });
 
+    it.each([408, 429])('upload com %i é transitório: fica na outbox, sem pendência', async (status) => {
+      await db.documentos.put(docLocal());
+      await sync.registrarUpload('p1', 'd1');
+
+      const p = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne(URL_UPLOAD))).flush({}, { status, statusText: 'x' });
+      await pullVazio();
+      await p;
+      expect((await fila())[0]).toMatchObject({ op: 'UPLOAD', enviando: false });
+      expect(await db.pendencias.count()).toBe(0);
+    });
+
+    it('P4b-R16: usar cadastro existente devolve à fila a proposta rejeitada pelo cliente, no lugar dela, e ela sai', async () => {
+      await db.clientes.put(paraClienteLocal('C', null, dados('Novo')));
+      await db.propostas.put(paraPropostaLocal('P', null, prop('RASCUNHO', { clienteId: 'C' })));
+      await sync.registrar('cliente', 'C', 'UPSERT', dados('Novo'), null);
+      await sync.registrar('proposta', 'P', 'UPSERT', prop('RASCUNHO', { clienteId: 'C' }), null);
+      await sync.registrar('proposta', 'P', 'UPSERT', prop('ENVIADA', { clienteId: 'C' }), null, { separada: true });
+      const seqP1 = (await fila()).find((m) => m.agregadoId === 'P')!.seq;
+
+      const p = sync.sincronizar();
+      const push1 = await push();
+      const [mc, mp] = push1.request.body.mutacoes as { mutationId: string; id: string }[];
+      expect([mc.id, mp.id]).toEqual(['C', 'P']);
+      push1.flush({ resultados: [
+        { mutationId: mc.mutationId, status: 'REJEITADO', erro: { codigo: 'DOCUMENTO_DUPLICADO', mensagem: 'x', idExistente: 'C9' } },
+        { mutationId: mp.mutationId, status: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { clienteId: 'Cliente não encontrado.' } } },
+      ] });
+      await pullVazio();
+      await p;
+      const pendC = (await db.pendencias.toArray()).find((x) => x.agregadoId === 'C')!;
+      expect(await db.pendencias.count()).toBe(2);
+
+      const usar = TestBed.inject(PendenciasService).usarExistente(pendC);
+      (await vi.waitFor(() => http.expectOne('/api/sync/agregado/cliente/C9')))
+        .flush({ entidade: 'cliente', id: 'C9', version: 3, deleted: false, dados: dados('Original') });
+      expect(await usar).toBe('C9');
+
+      expect(await db.pendencias.count()).toBe(0);
+      const m = await fila();
+      expect(m.map((x) => [x.agregadoId, (x.dados as PropostaDados).status, (x.dados as PropostaDados).clienteId]))
+        .toEqual([['P', 'RASCUNHO', 'C9'], ['P', 'ENVIADA', 'C9']]);
+      expect(m[0].seq).toBe(seqP1);
+      expect(m[0].mutationId).not.toBe(mp.mutationId);
+      expect((await db.propostas.get('P'))?.clienteId).toBe('C9');
+
+      // usarExistente pede a sincronização: as dependentes saem
+      const push2 = await push();
+      expect(push2.request.body.mutacoes[0]).toMatchObject({ id: 'P', baseVersion: null, dados: { clienteId: 'C9', status: 'RASCUNHO' } });
+      ok(push2, 0, numerada('RASCUNHO', { clienteId: 'C9' }));
+      const push3 = await push();
+      expect(push3.request.body.mutacoes[0]).toMatchObject({ baseVersion: 0, dados: { clienteId: 'C9', status: 'ENVIADA' } });
+      ok(push3, 1, numerada('ENVIADA', { clienteId: 'C9' }));
+      await pullVazio();
+      await sync.aguardarOciosa();
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.propostas.get('P')).toMatchObject({ clienteId: 'C9', version: 1, status: 'ENVIADA' });
+    });
+
     it('upload cujo PDF não está mais no aparelho vira pendência sem chamar o servidor', async () => {
       await db.documentos.put(docLocal({ bytes: null }));
       await sync.registrarUpload('p1', 'd1');
@@ -821,6 +881,23 @@ describe('SyncService', () => {
 
       expect(await db.pendencias.count()).toBe(0);
       expect(await db.propostas.get('p1')).toMatchObject({ codigoProvisorio: novo, numero: 277, version: 1 });
+    });
+
+    it('CODIGO_PROVISORIO_DUPLICADO de mutação alterada durante o envio não troca o código', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', null, prop('RASCUNHO')));
+      await sync.registrar('proposta', 'p1', 'UPSERT', prop('RASCUNHO'), null);
+      const seq = (await fila())[0].seq!;
+
+      const p = sync.sincronizar();
+      const push1 = await push();
+      await db.outbox.update(seq, { mutationId: 'outro', enviando: false });
+      rejeitar(push1, 'CODIGO_PROVISORIO_DUPLICADO');
+      const push2 = await push();
+      expect(push2.request.body.mutacoes[0]).toMatchObject({ mutationId: 'outro', dados: { codigoProvisorio: PROV } });
+      expect((await db.propostas.get('p1'))?.codigoProvisorio).toBe(PROV);
+      ok(push2, 0, numerada('RASCUNHO'));
+      await pullVazio();
+      await p;
     });
 
     it('CODIGO_PROVISORIO_DUPLICADO repetido para no teto de trocas e vira pendência', async () => {
