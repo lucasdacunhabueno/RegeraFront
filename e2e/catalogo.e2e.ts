@@ -1,5 +1,5 @@
 import { expect, Page, test } from '@playwright/test';
-import { aguardarSincronizacaoInicial } from './apoio';
+import { aguardarSincronizacaoInicial, semViolacaoCsp } from './apoio';
 
 const EMAIL = process.env['E2E_ADMIN_EMAIL'] ?? 'admin@regera.local';
 const SENHA = process.env['E2E_ADMIN_SENHA'] ?? 'admin-local-123';
@@ -13,6 +13,7 @@ async function entrar(page: Page) {
 }
 
 test('admin cria item do catálogo sem internet e ele sincroniza ao voltar', async ({ page, context }) => {
+  const csp = await semViolacaoCsp(context);
   await entrar(page);
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
@@ -45,13 +46,15 @@ test('admin cria item do catálogo sem internet e ele sincroniza ao voltar', asy
 
   await page.getByRole('searchbox', { name: 'Buscar no catálogo' }).fill(codigo.slice(0, 8).toLowerCase());
   await expect(item).toBeVisible();
+  await csp.verificar();
 });
 
 // PNG 8x8 RGBA: metade azul opaca, metade transparente (o JPEG do upload precisa sair com fundo branco)
 const PNG_TRANSPARENTE =
   'iVBORw0KGgoAAAANSUhEUgAAAAgAAAAICAYAAADED76LAAAAFElEQVR4nGOQ9bvxHxkzoIORoQAAU1FIQaOqvhEAAAAASUVORK5CYII=';
 
-test('admin cria item com foto online e a lista mostra a imagem', async ({ page }) => {
+test('admin cria item com foto online e a lista mostra a imagem', async ({ page, context }) => {
+  const csp = await semViolacaoCsp(context);
   await entrar(page);
   await page.goto('/catalogo');
   await expect(page.getByRole('heading', { name: 'Catálogo' })).toBeVisible();
@@ -77,11 +80,14 @@ test('admin cria item com foto online e a lista mostra a imagem', async ({ page 
   const item = page.getByRole('listitem').filter({ hasText: codigo });
   await expect(item).toBeVisible();
   await expect(item.locator('img')).toHaveAttribute('src', /^blob:/);
+  await csp.verificar();
 });
 
-test('tela da empresa abre para o admin', async ({ page }) => {
+test('tela da empresa abre para o admin', async ({ page, context }) => {
+  const csp = await semViolacaoCsp(context);
   await entrar(page);
   await page.goto('/empresa');
   await expect(page.getByRole('heading', { name: 'Empresa' })).toBeVisible();
   await expect(page.locator('#razaoSocial')).toBeVisible();
+  await csp.verificar();
 });

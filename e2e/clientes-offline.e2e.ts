@@ -1,5 +1,5 @@
 import { devices, expect, Page, test } from '@playwright/test';
-import { aguardarSincronizacaoInicial } from './apoio';
+import { aguardarSincronizacaoInicial, semViolacaoCsp } from './apoio';
 
 const EMAIL = process.env['E2E_ADMIN_EMAIL'] ?? 'admin@regera.local';
 const SENHA = process.env['E2E_ADMIN_SENHA'] ?? 'admin-local-123';
@@ -25,6 +25,7 @@ async function entrar(page: Page) {
 }
 
 test('cliente criado sem internet sincroniza ao voltar e aparece em outro aparelho', async ({ page, context, browser, baseURL }) => {
+  const csp = await semViolacaoCsp(context);
   await entrar(page);
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
@@ -51,13 +52,16 @@ test('cliente criado sem internet sincroniza ao voltar e aparece em outro aparel
   await expect(item).toBeVisible();
 
   const outro = await browser.newContext({ ...devices['Pixel 7'], baseURL, ignoreHTTPSErrors: true });
+  const csp2 = await semViolacaoCsp(outro);
   try {
     const pagina2 = await outro.newPage();
     await entrar(pagina2);
     await pagina2.goto('/clientes');
     await pagina2.getByRole('searchbox', { name: 'Buscar clientes' }).fill(nome);
     await expect(pagina2.getByText(nome)).toBeVisible({ timeout: 30_000 });
+    await csp2.verificar();
   } finally {
     await outro.close();
   }
+  await csp.verificar();
 });

@@ -9,7 +9,8 @@
     "test": "ng test",
     "lint": "ng lint",
     "test:ci": "ng test --watch=false",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "checar:csp": "node scripts/checar-csp-index.mjs"
   },
   "private": true,
   "packageManager": "npm@11.16.0",

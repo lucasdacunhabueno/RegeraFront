@@ -3,7 +3,7 @@ WORKDIR /src
 COPY package*.json ./
 RUN npm ci
 COPY . .
-RUN npx ng build --configuration production
+RUN npx ng build --configuration production && node scripts/checar-csp-index.mjs dist/regera-front/browser/index.html
 
 FROM nginx:stable-alpine
 COPY nginx.conf /etc/nginx/conf.d/default.conf

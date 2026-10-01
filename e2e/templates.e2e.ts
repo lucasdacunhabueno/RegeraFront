@@ -1,5 +1,5 @@
 import { APIRequestContext, devices, expect, Page, test } from '@playwright/test';
-import { aguardarSincronizacaoInicial } from './apoio';
+import { aguardarSincronizacaoInicial, semViolacaoCsp } from './apoio';
 
 const EMAIL = process.env['E2E_ADMIN_EMAIL'] ?? 'admin@regera.local';
 const SENHA = process.env['E2E_ADMIN_SENHA'] ?? 'admin-local-123';
@@ -69,6 +69,7 @@ test('admin monta template sem internet, gera a prévia offline e o comercial re
   request,
 }) => {
   test.setTimeout(150_000);
+  const csp = await semViolacaoCsp(context);
   await entrar(page);
   await page.evaluate(async () => {
     await navigator.serviceWorker.ready;
@@ -171,6 +172,7 @@ test('admin monta template sem internet, gera a prévia offline e o comercial re
   const emailComercial = `comercial.e2e.${ts}@regera.local`;
   await criarComercial(request, emailComercial);
   const outro = await browser.newContext({ ...devices['Pixel 7'], baseURL, ignoreHTTPSErrors: true });
+  const csp2 = await semViolacaoCsp(outro);
   try {
     const pagina2 = await outro.newPage();
     await entrar(pagina2, emailComercial, SENHA_COMERCIAL);
@@ -182,7 +184,10 @@ test('admin monta template sem internet, gera a prévia offline e o comercial re
     await pagina2.getByRole('link', { name: 'Mais' }).click();
     await expect(pagina2.getByRole('heading', { name: 'Mais' })).toBeVisible();
     await expect(pagina2.getByRole('link', { name: 'Templates de proposta' })).toHaveCount(0);
+    await csp2.verificar();
   } finally {
     await outro.close();
   }
+  // inclui a aba da prévia, já fechada: o vigia é do contexto e recebe as violações dela pelo binding
+  await csp.verificar();
 });
