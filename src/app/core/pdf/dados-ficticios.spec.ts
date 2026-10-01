@@ -23,6 +23,28 @@ describe('entradaFicticia', () => {
     expect(e.empresa.razaoSocial).toBeTruthy();
   });
 
+  it('usa o tipo do template; sem tipo é VENDA e nenhum item tem meses', () => {
+    expect(entradaFicticia([], null, null, 'MANUTENCAO').proposta.tipo).toBe('MANUTENCAO');
+    const venda = entradaFicticia([], null, null);
+    expect(venda.proposta.tipo).toBe('VENDA');
+    expect(venda.itens.every((i) => i.meses === null)).toBe(true);
+  });
+
+  it('LOCACAO: entra um item locável com meses e os totais seguem o §7.3', () => {
+    const e = entradaFicticia([], null, null, 'LOCACAO');
+    expect(e.proposta.tipo).toBe('LOCACAO');
+    const locaveis = e.itens.filter((i) => typeof i.meses === 'number' && i.meses > 0);
+    expect(locaveis).toHaveLength(1);
+    const [l] = locaveis;
+    // subtotal = quantidade × preço × (1 − desconto%) × meses
+    expect(l.subtotalCentavos).toBe(Math.round(l.quantidade * l.precoUnitarioCentavos * l.meses! * (1 - l.descontoPercentual / 100)));
+    const bruto = e.itens.reduce((s, i) => s + Math.round(i.quantidade * i.precoUnitarioCentavos * (i.meses ?? 1)), 0);
+    const somaSubtotais = e.itens.reduce((s, i) => s + i.subtotalCentavos, 0);
+    expect(e.proposta.totalItensCentavos).toBe(somaSubtotais);
+    expect(e.proposta.totalCentavos).toBe(somaSubtotais);
+    expect(e.proposta.totalCentavos + e.proposta.totalDescontosCentavos).toBe(bruto);
+  });
+
   it('usa os dados reais da empresa e a logo quando existem', () => {
     const empresa = paraEmpresaLocal('e', 1, { razaoSocial: 'Regera S.A.', nomeFantasia: 'Regera', cnpj: '11222333000181', corPrimaria: '#0f766e' });
     const e = entradaFicticia([], empresa, 'data:image/png;base64,AAAA');

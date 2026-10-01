@@ -482,7 +482,7 @@ export class TemplateEditorPage implements ComAlteracoes {
     try {
       const empresa = (await this.db.empresa.get(ID_EMPRESA)) ?? null;
       const logo = await this.pdf.logoDataUrl(empresa);
-      const blob = await this.pdf.gerarBlob(entradaFicticia(this.blocos(), empresa, logo));
+      const blob = await this.pdf.gerarBlob(entradaFicticia(this.blocos(), empresa, logo, this.tipo()));
       if (this.destruido) {
         // saiu do editor durante a geração: só a aba já aberta ainda quer o PDF; nada de URL sem dono
         if (janela) {

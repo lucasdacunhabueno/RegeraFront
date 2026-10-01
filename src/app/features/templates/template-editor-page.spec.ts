@@ -364,6 +364,8 @@ describe('TemplateEditorPage', () => {
       const entrada = pdf.gerarBlob.mock.calls[0][0];
       expect(entrada).toMatchObject({ previa: true, logoDataUrl: 'data:image/png;base64,AAAA', blocos: blocosExistentes() });
       expect(entrada.empresa.razaoSocial).toBe('Solar Ltda');
+      // os dados fictícios seguem o tipo do template carregado
+      expect(entrada.proposta.tipo).toBe('SERVICO');
       const iframe = el.querySelector<HTMLIFrameElement>('iframe[title="Prévia do PDF"]')!;
       expect(iframe.getAttribute('src')).toBe('blob:http://localhost/previa-1');
     });
