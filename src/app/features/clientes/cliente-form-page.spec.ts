@@ -16,9 +16,9 @@ const existente: ClienteDados = {
   enderecos: [{ tipo: 'PRINCIPAL', cep: '01001000', logradouro: 'Praça da Sé', numero: '1', complemento: null, bairro: 'Sé', cidade: 'São Paulo', uf: 'SP' }],
 };
 
-function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn> } = {}) {
+function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn>; buscar?: Promise<unknown> } = {}) {
   const repo = {
-    buscar: vi.fn().mockResolvedValue(paraClienteLocal('id1', 3, existente)),
+    buscar: opcoes.buscar ? vi.fn().mockReturnValue(opcoes.buscar) : vi.fn().mockResolvedValue(paraClienteLocal('id1', 3, existente)),
     salvar: opcoes.salvar ?? vi.fn().mockResolvedValue('novo-id'),
     excluir: vi.fn().mockResolvedValue(undefined),
     temPendencia: vi.fn().mockResolvedValue(false),
@@ -66,6 +66,20 @@ describe('ClienteFormPage', () => {
     const [dados, id] = repo.salvar.mock.calls[0];
     expect(id).toBeUndefined();
     expect(dados).toMatchObject({ tipo: 'PF', documento: '52998224725', nome: 'Maria', telefone: '11999998888', nomeFantasia: null, enderecos: [] });
+  });
+
+  it('falha ao ler o cliente: avisa, esconde Salvar e Excluir e não salva', async () => {
+    const { fixture, el, repo } = montar({ id: 'id1', buscar: Promise.reject(new Error('IndexedDB indisponível')) });
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.textContent).toContain('Não foi possível carregar o cliente.');
+    });
+    expect(el.querySelector('button[type=submit]')).toBeNull();
+    expect(el.querySelector('[data-testid=excluir]')).toBeNull();
+    el.querySelector('form')!.dispatchEvent(new Event('submit'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(repo.salvar).not.toHaveBeenCalled();
+    expect(fixture.componentInstance.temAlteracoes()).toBe(false);
   });
 
   it('CPF inválido mostra erro e não salva', async () => {

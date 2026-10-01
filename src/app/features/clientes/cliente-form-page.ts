@@ -202,13 +202,17 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
       @if (erroGeral()) {
         <p role="alert" class="text-sm text-red-600">{{ erroGeral() }}</p>
       }
-      <button type="submit" [disabled]="salvando()" class="h-12 w-full rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
-        Salvar
-      </button>
-      @if (id()) {
-        <button type="button" data-testid="excluir" (click)="excluir()" [disabled]="excluindo()" class="h-12 w-full rounded-lg border border-red-300 font-semibold text-red-600 disabled:opacity-60">
-          Excluir cliente
+      @if (falhaCarga()) {
+        <p class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">Não foi possível carregar o cliente.</p>
+      } @else {
+        <button type="submit" [disabled]="salvando()" class="h-12 w-full rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
+          Salvar
         </button>
+        @if (id()) {
+          <button type="button" data-testid="excluir" (click)="excluir()" [disabled]="excluindo()" class="h-12 w-full rounded-lg border border-red-300 font-semibold text-red-600 disabled:opacity-60">
+            Excluir cliente
+          </button>
+        }
       }
     </form>
   `,
@@ -232,6 +236,7 @@ export class ClienteFormPage implements ComAlteracoes {
   protected readonly erroDocumento = signal<string | null>(null);
   protected readonly temPendencia = signal(false);
   protected readonly naoEncontrado = signal(false);
+  protected readonly falhaCarga = signal(false);
   /** Versão lida ao abrir o formulário (undefined = cliente novo). */
   private versaoCarregada: number | null | undefined;
 
@@ -276,7 +281,7 @@ export class ClienteFormPage implements ComAlteracoes {
   }
 
   temAlteracoes(): boolean {
-    if (this.liberado || !this.carregado() || this.naoEncontrado()) return false;
+    if (this.liberado || !this.carregado() || this.naoEncontrado() || this.falhaCarga()) return false;
     return this.estado() !== this.estadoSalvo;
   }
 
@@ -354,6 +359,7 @@ export class ClienteFormPage implements ComAlteracoes {
   }
 
   protected async salvar(): Promise<void> {
+    if (this.falhaCarga()) return;
     if (this.form.invalid) {
       this.form.markAllAsTouched();
       this.erroGeral.set('Corrija os campos destacados.');
@@ -409,7 +415,7 @@ export class ClienteFormPage implements ComAlteracoes {
 
   protected async excluir(): Promise<void> {
     const id = this.id();
-    if (!id || this.excluindo() || !window.confirm('Excluir este cliente?')) return;
+    if (!id || this.excluindo() || this.falhaCarga() || !window.confirm('Excluir este cliente?')) return;
     this.excluindo.set(true);
     try {
       await this.repo.excluir(id, this.versaoCarregada);
@@ -425,8 +431,12 @@ export class ClienteFormPage implements ComAlteracoes {
 
   private async carregar(id: string): Promise<void> {
     this.carregado.set(false);
+    this.falhaCarga.set(false);
     try {
       await this.preencher(id);
+    } catch {
+      // formulário vazio salvaria um cliente em branco por cima do existente: bloqueia
+      if (this.id() === id) this.falhaCarga.set(true);
     } finally {
       if (this.id() === id) {
         this.estadoSalvo = this.estado();
