@@ -74,15 +74,50 @@ describe('gerarDocumento', () => {
     });
   });
 
-  it('um elemento por bloco, na ordem dos blocos', () => {
+  it('um elemento por bloco de conteúdo, na ordem dos blocos; a quebra vai no bloco seguinte', () => {
     const c = conteudo(gerarDocumento(entrada()));
-    expect(c).toHaveLength(6);
+    expect(c).toHaveLength(5);
     expect(c[0]).toHaveProperty('stack');
     expect(c[1]).toHaveProperty('stack');
     expect(c[2]).toHaveProperty('table');
     expect(c[3]).toHaveProperty('columns');
-    expect(c[4]).toEqual({ text: '', pageBreak: 'after' });
-    expect(c[5]).toMatchObject({ margin: [0, 40, 0, 0] });
+    expect(c[3]).not.toHaveProperty('pageBreak');
+    expect(c[4]).toMatchObject({ margin: [0, 40, 0, 0], pageBreak: 'before' });
+  });
+
+  describe('QUEBRA_PAGINA', () => {
+    const quebra = (id: string): Bloco => ({ id, tipo: 'QUEBRA_PAGINA', config: {} });
+    const total = (id: string): Bloco => ({ id, tipo: 'TOTAIS', config: { mostrarDescontos: false } });
+    const quebras = (blocos: Bloco[]) =>
+      conteudo(gerarDocumento(entrada({ blocos }))).map((c) => (c as { pageBreak?: string }).pageBreak ?? null);
+
+    it('entre dois blocos vira pageBreak before no seguinte, sem elemento vazio', () => {
+      expect(quebras([total('a'), quebra('q'), total('b')])).toEqual([null, 'before']);
+    });
+
+    it('quebras seguidas viram uma só', () => {
+      expect(quebras([total('a'), quebra('q1'), quebra('q2'), quebra('q3'), total('b')])).toEqual([null, 'before']);
+    });
+
+    it('quebra no início é descartada', () => {
+      expect(quebras([quebra('q'), total('a'), total('b')])).toEqual([null, null]);
+    });
+
+    it('quebra no fim é descartada (nada de página em branco)', () => {
+      expect(quebras([total('a'), quebra('q1'), quebra('q2')])).toEqual([null]);
+    });
+
+    it('quebra antes de um bloco que não gera conteúdo vai para o próximo que gera', () => {
+      const vazio = { id: 'i', tipo: 'ITENS', config: { colunas: [], agruparPorNatureza: false } } as Bloco;
+      expect(quebras([total('a'), quebra('q'), vazio, total('b')])).toEqual([null, 'before']);
+    });
+  });
+
+  it('impressão: assinatura e totais não se partem entre páginas; linha de item não se parte', () => {
+    const c = conteudo(gerarDocumento(entrada()));
+    expect((c[2] as unknown as { table: { dontBreakRows?: boolean; headerRows: number } }).table).toMatchObject({ dontBreakRows: true, headerRows: 1 });
+    expect(c[3]).toMatchObject({ unbreakable: true });
+    expect(c[4]).toMatchObject({ unbreakable: true });
   });
 
   it('CABECALHO: logo, dados da empresa, título resolvido e referência provisória', () => {
@@ -232,7 +267,7 @@ describe('gerarDocumento', () => {
   });
 
   it('ASSINATURA: uma coluna por assinante com linha, nome e rótulo', () => {
-    const ass = conteudo(gerarDocumento(entrada()))[5];
+    const ass = conteudo(gerarDocumento(entrada()))[4];
     expect(ass).toMatchObject({
       columns: [
         { stack: ['______________________________', 'Regera Energia S.A.', { text: 'Contratada', style: 'pequeno' }] },
@@ -340,9 +375,11 @@ describe('gerarDocumento', () => {
   it('bloco de tipo desconhecido é ignorado (Review Focus 3)', () => {
     const blocos = [
       { id: 'x', tipo: 'IMAGEM', config: { url: 'x' } },
-      { id: 'q', tipo: 'QUEBRA_PAGINA', config: {} },
+      { id: 't', tipo: 'TOTAIS', config: { mostrarDescontos: false } },
     ] as unknown as Bloco[];
-    expect(conteudo(gerarDocumento(entrada({ blocos })))).toEqual([{ text: '', pageBreak: 'after' }]);
+    const c = conteudo(gerarDocumento(entrada({ blocos })));
+    expect(c).toHaveLength(1);
+    expect(c[0]).toHaveProperty('columns');
   });
 
   it('coluna ou assinante desconhecidos são ignorados; cor inválida usa a padrão', () => {

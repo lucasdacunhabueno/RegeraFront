@@ -100,9 +100,18 @@ export function gerarDocumento(e: EntradaPdf): TDocumentDefinitions {
   const rotuloProposta = 'Proposta ' + txt(e.proposta.codigoExibido) + revisao;
 
   const content: Content[] = [];
+  // QUEBRA_PAGINA vira pageBreak 'before' no próximo bloco que gera conteúdo: seguidas valem uma, e no início ou no
+  // fim são descartadas (um elemento vazio com 'after' deixava página em branco)
+  let quebrar = false;
   for (const b of Array.isArray(e.blocos) ? e.blocos : []) {
+    if (ehQuebra(b)) {
+      quebrar = content.length > 0;
+      continue;
+    }
     const c = bloco(e, b);
-    if (c) content.push(c);
+    if (!c) continue;
+    content.push(quebrar ? ({ ...(c as object), pageBreak: 'before' } as Content) : c);
+    quebrar = false;
   }
 
   const dd: TDocumentDefinitions = {
@@ -131,6 +140,12 @@ export function gerarDocumento(e: EntradaPdf): TDocumentDefinitions {
   return dd;
 }
 
+function ehQuebra(b: Bloco): boolean {
+  const config: unknown = (b as { config?: unknown } | null)?.config;
+  return b?.tipo === 'QUEBRA_PAGINA' && typeof config === 'object' && config !== null;
+}
+
+/** Conteúdo de um bloco; null para os que não geram nada (QUEBRA_PAGINA é tratada em `gerarDocumento`). */
 function bloco(e: EntradaPdf, b: Bloco): Content | null {
   const config: unknown = (b as { config?: unknown } | null)?.config;
   if (typeof config !== 'object' || config === null) return null;
@@ -145,8 +160,6 @@ function bloco(e: EntradaPdf, b: Bloco): Content | null {
       return totais(e, b.config);
     case 'ASSINATURA':
       return assinatura(e, b.config);
-    case 'QUEBRA_PAGINA':
-      return { text: '', pageBreak: 'after' };
     default:
       return null;
   }
@@ -240,7 +253,8 @@ function itens(e: EntradaPdf, config: ConfigItens): Content | null {
   }
 
   return {
-    table: { headerRows: 1, widths: colunas.map((c) => (c === 'descricao' ? '*' : 'auto')), body },
+    // cabeçalho repetido em cada página e linha de item inteira na mesma página
+    table: { headerRows: 1, dontBreakRows: true, widths: colunas.map((c) => (c === 'descricao' ? '*' : 'auto')), body },
     layout: 'lightHorizontalLines',
     margin: [0, 0, 0, 12],
   };
@@ -258,6 +272,7 @@ function totais(e: EntradaPdf, config: ConfigTotais): Content {
   body.push([{ text: 'Total', bold: true }, { text: moedaCentavos(p.totalCentavos), alignment: 'right', bold: true }]);
   return {
     columns: [{ width: '*', text: '' }, { width: 'auto', table: { body }, layout: 'noBorders' }],
+    unbreakable: true,
     margin: [0, 0, 0, 12],
   };
 }
@@ -271,5 +286,5 @@ function assinatura(e: EntradaPdf, config: ConfigAssinatura): Content | null {
     .filter((a): a is Assinante => a === 'EMPRESA' || a === 'CLIENTE')
     .map((a) => ({ stack: [LINHA_ASSINATURA, rotulos[a][0], { text: rotulos[a][1], style: 'pequeno' }], alignment: 'center' }));
   if (colunas.length === 0) return null;
-  return { columns: colunas, columnGap: 24, margin: [0, 40, 0, 0] };
+  return { columns: colunas, columnGap: 24, unbreakable: true, margin: [0, 40, 0, 0] };
 }
