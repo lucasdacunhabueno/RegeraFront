@@ -19,7 +19,9 @@ import { ID_EMPRESA, paraEmpresaLocal } from '../empresa/empresa-models';
 import { blocosIniciais, paraTemplateLocal } from '../templates/template-models';
 import { calcular } from './calculo';
 import { codigoProvisorioValido } from './codigo-provisorio';
-import { DocumentoLocal, ItemPropostaLocal, PropostaDados, PropostaLocal, StatusProposta } from './proposta-models';
+import {
+  dadosDaProposta, DocumentoLocal, ItemPropostaLocal, PropostaDados, PropostaLocal, StatusProposta,
+} from './proposta-models';
 import { ErroProposta, hojeEmSaoPaulo, PropostasRepo, somarDias } from './propostas-repo';
 
 const COMERCIAL: UsuarioSessao = { id: 'u-com', nome: 'Carla Comercial', email: 'carla@regera.com', perfil: 'COMERCIAL', ativo: true };
@@ -356,6 +358,54 @@ describe('PropostasRepo', () => {
       expect(await db.outbox.count()).toBe(0);
       await repo.salvarRascunho('p1', { validadeAte: '2028-02-29', dataEmissao: '2026-12-31' });
       expect(await db.propostas.get('p1')).toMatchObject({ validadeAte: '2028-02-29', dataEmissao: '2026-12-31' });
+    });
+
+    describe('com a criação recusada e mutações retidas atrás dela (P4b-R27)', () => {
+      /** Fila depois de "envio offline, criação recusada": E (seq 5) na pendência; T (ENVIADA) e o UPLOAD retidos. */
+      async function recusada(erro = { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.' }): Promise<void> {
+        const p = await existente('RASCUNHO', { version: null, revisao: 2 });
+        const dados = (status: StatusProposta) => dadosDaProposta({ ...p, status, revisao: 1 });
+        await db.outbox.bulkAdd([
+          { seq: 6, mutationId: 't1', entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: null, dados: dados('ENVIADA'),
+            separada: true, criadaEm: '' },
+          { seq: 7, mutationId: 'up1', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null,
+            dados: { documentoId: 'd1' }, separada: true, criadaEm: '' },
+        ]);
+        await db.pendencias.put({
+          mutationId: 'e1', entidade: 'proposta', agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '', erro,
+          mutacao: { seq: 5, mutationId: 'e1', entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: null,
+            dados: dados('RASCUNHO'), criadaEm: '' },
+        });
+      }
+
+      it('adicionarItem e salvarRascunho não apagam a recusa: a edição entra na recusada e nas retidas, sem mutação nova', async () => {
+        await recusada();
+        await repo.adicionarItem('p1', (await db.itens.get('i-sem-preco'))!);
+        expect(await db.pendencias.count()).toBe(0);
+        let m = await fila();
+        expect(m.map((x) => [x.seq, x.op, (x.dados as PropostaDados | null)?.status ?? null])).toEqual([
+          [5, 'UPSERT', 'RASCUNHO'], [6, 'UPSERT', 'ENVIADA'], [7, 'UPLOAD', null],
+        ]);
+        expect((m[0].dados as PropostaDados).itens.map((l) => l.itemCatalogoId)).toEqual(['i-venda', 'i-sem-preco']);
+        expect((m[1].dados as PropostaDados).itens.map((l) => l.itemCatalogoId)).toEqual(['i-venda', 'i-sem-preco']);
+        expect(sincronizar).toHaveBeenCalled();
+
+        // de volta à fila, a próxima edição segue o caminho normal (vai atrás das retidas)
+        await repo.salvarRascunho('p1', { observacoes: 'depois' });
+        m = await fila();
+        expect(m).toHaveLength(4);
+        expect(m[3]).toMatchObject({ op: 'UPSERT', baseVersion: null, dados: { observacoes: 'depois' } });
+      });
+
+      it('com a recusa que uma edição não conserta, recusa a edição em vez de perder a criação', async () => {
+        await recusada({ codigo: 'TRANSICAO_INVALIDA', mensagem: 'x' });
+        const e = await erroDe(repo.salvarRascunho('p1', { observacoes: 'x' }));
+        expect(e.codigo).toBe('RESOLVA_A_PENDENCIA');
+        expect(e.message).toBe('Resolva a pendência desta proposta antes de editá-la.');
+        expect(await db.pendencias.count()).toBe(1);
+        expect((await fila()).map((x) => x.mutationId)).toEqual(['t1', 'up1']);
+        expect((await db.propostas.get('p1'))!.observacoes).toBeNull();
+      });
     });
 
     it('o responsável troca o técnico no rascunho', async () => {

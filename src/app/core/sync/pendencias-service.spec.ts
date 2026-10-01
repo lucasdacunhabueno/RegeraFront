@@ -376,6 +376,35 @@ describe('PendenciasService', () => {
       expect(await db.outbox.count()).toBe(0);
     });
 
+    it('P4b-R30: descartar a criação recusada da proposta apaga a local e todos os PDFs dela, enviados ou não', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', null, prop('c1')));
+      await db.documentos.bulkPut([doc('d1', false), doc('d2', true), { ...doc('d9', true), propostaId: 'p9' }]);
+      const p = pendenciaProposta({ tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } });
+      p.mutacao.baseVersion = null;
+      await db.pendencias.put(p);
+
+      await svc.descartar(p);
+
+      expect(await db.propostas.get('p1')).toBeUndefined();
+      expect((await db.documentos.toArray()).map((d) => d.id)).toEqual(['d9']);
+    });
+
+    it('P4b-R30: usar a do servidor quando o servidor não tem mais a proposta apaga a local e os PDFs enviados dela', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
+      await db.documentos.bulkPut([doc('d1', true), { ...doc('d9', true), propostaId: 'p9' }]);
+      const p = pendenciaProposta({ tipo: 'CONFLITO', versionServidor: 4, dadosServidor: prop('c1') });
+      await db.pendencias.put(p);
+
+      const promessa = svc.usarServidor(p);
+      (await vi.waitFor(() => http.expectOne('/api/sync/agregado/proposta/p1')))
+        .flush({ codigo: 'NAO_ENCONTRADO' }, { status: 404, statusText: 'Not Found' });
+      await promessa;
+
+      expect(await db.propostas.get('p1')).toBeUndefined();
+      expect((await db.documentos.toArray()).map((d) => d.id)).toEqual(['d9']);
+      expect(await db.pendencias.count()).toBe(0);
+    });
+
     it('P4b-R17: manter a minha rebaseia no lugar — [E1 CONFLITO, T ENVIADA, UPLOAD d1, T APROVADA]', async () => {
       await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
       await db.documentos.put(doc('d1', false));
@@ -572,6 +601,42 @@ describe('PendenciasService', () => {
       }
       expect(await db.pendencias.count()).toBe(4);
       expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['t1', 'up1', 'a1', 'o1']);
+    });
+
+    it('P4b-R28: só corrige a recusa VALIDACAO de dados de rascunho; o resto é PENDENCIA_NAO_CORRIGIVEL', async () => {
+      const p = await cenario();
+      const recusas: Pendencia[] = [
+        { ...p, erro: { codigo: 'TRANSICAO_INVALIDA', mensagem: 'Uma proposta nova começa como rascunho.' } },
+        { ...p, erro: { codigo: 'ACESSO_NEGADO', mensagem: 'x' } },
+        { ...p, mutacao: { ...p.mutacao, dados: proposta('APROVADA') } },
+        { ...p, mutacao: { ...p.mutacao, dados: proposta('ENVIADA') } },
+      ];
+      for (const r of recusas) {
+        await db.pendencias.put(r);
+        const e = await svc.corrigirProposta('e1', { itens: [linhaNova] }).then(() => null, (x: unknown) => x);
+        expect(e).toMatchObject({ codigo: 'PENDENCIA_NAO_CORRIGIVEL' });
+      }
+      expect(await db.pendencias.count()).toBe(1);
+      expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['t1', 'up1', 'a1', 'o1']);
+    });
+
+    it('P4b-R29: numa edição recusada, as linhas citadas na recusa são novas para o catálogo (as outras, não)', async () => {
+      const p = await cenario();
+      // a recusa cita a linha 0 (l1, item i1 inativo), que já está na cópia local otimista
+      const e = await svc.corrigirProposta('e1', { observacoes: 'só isto' }).then(() => null, (x: unknown) => x);
+      expect(e).toBeInstanceOf(ErroProposta);
+      expect((e as ErroProposta).campo).toBe('itens[0].itemCatalogoId');
+      expect(await db.pendencias.count()).toBe(1);
+
+      // l9 (item i9, também inativo) não foi citada: continua "existente" e não é conferida; trocar l1 basta
+      await db.itens.put(paraItemLocal('i9', 2, catalogo('i9', false)));
+      const comL9 = proposta('RASCUNHO', { itens: [linhaDados('l1', 'i1'), linhaDados('l9', 'i9')] });
+      await db.propostas.put(paraPropostaLocal('p1', 3, { ...comL9, status: 'ENVIADA' }));
+      await db.pendencias.put({ ...p, mutacao: { ...p.mutacao, dados: comL9 } });
+      const l9 = (await db.propostas.get('p1'))!.itens[1];
+      await svc.corrigirProposta('e1', { itens: [linhaNova, l9] });
+      expect(await db.pendencias.count()).toBe(0);
+      expect(((await db.outbox.get(5))!.dados as PropostaDados).itens.map((l) => l.id)).toEqual(['l2', 'l9']);
     });
 
     it('o técnico e o comercial que não é o responsável não corrigem', async () => {

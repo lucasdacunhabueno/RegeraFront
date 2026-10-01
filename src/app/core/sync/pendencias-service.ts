@@ -1,21 +1,14 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { inject, Injectable } from '@angular/core';
+import type { Table } from 'dexie';
 import { firstValueFrom, Observable } from 'rxjs';
 import { observar } from '../db/observar';
 import { RegeraDb } from '../db/regera-db';
 import type { PropostaDados } from '../../features/propostas/proposta-models';
-import {
-  corrigirDadosDaProposta, EdicaoRascunho, ErroProposta, PropostasRepo,
-} from '../../features/propostas/propostas-repo';
-import { Adaptador, adaptadorDe } from './adaptadores';
-import { DadosUpload, Mudanca, MutacaoLocal, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
+import { EdicaoRascunho, PropostasRepo } from '../../features/propostas/propostas-repo';
+import { Adaptador, adaptadorDe, RegistroLocal } from './adaptadores';
+import { DadosUpload, Mudanca, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
-
-function semSeq(m: MutacaoLocal): MutacaoLocal {
-  const copia = { ...m };
-  delete copia.seq;
-  return copia;
-}
 
 /**
  * Decisões do usuário sobre conflitos e rejeições (§11.5). Toda ação relê a pendência gravada dentro da própria
@@ -52,7 +45,7 @@ export class PendenciasService {
         await tabela.put(adaptador.paraLocal(p.agregadoId, base, adaptador.dadosDe(local)));
       }
       const excluido = !local && atras === 0;
-      await this.devolverAFila(p, { baseVersion: base, ...(excluido ? { op: 'DELETE' as const, dados: null } : {}) });
+      await this.sync.devolverAFila(p, { baseVersion: base, ...(excluido ? { op: 'DELETE' as const, dados: null } : {}) });
     });
     void this.sync.sincronizar();
   }
@@ -81,7 +74,7 @@ export class PendenciasService {
       await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
         if (!(await this.gravada(p))) return;
         await this.limparAgregado(p);
-        await tabela.delete(p.agregadoId);
+        await this.apagarLocal(p, tabela, p.agregadoId);
       });
       return;
     }
@@ -111,7 +104,7 @@ export class PendenciasService {
       if (proprio && !proprio.deleted) {
         await tabela.put(adaptador.paraLocal(p.agregadoId, proprio.version, proprio.dados));
       } else {
-        await tabela.delete(p.agregadoId);
+        await this.apagarLocal(p, tabela, p.agregadoId);
         if (p.entidade === 'cliente') await this.remapearCliente(p.agregadoId, idExistente);
       }
       await tabela.put(adaptador.paraLocal(idExistente, existente.version, existente.dados));
@@ -122,37 +115,13 @@ export class PendenciasService {
 
   /**
    * "Corrigir e reenviar" de uma proposta recusada pelo servidor (§11.5, P4b-R23), mesmo com o status otimista já
-   * adiante (ex.: enviada offline: a fila é `[E recusada, T ENVIADA, UPLOAD]`). Numa transação só:
-   * 1. relê a pendência (tem de existir e ser a recusa de dados de uma proposta);
-   * 2. confere a edição com as regras de `salvarRascunho` (`PropostasRepo.conferirCorrecao`); inválida, nada muda;
-   * 3. aplica a edição aos `dados` da mutação recusada e de todas as mutações `proposta` retidas atrás dela, como
-   *    `remapearCliente` faz com o `clienteId` (cada uma mantém o próprio status; as reescritas ganham outro
-   *    `mutationId`);
-   * 4. devolve a recusada à fila no `seq` dela (`devolverAFila`), na frente das retidas;
-   * 5. grava a proposta local corrigida, com o status otimista.
-   * UPLOAD e documentos não mudam: o PDF já gerado é o que o cliente recebeu, e o código exibido não muda.
+   * adiante (ex.: enviada offline: a fila é `[E recusada, T ENVIADA, UPLOAD]`): aplica a edição na recusada e nas
+   * mutações `proposta` retidas atrás dela e devolve a recusada ao `seq` dela, numa transação só. O núcleo é o mesmo
+   * da edição comum do rascunho com recusa e retidas (P4b-R27), por isso fica no `PropostasRepo.corrigirPendencia`,
+   * que documenta as regras (só recusa VALIDACAO de dados de rascunho, P4b-R28) e os erros.
    */
-  async corrigirProposta(pendenciaId: string, edicao: Partial<EdicaoRascunho>): Promise<void> {
-    const tabelas = [this.db.pendencias, this.db.outbox, this.db.propostas, this.db.itens, this.db.usuarios];
-    await this.db.transaction('rw', tabelas, async () => {
-      const p = await this.db.pendencias.get(pendenciaId);
-      if (!p) throw new ErroProposta('PENDENCIA_INEXISTENTE', 'proposta', 'Esta pendência já foi resolvida.');
-      if (p.entidade !== 'proposta' || p.tipo !== 'REJEITADO' || p.mutacao.op !== 'UPSERT' || !p.mutacao.dados) {
-        throw new ErroProposta('PENDENCIA_NAO_CORRIGIVEL', 'proposta', 'Só uma proposta recusada pelo servidor pode ser corrigida aqui.');
-      }
-      const local = await this.db.propostas.get(p.agregadoId);
-      if (!local) throw new ErroProposta('NAO_ENCONTRADA', 'proposta', 'Proposta não encontrada neste aparelho.');
-      const corrigida = await this.repo.conferirCorrecao(local, edicao, p.mutacao.baseVersion === null);
-      const corrigir = (d: unknown) => corrigirDadosDaProposta(p.agregadoId, d as PropostaDados, edicao);
-      const retidas = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
-      for (const m of retidas.filter((x) => x.entidade === 'proposta' && x.dados)) {
-        await this.db.outbox.update(m.seq!, { dados: corrigir(m.dados), mutationId: crypto.randomUUID(), enviando: false });
-      }
-      await this.db.pendencias.delete(p.mutationId);
-      await this.devolverAFila(p, { dados: corrigir(p.mutacao.dados) });
-      await this.db.propostas.put(corrigida);
-    });
-    void this.sync.sincronizar();
+  corrigirProposta(pendenciaId: string, edicao: Partial<EdicaoRascunho>): Promise<void> {
+    return this.repo.corrigirPendencia(pendenciaId, edicao);
   }
 
   /**
@@ -174,27 +143,11 @@ export class PendenciasService {
     for (const x of await this.db.pendencias.filter((x) => doCliente(x.mutacao)).toArray()) {
       if (x.tipo === 'REJEITADO') {
         await this.db.pendencias.delete(x.mutationId);
-        await this.devolverAFila(x, { dados: trocar(x.mutacao.dados) });
+        await this.sync.devolverAFila(x, { dados: trocar(x.mutacao.dados) });
       } else {
         await this.db.pendencias.update(x.mutationId, { mutacao: { ...x.mutacao, dados: trocar(x.mutacao.dados) } });
       }
     }
-  }
-
-  /**
-   * Devolve a mutação da pendência à fila no lugar dela — o `seq` original, na frente das que ficaram retidas atrás —,
-   * com `mudancas`, outro `mutationId` e fora de voo. Sem `seq` livre, refaz a fila do agregado: ela primeiro e as
-   * outras na mesma ordem (a ordem entre agregados não importa). Precisa de `outbox` na transação.
-   */
-  private async devolverAFila(p: Pendencia, mudancas: Partial<MutacaoLocal>): Promise<void> {
-    const m: MutacaoLocal = { ...p.mutacao, ...mudancas, mutationId: crypto.randomUUID(), enviando: false };
-    if (m.seq !== undefined && !(await this.db.outbox.get(m.seq))) {
-      await this.db.outbox.put(m);
-      return;
-    }
-    const atras = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
-    await this.db.outbox.bulkDelete(atras.map((x) => x.seq!));
-    await this.db.outbox.bulkAdd([m, ...atras].map(semSeq));
   }
 
   /**
@@ -229,9 +182,20 @@ export class PendenciasService {
   }
 
   /**
-   * Tira da fila e das pendências tudo do agregado. P4b-R14: os uploads de PDF que saem junto não têm mais como ser
-   * enviados, então os documentos locais deles ainda não enviados são apagados; os já enviados ficam (cópia do servidor).
+   * Apaga o registro local da pendência. P4b-R30: se é uma proposta, os PDFs dela saem junto, enviados ou não (têm
+   * valores, e o tombstone que os apagaria já passou pelo cursor); nada dela fica na fila depois de `limparAgregado`.
    * Precisa de `documentos` na transação.
+   */
+  private async apagarLocal(p: Pendencia, tabela: Table<RegistroLocal, string>, id: string): Promise<void> {
+    await tabela.delete(id);
+    if (p.entidade === 'proposta') await this.db.documentos.where('propostaId').equals(id).delete();
+  }
+
+  /**
+   * Tira da fila e das pendências tudo do agregado. P4b-R14: os uploads de PDF que saem junto não têm mais como ser
+   * enviados, então os documentos locais deles ainda não enviados são apagados; os já enviados ficam (cópia do servidor)
+   * enquanto a proposta local fica; quando ela também sai, `apagarLocal` leva todos (P4b-R30). Precisa de `documentos`
+   * na transação.
    */
   private async limparAgregado(p: Pendencia): Promise<void> {
     const naFila = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
@@ -255,7 +219,7 @@ export class PendenciasService {
       if (!(await this.gravada(p))) return;
       await this.limparAgregado(p);
       if (!m || m.deleted) {
-        await tabela.delete(id);
+        await this.apagarLocal(p, tabela, id);
       } else {
         await tabela.put(adaptador.paraLocal(id, m.version, m.dados));
       }

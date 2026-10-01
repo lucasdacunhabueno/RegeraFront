@@ -12,8 +12,8 @@ import { RegeraDb } from '../db/regera-db';
 import { mensagemDeErro } from '../http/erro-api';
 import { ADAPTADORES, adaptadorDe } from './adaptadores';
 import {
-  DadosUpload, Entidade, ErroMutacao, Mudanca, MutacaoLocal, Operacao, RespostaDocumento, RespostaPull, RespostaPush,
-  ResultadoMutacao, TIPO_UPLOAD_DOCUMENTO,
+  DadosUpload, Entidade, ErroMutacao, Mudanca, MutacaoLocal, Operacao, Pendencia, RespostaDocumento, RespostaPull,
+  RespostaPush, ResultadoMutacao, TIPO_UPLOAD_DOCUMENTO,
 } from './sync-models';
 
 const CHAVE_CURSOR = 'cursor';
@@ -30,6 +30,12 @@ const CODIGOS_TRANSITORIOS = new Set(['ERRO_INTERNO', 'INTEGRIDADE']);
 const MAX_TROCAS_CODIGO = 3;
 
 const ehUpload = (m: { entidade: string }) => m.entidade === TIPO_UPLOAD_DOCUMENTO;
+
+function semSeq(m: MutacaoLocal): MutacaoLocal {
+  const copia = { ...m };
+  delete copia.seq;
+  return copia;
+}
 
 const DESCARTE_UPLOAD = 'Descarte este envio para liberar a sincronização da proposta.';
 /** Por `codigo` do ProblemDetail do upload; completa "O PDF <código exibido> …". */
@@ -144,6 +150,22 @@ export class SyncService {
       separada: true,
       criadaEm: new Date().toISOString(),
     });
+  }
+
+  /**
+   * Devolve a mutação da pendência à fila no lugar dela — o `seq` original, na frente das que ficaram retidas atrás —,
+   * com `mudancas`, outro `mutationId` e fora de voo. Sem `seq` livre, refaz a fila do agregado: ela primeiro e as
+   * outras na mesma ordem (a ordem entre agregados não importa). Precisa de `outbox` na transação de quem chama.
+   */
+  async devolverAFila(p: Pendencia, mudancas: Partial<MutacaoLocal>): Promise<void> {
+    const m: MutacaoLocal = { ...p.mutacao, ...mudancas, mutationId: crypto.randomUUID(), enviando: false };
+    if (m.seq !== undefined && !(await this.db.outbox.get(m.seq))) {
+      await this.db.outbox.put(m);
+      return;
+    }
+    const atras = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
+    await this.db.outbox.bulkDelete(atras.map((x) => x.seq!));
+    await this.db.outbox.bulkAdd([m, ...atras].map(semSeq));
   }
 
   /**

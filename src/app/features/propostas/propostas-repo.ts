@@ -8,7 +8,7 @@ import { RegeraDb } from '../../core/db/regera-db';
 import type { ClientePdf, EmpresaPdf, EntradaPdf, ItemPdf } from '../../core/pdf/pdf-models';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { observarNaoSincronizados } from '../../core/sync/nao-sincronizados';
-import type { ErroMutacao } from '../../core/sync/sync-models';
+import type { ErroMutacao, Pendencia } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { formatarCep } from '../../core/util/formatos';
@@ -203,10 +203,30 @@ function aplicarEdicao(p: PropostaLocal, edicao: Partial<EdicaoRascunho>): Propo
 /**
  * P4b-R23: a mesma edição sobre os `dados` de uma mutação `proposta` da fila (a rejeitada ou uma retida atrás dela),
  * com os totais recalculados. O resto dos dados da mutação (status, motivo, atribuição, revisão) fica como estava.
- * Use depois de `PropostasRepo.conferirCorrecao`, que confere a edição.
+ * Só depois de `conferirCorrecao`, que confere a edição.
  */
-export function corrigirDadosDaProposta(id: string, dados: PropostaDados, edicao: Partial<EdicaoRascunho>): PropostaDados {
+function corrigirDadosDaProposta(id: string, dados: PropostaDados, edicao: Partial<EdicaoRascunho>): PropostaDados {
   return dadosDaProposta(comTotais(aplicarEdicao(paraPropostaLocal(id, null, dados), edicao)));
+}
+
+/**
+ * P4b-R28: só a recusa de dados (VALIDACAO, com os campos) de uma mutação de rascunho tem conserto editando campos.
+ * Outras (TRANSICAO_INVALIDA, ACESSO_NEGADO, PROPOSTA_NAO_EDITAVEL...) ou a de uma transição voltariam recusadas.
+ */
+export function pendenciaCorrigivel(p: Pendencia): boolean {
+  const dados = p.mutacao.dados as PropostaDados | null;
+  return p.entidade === 'proposta' && p.tipo === 'REJEITADO' && p.erro?.codigo === 'VALIDACAO'
+    && p.mutacao.op === 'UPSERT' && dados?.status === 'RASCUNHO';
+}
+
+/** P4b-R29: ids das linhas da mutação recusada citadas nos campos da recusa (`itens[i].…`). */
+function linhasRecusadas(p: Pendencia): Set<string> {
+  const itens = (p.mutacao.dados as PropostaDados | null)?.itens ?? [];
+  const ids = Object.keys(p.erro?.campos ?? {}).map((campo) => {
+    const i = /^itens\[(\d+)\]\./.exec(campo);
+    return i ? itens[Number(i[1])]?.id : undefined;
+  });
+  return new Set(ids.filter((id): id is string => !!id));
 }
 
 /** Um PDF da proposta, do servidor ou só do aparelho (P4b-R25), para a lista de documentos do detalhe. */
@@ -414,7 +434,7 @@ export class PropostasRepo {
     const novo = aplicarEdicao(atual, edicao);
     validacao(await this.validarEdicao(atual, novo));
     const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
-    await this.gravar(comTotais({ ...novo, version }), version, false, true);
+    await this.gravarEdicao(comTotais({ ...novo, version }), edicao, version);
   }
 
   /**
@@ -446,7 +466,8 @@ export class PropostasRepo {
       subtotalCentavos: null,
       ordem: null,
     };
-    await this.gravar(comTotais({ ...atual, itens: [...atual.itens, linha] }), atual.version, false, true);
+    const itens = [...atual.itens, linha];
+    await this.gravarEdicao(comTotais({ ...atual, itens }), { itens }, atual.version);
     return linha.id;
   }
 
@@ -727,21 +748,20 @@ export class PropostasRepo {
   }
 
   /**
-   * P4b-R23, para `PendenciasService.corrigirProposta` (dentro da transação dele, que precisa de `itens` e `usuarios`):
-   * confere a correção de uma proposta recusada pelo servidor e devolve a proposta local corrigida, com os totais e o
-   * status otimista mantido (ex.: ENVIADA). Mesmas regras de `salvarRascunho` (perfil, técnico, `validarEdicao`), mas
-   * sem exigir RASCUNHO no local: o que se corrige são os dados da mutação recusada, que é de rascunho. `criacao`: a
-   * recusada é a criação (`baseVersion` null), então para o servidor toda linha é nova e o catálogo vale para todas.
+   * "Corrigir e reenviar" (§11.5, P4b-R23; `PendenciasService.corrigirProposta` chama aqui). Numa transação só:
+   * relê a pendência, que tem de existir (`PENDENCIA_INEXISTENTE`) e ser a recusa VALIDACAO de dados de rascunho de
+   * uma proposta (`PENDENCIA_NAO_CORRIGIVEL`, P4b-R28), e corrige a fila com `corrigirNaFila`. Inválida, nada muda.
    */
-  async conferirCorrecao(atual: PropostaLocal, edicao: Partial<EdicaoRascunho>, criacao: boolean): Promise<PropostaLocal> {
-    const u = this.usuario();
-    this.exigirEdicao({ ...atual, status: 'RASCUNHO' }, u);
-    if (edicao.tecnicoId !== undefined && edicao.tecnicoId !== atual.tecnicoId) {
-      await this.conferirTecnico(atual, u, edicao.tecnicoId);
-    }
-    const novo = aplicarEdicao(atual, edicao);
-    validacao(await this.validarEdicao(criacao ? { ...atual, itens: [] } : atual, novo));
-    return comTotais({ ...novo, atualizadoEm: new Date().toISOString() });
+  async corrigirPendencia(pendenciaId: string, edicao: Partial<EdicaoRascunho>): Promise<void> {
+    await this.db.transaction('rw', this.tabelasDaCorrecao(), async () => {
+      const p = await this.db.pendencias.get(pendenciaId);
+      if (!p) throw new ErroProposta('PENDENCIA_INEXISTENTE', 'proposta', 'Esta pendência já foi resolvida.');
+      if (!pendenciaCorrigivel(p)) {
+        throw new ErroProposta('PENDENCIA_NAO_CORRIGIVEL', 'proposta', 'Só uma proposta recusada pelo servidor pode ser corrigida aqui.');
+      }
+      await this.corrigirNaFila(p, edicao);
+    });
+    void this.sync.sincronizar();
   }
 
   // --- internos ---
@@ -902,23 +922,96 @@ export class PropostasRepo {
     };
   }
 
+  /** O que a correção lê e escreve: a validação lê `itens` e `usuarios`. */
+  private tabelasDaCorrecao() {
+    return [this.db.pendencias, this.db.outbox, this.db.propostas, this.db.itens, this.db.usuarios];
+  }
+
   /**
-   * Grava o local e enfileira o UPSERT, na mesma transação. `limparRejeicao`: a edição do rascunho substitui a
-   * mutação `proposta` rejeitada (como nos outros repos); a rejeição de upload continua.
+   * Núcleo da correção (P4b-R23, R27), dentro de uma transação com `tabelasDaCorrecao`, para a pendência `p` já
+   * conferida com `pendenciaCorrigivel`:
+   * 1. confere a edição sobre a proposta local (`conferirCorrecao`);
+   * 2. aplica a edição aos `dados` da mutação recusada e de todas as mutações `proposta` retidas atrás dela, como
+   *    `remapearCliente` faz com o `clienteId` (cada uma mantém o próprio status; as reescritas ganham outro
+   *    `mutationId`);
+   * 3. devolve a recusada à fila no `seq` dela (`SyncService.devolverAFila`), na frente das retidas;
+   * 4. grava a proposta local corrigida, com o status otimista.
+   * UPLOAD e documentos não mudam: o PDF já gerado é o que o cliente recebeu, e o código exibido não muda.
    */
-  private async gravar(p: PropostaLocal, baseVersion: number | null, separada = false, limparRejeicao = false): Promise<void> {
+  private async corrigirNaFila(p: Pendencia, edicao: Partial<EdicaoRascunho>): Promise<void> {
+    const local = await this.db.propostas.get(p.agregadoId);
+    if (!local) throw new ErroProposta('NAO_ENCONTRADA', 'proposta', 'Proposta não encontrada neste aparelho.');
+    const corrigida = await this.conferirCorrecao(local, edicao, p);
+    const corrigir = (d: unknown) => corrigirDadosDaProposta(p.agregadoId, d as PropostaDados, edicao);
+    const retidas = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
+    for (const m of retidas.filter((x) => x.entidade === 'proposta' && x.dados)) {
+      await this.db.outbox.update(m.seq!, { dados: corrigir(m.dados), mutationId: crypto.randomUUID(), enviando: false });
+    }
+    await this.db.pendencias.delete(p.mutationId);
+    await this.sync.devolverAFila(p, { dados: corrigir(p.mutacao.dados) });
+    await this.db.propostas.put(corrigida);
+  }
+
+  /**
+   * Confere a correção e devolve a proposta local corrigida, com os totais e o status otimista mantido (ex.:
+   * ENVIADA). Mesmas regras de `salvarRascunho` (perfil, técnico, `validarEdicao`), mas sem exigir RASCUNHO no local: o
+   * que se corrige são os dados da mutação recusada, que é de rascunho. Linhas "novas" (catálogo conferido) como o
+   * servidor as vê: na criação recusada (`baseVersion` null), todas; senão, as que não estão na cópia local e as
+   * citadas nos campos da recusa (P4b-R29: a cópia local otimista já as tem, o servidor não).
+   */
+  private async conferirCorrecao(atual: PropostaLocal, edicao: Partial<EdicaoRascunho>, p: Pendencia): Promise<PropostaLocal> {
+    const u = this.usuario();
+    this.exigirEdicao({ ...atual, status: 'RASCUNHO' }, u);
+    if (edicao.tecnicoId !== undefined && edicao.tecnicoId !== atual.tecnicoId) {
+      await this.conferirTecnico(atual, u, edicao.tecnicoId);
+    }
+    const novo = aplicarEdicao(atual, edicao);
+    const recusadas = linhasRecusadas(p);
+    const comoNoServidor = p.mutacao.baseVersion === null ? [] : atual.itens.filter((l) => !recusadas.has(l.id));
+    validacao(await this.validarEdicao({ ...atual, itens: comoNoServidor }, novo));
+    return comTotais({ ...novo, atualizadoEm: new Date().toISOString() });
+  }
+
+  /** Grava o local e enfileira o UPSERT, na mesma transação. */
+  private async gravar(p: PropostaLocal, baseVersion: number | null, separada = false): Promise<void> {
     // P4b-R19: atualizadoEm otimista (o kanban reordena na hora); o servidor sobrescreve no retorno
     p = { ...p, atualizadoEm: new Date().toISOString() };
-    await this.db.transaction('rw', [this.db.propostas, this.db.outbox, this.db.pendencias], async () => {
+    await this.db.transaction('rw', [this.db.propostas, this.db.outbox], async () => {
       await this.db.propostas.put(p);
-      if (limparRejeicao) {
-        await this.db.pendencias
-          .where('agregadoId')
-          .equals(p.id)
-          .filter((x) => x.tipo === 'REJEITADO' && x.entidade === 'proposta')
-          .delete();
-      }
       await this.sync.registrar('proposta', p.id, 'UPSERT', dadosDaProposta(p), baseVersion, separada ? { separada: true } : {});
+    });
+    void this.sync.sincronizar();
+  }
+
+  /**
+   * A edição do rascunho (`salvarRascunho`, `adicionarItem`): `p` já conferida, `edicao` o que mudou. Com uma recusa
+   * de dados da proposta (pendência REJEITADO):
+   * - nada retido atrás dela: a edição substitui a mutação recusada (a pendência sai, como nos outros repos) e vai
+   *   como mutação nova; a rejeição de upload continua;
+   * - com mutações retidas (P4b-R27, ex.: envio offline, criação recusada e "Nova revisão"): apagar a recusa perderia
+   *   a criação, e a transição retida chegaria ao servidor como criação ENVIADA. A edição entra pelo caminho da
+   *   correção (`corrigirNaFila`: na recusada e nas retidas, que voltam a sair em ordem); se a recusa não se conserta
+   *   editando (`pendenciaCorrigivel`), recusa a edição (`RESOLVA_A_PENDENCIA`) e nada muda.
+   */
+  private async gravarEdicao(p: PropostaLocal, edicao: Partial<EdicaoRascunho>, baseVersion: number | null): Promise<void> {
+    // P4b-R19: atualizadoEm otimista
+    p = { ...p, atualizadoEm: new Date().toISOString() };
+    await this.db.transaction('rw', this.tabelasDaCorrecao(), async () => {
+      const recusas = this.db.pendencias
+        .where('agregadoId')
+        .equals(p.id)
+        .filter((x) => x.tipo === 'REJEITADO' && x.entidade === 'proposta');
+      const recusa = await recusas.first();
+      if (recusa && (await this.db.outbox.where('agregadoId').equals(p.id).count()) > 0) {
+        if (!pendenciaCorrigivel(recusa)) {
+          throw new ErroProposta('RESOLVA_A_PENDENCIA', 'proposta', 'Resolva a pendência desta proposta antes de editá-la.');
+        }
+        await this.corrigirNaFila(recusa, edicao);
+        return;
+      }
+      if (recusa) await recusas.delete();
+      await this.db.propostas.put(p);
+      await this.sync.registrar('proposta', p.id, 'UPSERT', dadosDaProposta(p), baseVersion);
     });
     void this.sync.sincronizar();
   }

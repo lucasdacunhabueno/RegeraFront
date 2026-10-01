@@ -1028,6 +1028,80 @@ describe('SyncService', () => {
       expect(await db.documentos.get(doc.id)).toMatchObject({ enviado: true, arquivoId: 'a1' });
       expect(await db.propostas.get(id)).toMatchObject({ status: 'ENVIADA', numero: 277, version: 2 });
     });
+    it('P4b-R27: envio offline, criação recusada, Nova revisão e edição normal: E\', T, UPLOAD e NR saem em ordem', async () => {
+      const repo = TestBed.inject(PropostasRepo);
+      await db.clientes.put(paraClienteLocal('c1', 1, dados('Cliente')));
+      await db.templates.put(paraTemplateLocal('t1', 1, { nome: 'Venda', tipoProposta: 'VENDA', padrao: true, ativo: true, blocos: [] }));
+      await db.itens.bulkPut([paraItemLocal('i1', 1, item('PNL-1')), paraItemLocal('i2', 1, item('PNL-2'))]);
+
+      online.set(false);
+      const id = await repo.criar('VENDA', 'c1');
+      await repo.adicionarItem(id, (await db.itens.get('i1'))!);
+      await repo.enviar(id, async () => new Blob([PDF], { type: 'application/pdf' }));
+      const [doc] = await db.documentos.toArray();
+      const seqE = (await fila())[0].seq;
+      await db.itens.put(paraItemLocal('i1', 2, { ...item('PNL-1'), ativo: false }));
+
+      // a criação volta recusada (item inativado); T e UPLOAD ficam retidos
+      online.set(true);
+      const s1 = sync.sincronizar();
+      const pushE = await push();
+      pushE.flush({ resultados: [{
+        mutationId: pushE.request.body.mutacoes[0].mutationId, status: 'REJEITADO',
+        erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { 'itens[0].itemCatalogoId': 'Item do catálogo inativo ou não encontrado.' } },
+      }] });
+      await pullVazio();
+      await s1;
+
+      // sem rede de novo: "Nova revisão" e a edição comum do rascunho, trocando a linha
+      online.set(false);
+      await repo.transicionar(id, 'RASCUNHO');
+      const local = (await db.propostas.get(id))!;
+      expect(local).toMatchObject({ status: 'RASCUNHO', revisao: 2 });
+      const nova = { ...local.itens[0], id: 'linha-nova', itemCatalogoId: 'i2', codigo: 'PNL-2', nome: 'PNL-2' };
+      await repo.salvarRascunho(id, { itens: [nova] });
+
+      // a recusa não foi apagada às cegas: a criação voltou ao lugar dela, com a linha nova, e nada foi perdido
+      expect(await db.pendencias.count()).toBe(0);
+      const m = await fila();
+      expect(m.map((x) => [x.op, (x.dados as PropostaDados | null)?.status ?? null, (x.dados as PropostaDados | null)?.revisao ?? null]))
+        .toEqual([['UPSERT', 'RASCUNHO', 1], ['UPSERT', 'ENVIADA', 1], ['UPLOAD', null, null], ['UPSERT', 'RASCUNHO', 2]]);
+      expect(m[0].seq).toBe(seqE);
+      for (const x of [m[0], m[1], m[3]]) {
+        expect((x.dados as PropostaDados).itens.map((l) => l.itemCatalogoId)).toEqual(['i2']);
+      }
+
+      online.set(true);
+      const s2 = sync.sincronizar();
+      const pushE2 = await push();
+      expect(pushE2.request.body.mutacoes[0]).toMatchObject({ id, baseVersion: null, dados: { status: 'RASCUNHO', itens: [{ id: 'linha-nova' }] } });
+      ok(pushE2, 0, numerada('RASCUNHO', { codigoProvisorio: local.codigoProvisorio }));
+      const pushT = await push();
+      expect(pushT.request.body.mutacoes[0]).toMatchObject({ baseVersion: 0, dados: { status: 'ENVIADA', itens: [{ id: 'linha-nova' }] } });
+      ok(pushT, 1, numerada('ENVIADA', { codigoProvisorio: local.codigoProvisorio }));
+      const up = await vi.waitFor(() => http.expectOne(`/api/propostas/${id}/documentos`));
+      expect(JSON.parse(await ((up.request.body as FormData).get('metadados') as Blob).text()))
+        .toMatchObject({ id: doc.id, codigoExibido: doc.codigoExibido, revisao: 1 });
+      up.flush({ documento: { ...docServidor, id: doc.id, codigoExibido: doc.codigoExibido }, versaoProposta: 2 },
+        { status: 201, statusText: 'Created' });
+      const pushNR = await push();
+      expect(pushNR.request.body.mutacoes[0]).toMatchObject({
+        baseVersion: 2, dados: { status: 'RASCUNHO', revisao: 2, itens: [{ id: 'linha-nova', itemCatalogoId: 'i2' }] },
+      });
+      const linhaServidor = { id: 'linha-nova', itemCatalogoId: 'i2', codigo: 'PNL-2', nome: 'PNL-2', quantidade: 1, precoUnitario: 1 };
+      ok(pushNR, 3, numerada('RASCUNHO', { codigoProvisorio: local.codigoProvisorio, revisao: 2, itens: [linhaServidor] }));
+      await pullVazio();
+      await s2;
+      await sync.aguardarOciosa();
+
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.documentos.get(doc.id)).toMatchObject({ enviado: true, arquivoId: 'a1' });
+      expect(await db.propostas.get(id)).toMatchObject({
+        status: 'RASCUNHO', revisao: 2, numero: 277, version: 3, itens: [{ id: 'linha-nova', itemCatalogoId: 'i2' }],
+      });
+    });
+
     it('upload cujo PDF não está mais no aparelho vira pendência sem chamar o servidor', async () => {
       await db.documentos.put(docLocal({ bytes: null }));
       await sync.registrarUpload('p1', 'd1');
