@@ -418,6 +418,21 @@ export class EstadoWizard {
     return {};
   }
 
+  /**
+   * A edição de vários passos numa escrita só (o "Salvar e reenviar" da correção, que grava no fim); null se algum tem
+   * erro. A de cada passo (`edicaoDoPasso`), juntas em ordem: os itens e o template que a troca de tipo do passo 1
+   * leva dão lugar aos dos passos 2 e 3 quando eles também mudaram (a tela já os mostra no tipo novo).
+   */
+  edicaoDosPassos(passos: readonly Passo[], atual: PropostaLocal | undefined): EdicaoWizard | null {
+    const edicao: EdicaoWizard = {};
+    for (const n of passos) {
+      const doPasso = this.edicaoDoPasso(n, atual);
+      if (!doPasso) return null;
+      Object.assign(edicao, doPasso);
+    }
+    return edicao;
+  }
+
   /** Guarda a recusa do repositório por campo; devolve o passo do primeiro campo (null: erro sem campo). */
   registrarErro(e: unknown): Passo | null {
     if (!(e instanceof ErroProposta) || !e.campos) {

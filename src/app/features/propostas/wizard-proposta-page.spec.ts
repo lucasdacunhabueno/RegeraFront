@@ -9,7 +9,8 @@ import { ConectividadeService } from '../../core/conectividade/conectividade-ser
 import { alteracoesGuard } from '../../core/navegacao/alteracoes-guard';
 import type { EntradaPdf } from '../../core/pdf/pdf-models';
 import { PdfService } from '../../core/pdf/pdf-service';
-import type { UsuarioResumo } from '../../core/sync/sync-models';
+import { PendenciasService } from '../../core/sync/pendencias-service';
+import type { Pendencia, UsuarioResumo } from '../../core/sync/sync-models';
 import { Toasts } from '../../shared/ui/toasts';
 import { CatalogoRepo } from '../catalogo/catalogo-repo';
 import { ItemCatalogoDados, ItemLocal, paraItemLocal } from '../catalogo/item-models';
@@ -91,8 +92,23 @@ function repoFalso(iniciais: PropostaLocal[]) {
   };
   const emitir = (id: string) => queueMicrotask(() => viva(id).next(store.has(id) ? structuredClone(store.get(id)) : undefined));
   const documentos: { propostaId: string; codigoExibido: string }[] = [];
+  /** P4c-R4: a recusa corrigível de cada proposta (`recusaCorrigivel`). */
+  const recusas = new Map<string, Pendencia>();
   return {
     store,
+    recusas,
+    recusaCorrigivel: vi.fn(async (id: string) => recusas.get(id)),
+    /** Como `corrigirPendencia`: a edição entra na cópia local (o status otimista fica) e a recusa sai. */
+    corrigir(pendenciaId: string, edicao: Partial<EdicaoRascunho>) {
+      const [id] = [...recusas].find(([, x]) => x.mutationId === pendenciaId) ?? [];
+      if (!id) throw new ErroProposta('PENDENCIA_INEXISTENTE', 'proposta', 'Esta pendência já foi resolvida.');
+      recusas.delete(id);
+      const p = ler(id);
+      const { itens, ...resto } = edicao;
+      Object.assign(p, resto);
+      if (itens) p.itens = itens.map((l, i) => ({ ...l, ordem: i, subtotalCentavos: null }));
+      emitir(id);
+    },
     /** Edição que chega pelo pull (outro aparelho): muda o gravado, sobe a versão e reemite. */
     foraDoAparelho(id: string, mudar: (p: PropostaLocal) => void, opcoes: { emitir?: boolean; versao?: boolean } = {}) {
       const p = ler(id);
@@ -152,6 +168,10 @@ function repoFalso(iniciais: PropostaLocal[]) {
 
 interface Opcoes {
   usuario?: UsuarioSessao;
+  /** `data.modo` da rota (P4c-R4); padrão `rascunho`. */
+  modo?: string;
+  /** A recusa corrigível da proposta (modo `corrigir`). */
+  recusa?: Pendencia;
   id?: string;
   passo?: string;
   tipo?: string;
@@ -162,10 +182,15 @@ interface Opcoes {
 
 async function montar(o: Opcoes = {}) {
   const repo = repoFalso(o.propostas ?? [proposta()]);
+  if (o.recusa) repo.recusas.set(o.recusa.agregadoId, o.recusa);
+  const pendencias = {
+    corrigirProposta: vi.fn(async (pendenciaId: string, edicao: Partial<EdicaoRascunho>) => repo.corrigir(pendenciaId, edicao)),
+  };
   const blob = new Blob(['%PDF'], { type: 'application/pdf' });
   const pdf = { gerarBlob: vi.fn().mockResolvedValue(blob), logoDataUrl: vi.fn().mockResolvedValue(null) };
   TestBed.configureTestingModule({
     providers: [
+      { provide: PendenciasService, useValue: pendencias },
       provideRouter([]),
       { provide: AuthService, useValue: { usuario: signal(o.usuario ?? COMERCIAL) } },
       { provide: PropostasRepo, useValue: repo },
@@ -181,12 +206,12 @@ async function montar(o: Opcoes = {}) {
   const toast = vi.spyOn(TestBed.inject(Toasts), 'mostrar');
   const toastErro = vi.spyOn(TestBed.inject(Toasts), 'erro');
   const fixture = TestBed.createComponent(WizardPropostaPage);
-  fixture.componentRef.setInput('modo', 'rascunho');
+  fixture.componentRef.setInput('modo', o.modo ?? 'rascunho');
   for (const k of ['id', 'passo', 'tipo', 'clienteId'] as const) if (o[k] !== undefined) fixture.componentRef.setInput(k, o[k]);
   fixture.detectChanges();
   const el = fixture.nativeElement as HTMLElement;
   await ate(fixture, () => expect(el.querySelector('#titulo-passo')).not.toBeNull());
-  return { fixture, el, repo, pdf, blob, navegar, toast, toastErro, pagina: fixture.componentInstance };
+  return { fixture, el, repo, pdf, blob, navegar, toast, toastErro, pendencias, pagina: fixture.componentInstance };
 }
 
 async function ate(fixture: ComponentFixture<unknown>, verificar: () => void) {
@@ -1103,6 +1128,111 @@ describe('WizardPropostaPage', () => {
     });
   });
 
+  describe('correção (/propostas/:id/corrigir, P4c-R4)', () => {
+    /** A criação recusada pelo servidor (VALIDACAO), com a proposta já ENVIADA no aparelho (envio offline). */
+    const recusa = (campos: Record<string, string>): Pendencia => ({
+      mutationId: 'e1', entidade: 'proposta', agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '',
+      erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos },
+      mutacao: { seq: 5, mutationId: 'e1', entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: null, dados: null, criadaEm: '' },
+    });
+    const RECUSA = recusa({ 'itens[0].quantidade': 'A quantidade vai de 0,001 a 999.999,999.', prazoExecucao: 'Máximo de 200 caracteres.' });
+    const enviada = () => proposta({ status: 'ENVIADA', prazoExecucao: 'Em breve' });
+    const corrigir = (o: Opcoes = {}) => montar({ id: 'p1', modo: 'corrigir', propostas: [enviada()], recusa: RECUSA, ...o });
+
+    it('passos 1–3 e "Salvar e reenviar", com o status ENVIADA; abre no passo do 1º campo recusado, destacado e com o foco', async () => {
+      const { el } = await corrigir();
+      expect(el.querySelector('h1')?.textContent).toContain('Corrigir proposta');
+      expect(el.querySelectorAll('nav ol li').length).toBe(3);
+      expect(el.textContent).toContain('Passo 2 de 3: Itens');
+      expect(titulo(el)).toBe('Itens');
+      const qtd = campoDaLinha(el, 'l1', 'quantidade')!;
+      expect(qtd.getAttribute('aria-invalid')).toBe('true');
+      expect(el.textContent).toContain('A quantidade vai de 0,001 a 999.999,999.');
+      expect(el.querySelector('[data-testid=salvar-rascunho]')?.textContent?.trim()).toBe('Salvar e reenviar');
+      expect(el.querySelector('[data-testid=enviar]')).toBeNull();
+      await vi.waitFor(() => expect(document.activeElement).toBe(qtd));
+    });
+
+    it('Continuar só valida e avança; "Salvar e reenviar" grava tudo numa correção só (corrigirProposta) e vai ao detalhe', async () => {
+      const { fixture, el, repo, pendencias, navegar, toast, pagina } = await corrigir();
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '2');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Condições'));
+      expect(el.querySelector('#prazo-execucao')!.getAttribute('aria-invalid')).toBe('true');
+      expect(el.textContent).toContain('Máximo de 200 caracteres.');
+      expect(pendencias.corrigirProposta).not.toHaveBeenCalled();
+      expect(repo.salvarRascunho).not.toHaveBeenCalled();
+      expect(pagina.temAlteracoes()).toBe(true);
+      // o último passo é o 3: sem Continuar, só o "Salvar e reenviar"
+      expect(el.querySelector('[data-testid=continuar]')).toBeNull();
+
+      digitar(fixture, el.querySelector<HTMLInputElement>('#prazo-execucao')!, '10 dias');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      expect(pendencias.corrigirProposta).toHaveBeenCalledTimes(1);
+      const [pendenciaId, edicao] = pendencias.corrigirProposta.mock.calls[0];
+      expect(pendenciaId).toBe('e1');
+      expect(edicao.itens!.map((l) => [l.id, l.quantidadeMilesimos])).toEqual([['l1', 2000]]);
+      expect(edicao.prazoExecucao).toBe('10 dias');
+      // o passo 1 não mudou: não vai
+      expect(edicao).not.toHaveProperty('tipo');
+      expect(repo.salvarRascunho).not.toHaveBeenCalled();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(toast).toHaveBeenCalledWith('Correção gravada. A proposta volta a sincronizar.');
+      expect(pagina.temAlteracoes()).toBe(false);
+    });
+
+    it('Adicionar não grava na hora: a linha nova aparece e vai junto na correção', async () => {
+      const { fixture, el, repo, pendencias } = await corrigir();
+      digitar(fixture, el.querySelector<HTMLInputElement>('#busca-catalogo')!, 'ger');
+      el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!.click();
+      await ate(fixture, () => expect(el.querySelectorAll('li[data-linha-id]').length).toBe(2));
+      expect(repo.adicionarItem).not.toHaveBeenCalled();
+      expect(el.querySelector('[role=status]')?.textContent).toContain('Gerador adicionado.');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(pendencias.corrigirProposta).toHaveBeenCalled());
+      const [, edicao] = pendencias.corrigirProposta.mock.calls[0];
+      expect(edicao.itens!.map((l) => [l.itemCatalogoId, l.precoUnitarioCentavos, l.quantidadeMilesimos])).toEqual([
+        ['i1', 123456, 1000], ['i2', 500000, 1000],
+      ]);
+    });
+
+    it('a correção recusada (VALIDACAO) destaca o campo, vai ao passo dele e não sai', async () => {
+      const { fixture, el, pendencias, navegar } = await corrigir();
+      pendencias.corrigirProposta.mockRejectedValueOnce(
+        new ErroProposta('VALIDACAO', 'validadeAte', 'Data inválida.', { validadeAte: 'Data inválida.' }),
+      );
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await ate(fixture, () => expect(el.querySelector('#validade')?.getAttribute('aria-invalid')).toBe('true'));
+      expect(titulo(el)).toBe('Condições');
+      expect(navegar).not.toHaveBeenCalledWith(['/propostas', 'p1']);
+    });
+
+    it('o ADMIN troca o responsável: a correção primeiro, depois atribuir', async () => {
+      const { fixture, el, repo, pendencias } = await corrigir({ usuario: ADMIN, passo: '3' });
+      escolher(fixture, el.querySelector<HTMLSelectElement>('#responsavel')!, 'u-com2');
+      el.querySelector<HTMLButtonElement>('[data-testid=salvar-rascunho]')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledWith('p1', { responsavelId: 'u-com2' }));
+      expect(pendencias.corrigirProposta.mock.calls[0][1]).not.toHaveProperty('responsavelId');
+      expect(pendencias.corrigirProposta.mock.invocationCallOrder[0]).toBeLessThan(repo.atribuir.mock.invocationCallOrder[0]);
+    });
+
+    it('"Cadastrar cliente" volta para a correção (não para o editar), no passo 1', async () => {
+      const { el, navegar } = await corrigir({ passo: '1' });
+      el.querySelector<HTMLButtonElement>('[data-testid=cadastrar-cliente]')!.click();
+      expect(navegar).toHaveBeenCalledWith(['/clientes/novo'], {
+        queryParams: { voltar: '/propostas/p1/corrigir?passo=1&tipo=VENDA&clienteId=c1' },
+      });
+    });
+
+    it('sem recusa corrigível (já reenviada, ou outra pendência): avisa e volta ao detalhe', async () => {
+      TestBed.resetTestingModule();
+      const { navegar, toastErro } = await montarSemEsperar({ id: 'p1', modo: 'corrigir', propostas: [enviada()] });
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1'], { replaceUrl: true }));
+      expect(toastErro).toHaveBeenCalledWith('Esta proposta não tem correção pendente.');
+    });
+  });
+
   describe('detalhes de acessibilidade e exibição', () => {
     it('os totais correntes não são regiões aria-live (M-6)', async () => {
       const passo2 = await montar({ id: 'p1', passo: '2' });
@@ -1169,8 +1299,10 @@ describe('WizardPropostaPage', () => {
 /** Monta sem esperar o passo aparecer (para os casos em que a tela redireciona). */
 async function montarSemEsperar(o: Opcoes) {
   const repo = repoFalso(o.propostas ?? [proposta()]);
+  if (o.recusa) repo.recusas.set(o.recusa.agregadoId, o.recusa);
   TestBed.configureTestingModule({
     providers: [
+      { provide: PendenciasService, useValue: { corrigirProposta: vi.fn() } },
       provideRouter([]),
       { provide: AuthService, useValue: { usuario: signal(o.usuario ?? COMERCIAL) } },
       { provide: PropostasRepo, useValue: repo },
@@ -1184,6 +1316,7 @@ async function montarSemEsperar(o: Opcoes) {
   const navegar = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
   const toastErro = vi.spyOn(TestBed.inject(Toasts), 'erro');
   const fixture = TestBed.createComponent(WizardPropostaPage);
+  if (o.modo) fixture.componentRef.setInput('modo', o.modo);
   if (o.id) fixture.componentRef.setInput('id', o.id);
   fixture.detectChanges();
   return { fixture, repo, navegar, toastErro };

@@ -17,6 +17,7 @@ import { firstValueFrom, Subscription } from 'rxjs';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { avisarAoSairDaPagina, ComAlteracoes } from '../../core/navegacao/alteracoes-guard';
 import { PdfService } from '../../core/pdf/pdf-service';
+import { PendenciasService } from '../../core/sync/pendencias-service';
 import { Toasts } from '../../shared/ui/toasts';
 import type { ItemLocal } from '../catalogo/item-models';
 import { TIPOS_PROPOSTA, TipoProposta } from '../templates/template-models';
@@ -29,25 +30,40 @@ import { PassoItens } from './passo-itens';
 import { PassoRevisao } from './passo-revisao';
 import { PdfPronto } from './pdf-pronto';
 import { codigoExibido, ItemPropostaLocal, podeEditar, PropostaLocal } from './proposta-models';
-import { ErroProposta, PropostasRepo } from './propostas-repo';
+import { EdicaoRascunho, ErroProposta, linhaDoCatalogo, PropostasRepo } from './propostas-repo';
 import { EdicaoWizard, EstadoWizard } from './wizard-estado';
 
 /**
  * Como o wizard grava (P4c-R4): a rota escolhe o modo por `data.modo`. O `rascunho` (`/propostas/nova` e
- * `/propostas/:id/editar`) tem os 4 passos e grava pelo `PropostasRepo`; a Task 4 acrescenta a `correcao`
- * (`/propostas/:id/corrigir`, passos 1–3, gravando por `PendenciasService.corrigirProposta`).
+ * `/propostas/:id/editar`) tem os 4 passos e grava cada passo pelo `PropostasRepo`; o `corrigir`
+ * (`/propostas/:id/corrigir`) tem os passos 1–3 e grava tudo de uma vez por `PendenciasService.corrigirProposta`.
  */
 export interface ModoWizard {
   /** Os passos visíveis, em ordem. */
   passos: readonly Passo[];
-  /** O texto do botão que grava e sai. */
+  /** O título da página com a proposta aberta. */
+  titulo: string;
+  /** O fim da rota da proposta neste modo (`/propostas/:id/<segmento>`): a volta do "Cadastrar cliente". */
+  segmento: string;
+  /** O texto do botão que grava e sai, e o toast depois dele. */
   rotuloSalvar: string;
-  /** null = a proposta pode ser aberta neste modo; senão, o toast (e a tela volta para o detalhe). */
-  recusar(p: PropostaLocal): string | null;
+  mensagemSalvo: string;
   /**
-   * Grava a edição de um passo e devolve a proposta como ficou no aparelho. `versao.base`: a versão que a tela
-   * representa (P4c-R7), a base para o servidor detectar a edição de outro aparelho; `versao.manter`: depois de
-   * "Manter as minhas", toda escrita leva essa base (P4c-R9), inclusive a da atribuição.
+   * Grava no fim: "Continuar" só valida e avança, e o botão de salvar junta os passos alterados numa escrita só
+   * (`salvar` uma vez). Na correção, a primeira escrita consome a pendência: uma segunda não teria o que corrigir.
+   */
+  gravaNoFim?: boolean;
+  /**
+   * null = a proposta pode ser aberta neste modo; senão, o toast (e a tela volta para o detalhe). Conferido ao abrir e
+   * a cada mudança dela no aparelho (a observação ao vivo, P4c-R7).
+   */
+  recusar(p: PropostaLocal, injector: Injector): string | null | Promise<string | null>;
+  /** O erro que a tela já abre mostrando nos campos (a recusa do servidor, na correção); null = nenhum. */
+  erroInicial?(injector: Injector, p: PropostaLocal): Promise<ErroProposta | null>;
+  /**
+   * Grava a edição e devolve a proposta como ficou no aparelho. `versao.base`: a versão que a tela representa
+   * (P4c-R7), a base para o servidor detectar a edição de outro aparelho; `versao.manter`: depois de "Manter as
+   * minhas", toda escrita leva essa base (P4c-R9), inclusive a da atribuição.
    */
   salvar(injector: Injector, id: string, edicao: EdicaoWizard, versao: { base: number | null; manter: boolean }): Promise<PropostaLocal>;
   /** Acrescenta o item do catálogo e devolve a linha nova e a proposta como ficou. */
@@ -60,17 +76,25 @@ async function recarregar(repo: PropostasRepo, id: string): Promise<PropostaLoca
   return p;
 }
 
+/** O responsável não é campo do rascunho: só o ADMIN troca, por `atribuir` (P4b-R3). */
+function separarResponsavel(edicao: EdicaoWizard): { responsavelId?: string; resto: Partial<EdicaoRascunho> } {
+  const { responsavelId, ...resto } = edicao;
+  return { responsavelId, resto };
+}
+
 export const MODOS_WIZARD: Readonly<Record<string, ModoWizard>> = {
   rascunho: {
     passos: [1, 2, 3, 4],
+    titulo: 'Editar proposta',
+    segmento: 'editar',
     rotuloSalvar: 'Salvar rascunho',
+    mensagemSalvo: 'Rascunho salvo.',
     recusar: (p) => (podeEditar(p.status) ? null : 'Só rascunhos podem ser editados.'),
     async salvar(injector, id, edicao, versao) {
       const repo = injector.get(PropostasRepo);
-      const { responsavelId, ...resto } = edicao;
+      const { responsavelId, resto } = separarResponsavel(edicao);
       if (Object.keys(resto).length > 0) await repo.salvarRascunho(id, resto, versao.base);
-      // o responsável não é campo do rascunho: só o ADMIN troca, por `atribuir` (P4b-R3); fora do "Manter", com a
-      // versão da cópia local (o ack da edição acima pode ter chegado no meio)
+      // fora do "Manter", o responsável vai com a versão da cópia local (o ack da edição acima pode ter chegado no meio)
       if (responsavelId !== undefined) {
         if (versao.manter) await repo.atribuir(id, { responsavelId }, versao.base);
         else await repo.atribuir(id, { responsavelId });
@@ -83,6 +107,44 @@ export const MODOS_WIZARD: Readonly<Record<string, ModoWizard>> = {
       const proposta = await recarregar(repo, id);
       const linha = proposta.itens.find((l) => l.id === linhaId);
       if (!linha) throw new ErroProposta('NAO_ENCONTRADA', 'itens', 'O item não foi incluído. Tente de novo.');
+      return { linha, proposta };
+    },
+  },
+  /**
+   * "Corrigir e reenviar" (§11.5, P4b-R23): a recusa VALIDACAO da criação ou da edição do rascunho, mesmo com a
+   * proposta já ENVIADA no aparelho (envio offline). Abre com os campos recusados destacados; grava no fim, numa
+   * correção só (`corrigirProposta` aplica a edição na mutação recusada e nas retidas atrás dela e devolve tudo à
+   * fila, em ordem). Sem `versaoCarregada`: a mutação corrigida mantém a base dela (e a cópia local de uma proposta
+   * com pendência não recebe o pull, então não há edição de outro aparelho a conferir).
+   */
+  corrigir: {
+    passos: [1, 2, 3],
+    titulo: 'Corrigir proposta',
+    segmento: 'corrigir',
+    rotuloSalvar: 'Salvar e reenviar',
+    mensagemSalvo: 'Correção gravada. A proposta volta a sincronizar.',
+    gravaNoFim: true,
+    async recusar(p, injector) {
+      return (await injector.get(PropostasRepo).recusaCorrigivel(p.id)) ? null : 'Esta proposta não tem correção pendente.';
+    },
+    async erroInicial(injector, p) {
+      const recusa = await injector.get(PropostasRepo).recusaCorrigivel(p.id);
+      return recusa?.erro ? ErroProposta.de(recusa.erro) : null;
+    },
+    async salvar(injector, id, edicao) {
+      const repo = injector.get(PropostasRepo);
+      const recusa = await repo.recusaCorrigivel(id);
+      if (!recusa) throw new ErroProposta('PENDENCIA_INEXISTENTE', 'proposta', 'Esta pendência já foi resolvida.');
+      const { responsavelId, resto } = separarResponsavel(edicao);
+      await injector.get(PendenciasService).corrigirProposta(recusa.mutationId, resto);
+      // a troca do responsável é outra mutação, atrás das que voltaram à fila
+      if (responsavelId !== undefined) await repo.atribuir(id, { responsavelId });
+      return recarregar(repo, id);
+    },
+    /** Sem gravar: a linha só existe na tela até o "Salvar e reenviar" (gravar agora consumiria a pendência). */
+    async adicionarItem(injector, id, item) {
+      const proposta = await recarregar(injector.get(PropostasRepo), id);
+      const linha = linhaDoCatalogo(proposta.tipo, proposta.itens.length, item);
       return { linha, proposta };
     },
   },
@@ -110,7 +172,7 @@ const ENVIADA_SEM_NUMERO = 'Proposta enviada. O número chega quando sincronizar
       {{ e.id() ? '← Proposta' : '← Propostas' }}
     </a>
     <div class="mb-4 mt-2 flex flex-wrap items-baseline gap-x-3">
-      <h1 class="text-xl font-semibold">{{ e.id() ? 'Editar proposta' : 'Nova proposta' }}</h1>
+      <h1 class="text-xl font-semibold">{{ e.id() ? config().titulo : 'Nova proposta' }}</h1>
       @if (e.codigo(); as codigo) { <span class="font-mono text-sm text-slate-500">{{ codigo }}</span> }
     </div>
 
@@ -273,6 +335,10 @@ export class WizardPropostaPage implements ComAlteracoes {
       await this.criar(false);
       return;
     }
+    if (this.config().gravaNoFim) {
+      this.ir(this.passos()[this.indice() + 1]);
+      return;
+    }
     const trocaAntes = this.e.trocaDeTipo()?.seq;
     if (!(await this.gravar(n))) return;
     const troca = this.e.trocaDeTipo();
@@ -295,16 +361,19 @@ export class WizardPropostaPage implements ComAlteracoes {
     if (!this.ocupado() && this.passos().includes(n)) this.ir(n);
   }
 
-  /** "Salvar rascunho": grava os passos alterados (sem exigir o que só o avanço exige) e vai ao detalhe. */
+  /**
+   * "Salvar rascunho" ("Salvar e reenviar" na correção): grava os passos alterados (sem exigir o que só o avanço
+   * exige) e vai ao detalhe.
+   */
   protected async salvarRascunho(): Promise<void> {
     if (this.ocupado()) return;
     if (!this.e.id()) {
       if (this.validar(1, true)) await this.criar(true);
       return;
     }
-    if (!(await this.gravarAlterados())) return;
+    if (!(await (this.config().gravaNoFim ? this.gravarJuntos() : this.gravarAlterados()))) return;
     this.liberado.set(true);
-    this.toasts.mostrar('Rascunho salvo.');
+    this.toasts.mostrar(this.config().mensagemSalvo);
     await this.router.navigate(['/propostas', this.e.id()]);
   }
 
@@ -313,7 +382,7 @@ export class WizardPropostaPage implements ComAlteracoes {
     const params = new URLSearchParams({ ...(id ? { passo: '1' } : {}), tipo: this.e.tipo() });
     const cliente = this.e.clienteId();
     if (cliente) params.set('clienteId', cliente);
-    const voltar = `${id ? `/propostas/${id}/editar` : '/propostas/nova'}?${params}`;
+    const voltar = `${id ? `/propostas/${id}/${this.config().segmento}` : '/propostas/nova'}?${params}`;
     this.saindoParaCliente = true;
     void this.router.navigate(['/clientes/novo'], { queryParams: { voltar } }).finally(() => (this.saindoParaCliente = false));
   }
@@ -340,7 +409,8 @@ export class WizardPropostaPage implements ComAlteracoes {
       return;
     }
     const passos = this.e.passosEmColisao();
-    for (const n of passos) {
+    // gravando no fim, as alterações daqui vão no salvar (que leva a base de sempre); aqui só a escolha
+    for (const n of this.config().gravaNoFim ? [] : passos) {
       if (!(await this.gravar(n, true))) return;
     }
     this.e.confirmarManter(passos);
@@ -460,25 +530,37 @@ export class WizardPropostaPage implements ComAlteracoes {
     // o id mudou durante a leitura: a carga do id novo é que preenche a tela
     if (this.id() !== id) return;
     if (await this.recusou(id, p)) return;
+    const erroInicial = (await this.config().erroInicial?.(this.injector, p!)) ?? null;
+    if (this.id() !== id) return;
     this.e.carregar(p!);
     // a volta do "Cadastrar cliente" traz o passo 1 que ainda não foi gravado
     const tipo = tipoDaUrl(this.tipo());
     if (tipo) this.e.tipo.set(tipo);
     if (this.clienteId()) this.e.clienteId.set(this.clienteId()!);
+    // a recusa do servidor (correção): os campos destacados, e a tela abre no passo do primeiro
+    const passoDoErro = erroInicial ? this.e.registrarErro(erroInicial) : null;
     const pedido = Number(this.passo()) as Passo;
-    const passo = this.passos().includes(pedido) ? pedido : this.passos()[0];
+    const passo = this.passos().includes(pedido) ? pedido
+      : passoDoErro !== null && this.passos().includes(passoDoErro) ? passoDoErro
+      : this.passos()[0];
     this.atual.set(passo);
     this.preparar(passo);
     this.carregando.set(false);
     // aberto num passo (a passagem do /nova, o kanban): o leitor de tela sabe onde está
-    if (this.passo() !== undefined) this.anunciarPasso(passo, true);
+    if (erroInicial) {
+      this.anuncio.set(`O servidor recusou a proposta. Corrija os campos destacados. Passo ${this.passos().indexOf(passo) + 1} de ${this.passos().length}: ${ROTULO_PASSO[passo]}.`);
+      this.focarPrimeiroErro();
+    } else if (this.passo() !== undefined) {
+      this.anunciarPasso(passo, true);
+    }
     if (veioDoCadastro) this.limparParametrosDoCadastro();
     this.observar(id);
   }
 
   /** Sem a proposta, ou num status que o modo não edita: avisa e sai. true = saiu. */
   private async recusou(id: string, p: PropostaLocal | undefined): Promise<boolean> {
-    const recusa = p ? this.config().recusar(p) : 'Proposta não encontrada neste aparelho.';
+    const recusa = p ? await this.config().recusar(p, this.injector) : 'Proposta não encontrada neste aparelho.';
+    if (this.liberado()) return true;
     if (!recusa) return false;
     this.liberado.set(true);
     this.toasts.erro(recusa);
@@ -499,11 +581,9 @@ export class WizardPropostaPage implements ComAlteracoes {
   }
 
   private async aoMudarNaBase(id: string, p: PropostaLocal | undefined): Promise<void> {
-    if (!p || this.config().recusar(p)) {
-      // excluída, enviada ou cancelada em outro lugar: nada mais a editar aqui
-      await this.recusou(id, p);
-      return;
-    }
+    // excluída, enviada ou cancelada em outro lugar (ou a correção já feita): nada mais a editar aqui
+    // (sem a proposta, `recusou` sempre sai)
+    if ((await this.recusou(id, p)) || !p) return;
     const tinhaColisao = this.e.colisao().size > 0;
     this.e.reconciliar(p);
     if (!tinhaColisao && this.e.colisao().size > 0) this.focar('#aviso-colisao');
@@ -592,6 +672,40 @@ export class WizardPropostaPage implements ComAlteracoes {
     }
   }
 
+  /**
+   * Gravando no fim (`gravaNoFim`, a correção): os passos com alteração numa edição só (`edicaoDosPassos`) e um
+   * `salvar`. Valida cada um antes (no primeiro com erro, vai até ele e para) e, como `gravar`, relê e reconcilia antes.
+   */
+  private async gravarJuntos(): Promise<boolean> {
+    const id = this.e.id();
+    if (!id) return false;
+    const alterados = this.passos().filter((n) => this.e.sujo(n));
+    for (const n of alterados) if (!this.validar(n, false)) return false;
+    this.salvando.set(true);
+    this.gravando++;
+    try {
+      const atual = await this.repo.buscar(id);
+      if (atual) this.e.reconciliar(atual);
+      if (this.e.colisao().size > 0) {
+        this.focar('#aviso-colisao');
+        return false;
+      }
+      const edicao = this.e.edicaoDosPassos(this.passos().filter((n) => this.e.sujo(n)), atual);
+      if (!edicao) return false;
+      this.e.errosServidor.set({});
+      await this.config().salvar(this.injector, id, edicao, { base: this.e.versaoBase(), manter: this.e.mantendo() });
+      // gravado: a observação não confere mais nada (a recusa saiu, e a tela vai embora)
+      this.liberado.set(true);
+      return true;
+    } catch (err) {
+      this.falhou(err);
+      return false;
+    } finally {
+      this.salvando.set(false);
+      this.fimDaGravacao(id);
+    }
+  }
+
   /** Grava, em ordem, os passos com alteração; no primeiro com erro, vai até ele e para. */
   private async gravarAlterados(): Promise<boolean> {
     for (const n of this.passos()) {
@@ -634,11 +748,16 @@ export class WizardPropostaPage implements ComAlteracoes {
     if (focarTitulo) this.focar('#titulo-passo');
   }
 
-  /** Ao chegar nas condições sem template: o padrão do tipo já vem escolhido (o usuário vê e grava no Continuar). */
+  /**
+   * Ao chegar nas condições sem template: o padrão do tipo já vem escolhido (o usuário vê e grava no Continuar).
+   * Gravando no fim, o tipo pode ter mudado no passo 1 sem gravar: o template de outro tipo dá lugar ao padrão do novo
+   * (ou a nenhum, para o usuário escolher), como a troca de tipo gravada faria.
+   */
   private preparar(n: Passo): void {
-    if (n !== 3 || this.e.templateId()) return;
-    const padrao = this.e.padroes().get(this.e.tipo());
-    if (padrao) this.e.templateId.set(padrao);
+    if (n !== 3) return;
+    const outroTipo = this.config().gravaNoFim && !!this.e.template() && this.e.template()!.tipoProposta !== this.e.tipo();
+    if (this.e.templateId() && !outroTipo) return;
+    this.e.templateId.set(this.e.padroes().get(this.e.tipo()) ?? null);
   }
 
   /** O primeiro campo com erro; sem campo, a mensagem focável (ex.: "Inclua pelo menos um item."), nunca a faixa. */
