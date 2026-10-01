@@ -1,13 +1,18 @@
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
+import { ErroProposta } from '../propostas/propostas-repo';
 import { of } from 'rxjs';
 import { vi } from 'vitest';
 import { Perfil } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
+import { PdfService } from '../../core/pdf/pdf-service';
 import { PendenciasService } from '../../core/sync/pendencias-service';
-import { Pendencia } from '../../core/sync/sync-models';
+import { Toasts } from '../../shared/ui/toasts';
+import { PropostaLocal } from '../propostas/proposta-models';
+import { PropostasRepo } from '../propostas/propostas-repo';
+import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { PendenciasPage } from './pendencias-page';
 
@@ -54,19 +59,43 @@ const templateExcluido: Pendencia = {
   mutacao: { mutationId: 'm10', entidade: 'template_proposta', agregadoId: 't2', op: 'DELETE', baseVersion: 1, dados: null, criadaEm: '' },
 };
 
-function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMIN') {
+function propostaLocal(id: string, p: Partial<PropostaLocal> = {}): PropostaLocal {
+  return {
+    id, version: 1, codigoProvisorio: 'PROV-ABC123', numero: null, revisao: null, tipo: 'VENDA', status: 'ENVIADA', clienteId: 'c1',
+    templateId: null, responsavelId: 'u', tecnicoId: null, dataEmissao: '2026-09-20', validadeAte: '2026-10-05', condicoesPagamento: null,
+    prazoExecucao: null, observacoes: null, descontoGeralCentesimos: null, totalItensCentavos: 0, totalDescontosCentavos: 0,
+    totalCentavos: 0, motivoEncerramento: null, itens: [], historico: [], documentos: [], atualizadoEm: null, ...p,
+  };
+}
+
+interface OpcoesMontar {
+  propostas?: PropostaLocal[];
+  regerar?: ReturnType<typeof vi.fn>;
+  /** P4c-R15: "Usar a do servidor" levaria um envio ou PDF feito no aparelho. */
+  descartaEnvio?: boolean;
+}
+
+function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMIN', o: OpcoesMontar = {}) {
+  const repo = {
+    observarTodas: () => of(o.propostas ?? []),
+    regerarDocumento: o.regerar ?? vi.fn().mockResolvedValue({ blob: new Blob(['%PDF'], { type: 'application/pdf' }), codigoExibido: '000277' }),
+  };
+  const pdf = { gerarBlob: vi.fn().mockResolvedValue(new Blob(['%PDF'])) };
   const svc = {
     observar: () => of(itens),
     manterMinha: vi.fn().mockResolvedValue(undefined),
     usarServidor: vi.fn().mockResolvedValue(undefined),
     descartar: vi.fn().mockResolvedValue(undefined),
     usarExistente: vi.fn().mockResolvedValue('c9'),
+    descartaEnvio: vi.fn().mockResolvedValue(o.descartaEnvio ?? false),
   };
   const sincronizar = vi.fn().mockResolvedValue(undefined);
   TestBed.configureTestingModule({
     providers: [
       provideRouter([]),
       { provide: PendenciasService, useValue: svc },
+      { provide: PropostasRepo, useValue: repo },
+      { provide: PdfService, useValue: pdf },
       { provide: SyncService, useValue: { sincronizar, naoSincronizados: signal(naoSincronizados), sincronizando: signal(false) } },
       { provide: ConectividadeService, useValue: { online: signal(true) } },
       { provide: AuthService, useValue: { usuario: signal({ id: 'u', nome: 'U', email: 'u@u', perfil, ativo: true }) } },
@@ -75,7 +104,8 @@ function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMI
   const fixture = TestBed.createComponent(PendenciasPage);
   fixture.detectChanges();
   const navegar = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
-  return { el: fixture.nativeElement as HTMLElement, svc, sincronizar, navegar };
+  const navegarRota = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
+  return { el: fixture.nativeElement as HTMLElement, svc, sincronizar, navegar, navegarRota, fixture, repo, pdf };
 }
 
 const botao = (el: HTMLElement, texto: string) =>
@@ -89,12 +119,17 @@ describe('PendenciasPage', () => {
     expect(sincronizar).toHaveBeenCalled();
   });
 
-  it('conflito oferece manter a minha ou usar a do servidor', () => {
-    const { el, svc } = montar([conflito]);
+  it('conflito oferece manter a minha ou usar a do servidor', async () => {
+    const { el, svc, fixture } = montar([conflito]);
     expect(el.textContent).toContain('Maria');
     expect(el.textContent).toContain('Alterado por outra pessoa');
     botao(el, 'Manter a minha').click();
     expect(svc.manterMinha).toHaveBeenCalledWith(conflito);
+    // uma ação por vez na mesma pendência: espera a primeira terminar
+    await vi.waitFor(async () => {
+      await fixture.whenStable();
+      expect(botao(el, 'Usar a do servidor').disabled).toBe(false);
+    });
     botao(el, 'Usar a do servidor').click();
     expect(svc.usarServidor).toHaveBeenCalledWith(conflito);
   });
@@ -121,6 +156,25 @@ describe('PendenciasPage', () => {
     botao(el, 'Usar cadastro existente').click();
     await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/clientes/c9'));
     expect(svc.usarExistente).toHaveBeenCalledWith(duplicado);
+  });
+
+  it('ação em curso desabilita os botões daquela pendência (toque duplo não repete a ação)', async () => {
+    const { el, svc, fixture } = montar([conflito, duplicado]);
+    let terminar!: () => void;
+    svc.manterMinha.mockReturnValue(new Promise<void>((r) => (terminar = r)));
+    botao(el, 'Manter a minha').click();
+    botao(el, 'Manter a minha').click();
+    await fixture.whenStable();
+    expect(svc.manterMinha).toHaveBeenCalledTimes(1);
+    expect(botao(el, 'Manter a minha').disabled).toBe(true);
+    expect(botao(el, 'Usar a do servidor').disabled).toBe(true);
+    // a outra pendência continua livre
+    expect(botao(el, 'Usar cadastro existente').disabled).toBe(false);
+    terminar();
+    await vi.waitFor(async () => {
+      await fixture.whenStable();
+      expect(botao(el, 'Manter a minha').disabled).toBe(false);
+    });
   });
 
   it('rejeição permite editar ou descartar', () => {
@@ -213,5 +267,325 @@ describe('PendenciasPage', () => {
     const semNome: Pendencia = { ...duplicado, mutationId: 'm8', mutacao: { ...duplicado.mutacao, op: 'DELETE', dados: null } };
     const { el } = montar([semNome]);
     expect(el.textContent).toContain('Exclusão de cliente');
+  });
+
+  it('upload do PDF recusado: título do PDF, a mensagem e só Descartar', () => {
+    const upload: Pendencia = {
+      mutationId: 'm11', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '11',
+      erro: { codigo: 'REVISAO_INVALIDA', mensagem: 'O PDF PROV-0Z9XY7 é de outra revisão da proposta.' },
+      mutacao: { mutationId: 'm11', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null, dados: { documentoId: 'd1' }, criadaEm: '' },
+    };
+    const { el, svc } = montar([upload]);
+    expect(el.textContent).toContain('PDF da proposta');
+    expect(el.textContent).toContain('O PDF PROV-0Z9XY7 é de outra revisão da proposta.');
+    expect(botao(el, 'Editar')).toBeUndefined();
+    botao(el, 'Descartar').click();
+    expect(svc.descartar).toHaveBeenCalledWith(upload);
+  });
+
+  describe('proposta', () => {
+    const rejeitada = (extra: Partial<Pendencia> = {}, dados: Record<string, unknown> = { status: 'RASCUNHO', codigoProvisorio: 'PROV-MUT999' }): Pendencia => ({
+      mutationId: 'mp', entidade: 'proposta', agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '20',
+      erro: { codigo: 'VALIDACAO', mensagem: 'Revise os campos destacados.' },
+      mutacao: { mutationId: 'mp', entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: 1, dados, criadaEm: '' },
+      ...extra,
+    });
+    const upload = (codigo: string): Pendencia => ({
+      mutationId: 'mu', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '21',
+      erro: { codigo, mensagem: 'O código impresso no PDF não é o da proposta.' },
+      mutacao: { mutationId: 'mu', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null, dados: { documentoId: 'd1' }, criadaEm: '' },
+    });
+    // o download (`<a download>`) é interceptado: nada de navegação no jsdom; tudo volta ao original no fim
+    const cliques: string[] = [];
+    let clickOriginal: typeof HTMLAnchorElement.prototype.click;
+    let criarUrl: typeof URL.createObjectURL;
+    let revogarUrl: typeof URL.revokeObjectURL;
+    beforeEach(() => {
+      cliques.length = 0;
+      clickOriginal = HTMLAnchorElement.prototype.click;
+      criarUrl = URL.createObjectURL;
+      revogarUrl = URL.revokeObjectURL;
+      HTMLAnchorElement.prototype.click = function (this: HTMLAnchorElement) {
+        cliques.push(this.download);
+      };
+      URL.createObjectURL = vi.fn(() => 'blob:x');
+      URL.revokeObjectURL = vi.fn();
+    });
+    afterEach(() => {
+      HTMLAnchorElement.prototype.click = clickOriginal;
+      URL.createObjectURL = criarUrl;
+      URL.revokeObjectURL = revogarUrl;
+    });
+    const abrir = (el: HTMLElement) => el.querySelector<HTMLAnchorElement>('[data-testid="abrir-proposta"]');
+
+    it('título com o código da cópia local (número) e, sem ela, o provisório da mutação', () => {
+      const a = montar([rejeitada()], 0, 'ADMIN', { propostas: [propostaLocal('p1', { numero: 277, revisao: 2 })] });
+      expect(a.el.querySelector('li p')!.textContent).toContain('Proposta 000277-R2');
+      TestBed.resetTestingModule();
+      const b = montar([rejeitada()]);
+      expect(b.el.querySelector('li p')!.textContent).toContain('Proposta PROV-MUT999');
+    });
+
+    it('rejeição corrigível: "Corrigir e reenviar" leva a /propostas/:id/corrigir (sem "Abrir proposta")', () => {
+      const { el, navegarRota } = montar([rejeitada()], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      expect(abrir(el)).toBeNull();
+      botao(el, 'Corrigir e reenviar').click();
+      expect(navegarRota).toHaveBeenCalledWith(['/propostas', 'p1', 'corrigir']);
+    });
+
+    it('rejeição não corrigível: "Abrir proposta" leva ao detalhe, e Descartar continua', () => {
+      const naoCorrigivel = rejeitada({ erro: { codigo: 'ACESSO_NEGADO', mensagem: 'Sem permissão.' } });
+      const { el } = montar([naoCorrigivel], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      expect(botao(el, 'Corrigir e reenviar')).toBeUndefined();
+      expect(abrir(el)!.getAttribute('href')).toBe('/propostas/p1');
+      expect(botao(el, 'Descartar')).toBeDefined();
+    });
+
+    it('comercial que não é o responsável não corrige: só abre a proposta', () => {
+      const { el } = montar([rejeitada()], 0, 'COMERCIAL', { propostas: [propostaLocal('p1', { responsavelId: 'outro' })] });
+      expect(botao(el, 'Corrigir e reenviar')).toBeUndefined();
+      expect(abrir(el)).not.toBeNull();
+    });
+
+    it('conflito de proposta mantém as ações e ganha "Abrir proposta"', () => {
+      const c = rejeitada({ tipo: 'CONFLITO', erro: undefined, dadosServidor: { codigoProvisorio: 'PROV-ABC123' } });
+      const { el } = montar([c], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      expect(botao(el, 'Manter a minha')).toBeDefined();
+      expect(abrir(el)!.getAttribute('href')).toBe('/propostas/p1');
+    });
+
+    describe('"Usar a do servidor" com envio feito aqui (P4c-R15)', () => {
+      const AVISO = 'Isto descarta o envio e o PDF gerado neste aparelho.';
+      const c = () => rejeitada({ tipo: 'CONFLITO', erro: undefined, dadosServidor: { codigoProvisorio: 'PROV-ABC123' } });
+      const dialogo = (el: HTMLElement) => el.querySelector<HTMLElement>('[role=alertdialog]');
+      const noDialogo = (el: HTMLElement, texto: string) =>
+        [...dialogo(el)!.querySelectorAll('button')].find((b) => b.textContent?.trim() === texto)!;
+
+      it('pede confirmação acessível antes; "Voltar" não muda nada; confirmar usa a do servidor e devolve o foco', async () => {
+        const conflitoProposta = c();
+        const { el, svc, fixture } = montar([conflitoProposta], 0, 'ADMIN', { propostas: [propostaLocal('p1')], descartaEnvio: true });
+        const gatilho = botao(el, 'Usar a do servidor');
+        gatilho.focus();
+        gatilho.click();
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(dialogo(el)).not.toBeNull();
+        });
+        const d = dialogo(el)!;
+        expect(d.getAttribute('aria-modal')).toBe('true');
+        expect(document.getElementById(d.getAttribute('aria-labelledby')!)?.textContent?.trim()).toBe('Usar a do servidor?');
+        expect(document.getElementById(d.getAttribute('aria-describedby')!)?.textContent?.trim()).toBe(AVISO);
+        expect(svc.descartaEnvio).toHaveBeenCalledWith(conflitoProposta);
+        expect(svc.usarServidor).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(document.activeElement).toBe(noDialogo(el, 'Voltar')));
+
+        noDialogo(el, 'Voltar').click();
+        fixture.detectChanges();
+        expect(dialogo(el)).toBeNull();
+        expect(svc.usarServidor).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(document.activeElement).toBe(gatilho));
+
+        botao(el, 'Usar a do servidor').click();
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(dialogo(el)).not.toBeNull();
+        });
+        noDialogo(el, 'Usar a do servidor').click();
+        await vi.waitFor(() => expect(svc.usarServidor).toHaveBeenCalledWith(conflitoProposta));
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(dialogo(el)).toBeNull();
+        });
+      });
+
+      it('sem envio nem PDF daqui: usa a do servidor direto, sem perguntar', async () => {
+        const conflitoProposta = c();
+        const { el, svc, fixture } = montar([conflitoProposta], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+        botao(el, 'Usar a do servidor').click();
+        await vi.waitFor(() => expect(svc.usarServidor).toHaveBeenCalledWith(conflitoProposta));
+        fixture.detectChanges();
+        expect(dialogo(el)).toBeNull();
+      });
+
+      it('o "Descartar" de uma proposta excluída no servidor também pergunta', async () => {
+        const excluida = rejeitada({ tipo: 'CONFLITO', erro: undefined, dadosServidor: undefined });
+        const { el, svc, fixture } = montar([excluida], 0, 'ADMIN', { propostas: [propostaLocal('p1')], descartaEnvio: true });
+        botao(el, 'Descartar').click();
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(dialogo(el)?.textContent).toContain(AVISO);
+        });
+        expect(svc.usarServidor).not.toHaveBeenCalled();
+      });
+    });
+
+    it('N2: "Descartar" de uma proposta recusada com envio atrás pede a mesma confirmação; sem envio, descarta direto', async () => {
+      const recusada = rejeitada({ erro: { codigo: 'ACESSO_NEGADO', mensagem: 'Sem permissão.' } });
+      const { el, svc, fixture } = montar([recusada], 0, 'ADMIN', { propostas: [propostaLocal('p1')], descartaEnvio: true });
+      botao(el, 'Descartar').click();
+      const dialogo = () => el.querySelector<HTMLElement>('[role=alertdialog]');
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(dialogo()?.textContent).toContain('Isto descarta o envio e o PDF gerado neste aparelho.');
+      });
+      expect(document.getElementById(dialogo()!.getAttribute('aria-labelledby')!)?.textContent?.trim()).toBe('Descartar a pendência?');
+      expect(svc.descartaEnvio).toHaveBeenCalledWith(recusada);
+      expect(svc.descartar).not.toHaveBeenCalled();
+      const noDialogo = (texto: string) => [...dialogo()!.querySelectorAll('button')].find((b) => b.textContent?.trim() === texto)!;
+      noDialogo('Descartar').click();
+      await vi.waitFor(() => expect(svc.descartar).toHaveBeenCalledWith(recusada));
+
+      TestBed.resetTestingModule();
+      const sem = montar([recusada], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      botao(sem.el, 'Descartar').click();
+      await vi.waitFor(() => expect(sem.svc.descartar).toHaveBeenCalledWith(recusada));
+      sem.fixture.detectChanges();
+      expect(sem.el.querySelector('[role=alertdialog]')).toBeNull();
+    });
+
+    it('N4: com CONFLITO da proposta, "Gerar PDF novamente" fica desabilitado com a dica', async () => {
+      const conflitoProposta = rejeitada({ mutationId: 'mc', tipo: 'CONFLITO', erro: undefined, dadosServidor: { codigoProvisorio: 'PROV-ABC123' } });
+      const { el, repo } = montar([conflitoProposta, upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      const b = botao(el, 'Gerar PDF novamente');
+      expect(b.disabled).toBe(true);
+      expect(document.getElementById(b.getAttribute('aria-describedby')!)?.textContent?.trim()).toBe('Resolva a pendência primeiro.');
+      b.click();
+      expect(repo.regerarDocumento).not.toHaveBeenCalled();
+    });
+
+    it('M4: erro técnico numa ação de proposta vira a mensagem genérica; a recusa do repositório, a mensagem dela', async () => {
+      const conflitoProposta = rejeitada({ tipo: 'CONFLITO', erro: undefined, dadosServidor: { codigoProvisorio: 'PROV-ABC123' } });
+      const { el, svc, fixture } = montar([conflitoProposta], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+      svc.manterMinha.mockRejectedValueOnce(new Error('DatabaseClosedError: Database has been closed'));
+      botao(el, 'Manter a minha').click();
+      await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('Não foi possível concluir. Tente de novo.'));
+      await vi.waitFor(async () => {
+        await fixture.whenStable();
+        expect(botao(el, 'Manter a minha').disabled).toBe(false);
+      });
+      svc.manterMinha.mockRejectedValueOnce(new ErroProposta('PROPOSTA_SINCRONIZANDO', 'proposta', 'A proposta está sendo sincronizada. Tente de novo em instantes.'));
+      botao(el, 'Manter a minha').click();
+      await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('A proposta está sendo sincronizada. Tente de novo em instantes.'));
+    });
+
+    it('upload CODIGO_EXIBIDO_INVALIDO de proposta enviada: "Gerar PDF novamente" regera pelo repositório e compartilha (sem share: baixa)', async () => {
+      {
+        const { el, repo, pdf, fixture } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+        expect(el.textContent).toContain('PDF da proposta PROV-ABC123');
+        expect(el.textContent).toContain('Gere o PDF novamente');
+        botao(el, 'Gerar PDF novamente').click();
+        await vi.waitFor(() => expect(cliques).toEqual(['Proposta-000277.pdf']));
+        expect(repo.regerarDocumento).toHaveBeenCalledWith('p1', expect.any(Function));
+        // o gerador entregue ao repositório é o PdfService
+        const gerar = repo.regerarDocumento.mock.calls[0][1] as (e: unknown) => Promise<Blob>;
+        await gerar({});
+        expect(pdf.gerarBlob).toHaveBeenCalled();
+        await fixture.whenStable();
+        expect(botao(el, 'Gerar PDF novamente').disabled).toBe(false);
+      }
+    });
+
+    it('"Gerar PDF novamente": o toque duplo não regera duas vezes', async () => {
+      let liberar!: (v: { blob: Blob; codigoExibido: string }) => void;
+      const regerar = vi.fn(() => new Promise<{ blob: Blob; codigoExibido: string }>((r) => (liberar = r)));
+      const { el, fixture } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')], regerar });
+      botao(el, 'Gerar PDF novamente').click();
+      fixture.detectChanges();
+      expect(botao(el, 'Gerando PDF…').disabled).toBe(true);
+      botao(el, 'Gerando PDF…').click();
+      expect(regerar).toHaveBeenCalledTimes(1);
+      liberar({ blob: new Blob(['x']), codigoExibido: 'PROV-ABC123' });
+      await vi.waitFor(() => expect(cliques).toEqual(['Proposta-PROV-ABC123.pdf']));
+      await fixture.whenStable();
+    });
+
+    it('o rótulo "Gerando PDF…" é só da regeração: Descartar em curso não o mostra', async () => {
+      let liberar!: () => void;
+      const descartar = new Promise<void>((r) => (liberar = r));
+      const { el, svc, fixture } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      svc.descartar.mockReturnValue(descartar);
+      botao(el, 'Descartar').click();
+      fixture.detectChanges();
+      expect(botao(el, 'Gerar PDF novamente').disabled).toBe(true);
+      expect(el.textContent).not.toContain('Gerando PDF…');
+      liberar();
+      await fixture.whenStable();
+    });
+
+    it('comercial responsável corrige e reenvia', () => {
+      const { el, navegarRota } = montar([rejeitada()], 0, 'COMERCIAL', { propostas: [propostaLocal('p1', { responsavelId: 'u' })] });
+      botao(el, 'Corrigir e reenviar').click();
+      expect(navegarRota).toHaveBeenCalledWith(['/propostas', 'p1', 'corrigir']);
+    });
+
+    it.each<Perfil>(['TECNICO', 'COMERCIAL'])('%s (sem ser o responsável) não vê "Gerar PDF novamente" e a mensagem manda descartar', (perfil) => {
+      const { el } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, perfil, { propostas: [propostaLocal('p1', { responsavelId: 'outro' })] });
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      expect(el.textContent).not.toContain('Gere o PDF novamente');
+      expect(el.textContent).toContain('Descarte esta pendência');
+      expect(botao(el, 'Descartar')).toBeDefined();
+    });
+
+    it('sem a cópia local: sem "Gerar PDF novamente"', () => {
+      const { el } = montar([upload('CODIGO_EXIBIDO_INVALIDO')]);
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      expect(botao(el, 'Descartar')).toBeDefined();
+    });
+
+    it('sem a cópia local (ex.: exclusão recusada): sem "Corrigir e reenviar" nem "Abrir proposta", só Descartar', () => {
+      const exclusao = rejeitada({}, { status: 'RASCUNHO' });
+      exclusao.mutacao = { ...exclusao.mutacao, op: 'DELETE', dados: null };
+      const conflito = rejeitada({ mutationId: 'mc', tipo: 'CONFLITO', erro: undefined });
+      const { el } = montar([exclusao, conflito]);
+      expect(botao(el, 'Corrigir e reenviar')).toBeUndefined();
+      expect(abrir(el)).toBeNull();
+      expect(botao(el, 'Descartar')).toBeDefined();
+    });
+
+    it('"Gerar PDF novamente": o erro do repositório vira toast e a pendência continua', async () => {
+      const regerar = vi.fn().mockRejectedValue(new ErroProposta('PDF_GRANDE', 'proposta', 'O PDF passou de 10 MB. Reduza imagens do template.'));
+      const { el, fixture } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')], regerar });
+      const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+      botao(el, 'Gerar PDF novamente').click();
+      await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('O PDF passou de 10 MB. Reduza imagens do template.'));
+      await fixture.whenStable();
+      expect(botao(el, 'Gerar PDF novamente').disabled).toBe(false);
+    });
+
+    it('"Gerar PDF novamente": com o navegador pedindo toque, mostra o painel "PDF pronto"', async () => {
+      const share = vi.fn().mockRejectedValue(Object.assign(new Error('x'), { name: 'NotAllowedError' }));
+      Object.defineProperty(navigator, 'canShare', { value: () => true, configurable: true });
+      Object.defineProperty(navigator, 'share', { value: share, configurable: true });
+      try {
+        const { el, fixture } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+        botao(el, 'Gerar PDF novamente').click();
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(el.querySelector('app-pdf-pronto')).not.toBeNull();
+        });
+        expect(el.textContent).toContain('Proposta-000277.pdf');
+      } finally {
+        delete (navigator as unknown as Record<string, unknown>)['canShare'];
+        delete (navigator as unknown as Record<string, unknown>)['share'];
+      }
+    });
+
+    it('upload CODIGO_EXIBIDO_INVALIDO de rascunho: não há o que gerar, só Descartar', () => {
+      const { el, svc } = montar([upload('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', { propostas: [propostaLocal('p1', { status: 'RASCUNHO' })] });
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      expect(el.textContent).toContain('Descarte esta pendência');
+      botao(el, 'Descartar').click();
+      expect(svc.descartar).toHaveBeenCalled();
+    });
+
+    it('upload recusado por outro motivo: a mensagem do servidor e Descartar, sem "Gerar PDF novamente"', () => {
+      const u = upload('REVISAO_INVALIDA');
+      const { el, svc } = montar([u], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      expect(el.textContent).toContain('O código impresso no PDF não é o da proposta.');
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      botao(el, 'Descartar').click();
+      expect(svc.descartar).toHaveBeenCalledWith(u);
+    });
   });
 });

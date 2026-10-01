@@ -70,3 +70,12 @@ export function filtrarItens(lista: ItemLocal[], filtro: FiltroCatalogo, busca: 
       (!q || i.nomeBusca.includes(q)),
   );
 }
+
+/**
+ * Margem sobre a venda, `(venda − custo) / venda`, em pt-BR com uma casa (`36,0`): o formulário do item (preço unitário)
+ * e a linha da proposta (custo × quantidade contra o subtotal), só para o ADMIN. Sem custo ou venda positivos, null.
+ */
+export function margemPercentual(custo: number | null, venda: number | null): string | null {
+  if (custo === null || venda === null || Number.isNaN(custo) || Number.isNaN(venda) || custo <= 0 || venda <= 0) return null;
+  return (((venda - custo) / venda) * 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+}

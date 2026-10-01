@@ -36,3 +36,26 @@ export function quantidadeBr(n: number): string {
 export function percentualBr(n: number): string {
   return `${quantidadeBr(n)}%`;
 }
+
+export interface LinhaTotal {
+  rotulo: 'Subtotal' | 'Descontos' | 'Total';
+  centavos: number;
+  /** A linha do Total (em destaque). */
+  total: boolean;
+}
+
+/**
+ * As linhas do bloco TOTAIS (P4a-R6), as mesmas no PDF e no wizard: com `mostrarDescontos`, Subtotal = bruto
+ * (total + descontos), para que Subtotal − Descontos = Total feche na tela, e Descontos (negativo) só quando há
+ * desconto; por fim o Total.
+ */
+export function linhasDeTotais(totalCentavos: number, totalDescontosCentavos: number, mostrarDescontos: boolean): LinhaTotal[] {
+  const linhas: LinhaTotal[] = [];
+  if (mostrarDescontos) {
+    const descontos = totalDescontosCentavos > 0 ? totalDescontosCentavos : 0;
+    linhas.push({ rotulo: 'Subtotal', centavos: totalCentavos + descontos, total: false });
+    if (descontos > 0) linhas.push({ rotulo: 'Descontos', centavos: -descontos, total: false });
+  }
+  linhas.push({ rotulo: 'Total', centavos: totalCentavos, total: true });
+  return linhas;
+}

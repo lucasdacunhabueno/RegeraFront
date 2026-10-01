@@ -4,6 +4,7 @@ import { FormArray, NonNullableFormBuilder, ReactiveFormsModule, Validators } fr
 import { Router, RouterLink } from '@angular/router';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { avisarAoSairDaPagina, ComAlteracoes, instantaneo } from '../../core/navegacao/alteracoes-guard';
+import { destinoDeVolta } from '../../core/navegacao/voltar';
 import { documentoValido, normalizarDocumento } from '../../core/util/documentos';
 import {
   formatarCep,
@@ -16,6 +17,7 @@ import { Toasts } from '../../shared/ui/toasts';
 import { ClienteDados, EnderecoDados, ROTULO_TIPO_ENDERECO, TipoEndereco, TipoPessoa } from './cliente-models';
 import { ClientesRepo, ErroCampo } from './clientes-repo';
 import { ConsultasExternas } from './consultas-externas';
+import { PropostasDoCliente } from './propostas-do-cliente';
 
 function criarGrupoEndereco(fb: NonNullableFormBuilder, e?: Partial<EnderecoDados>) {
   return fb.group({
@@ -36,9 +38,13 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
 
 @Component({
   selector: 'app-cliente-form-page',
-  imports: [ReactiveFormsModule, RouterLink],
+  imports: [ReactiveFormsModule, RouterLink, PropostasDoCliente],
   template: `
-    <a routerLink="/clientes" class="text-sm text-blue-700">← Clientes</a>
+    @if (voltarPara(); as destino) {
+      <a [routerLink]="destino" class="inline-flex min-h-12 items-center text-sm text-blue-700">← Voltar à proposta</a>
+    } @else {
+      <a routerLink="/clientes" class="inline-flex min-h-12 items-center text-sm text-blue-700">← Clientes</a>
+    }
     <h1 class="mb-4 mt-2 text-xl font-semibold">{{ id() ? 'Editar cliente' : 'Novo cliente' }}</h1>
 
     @if (temPendencia()) {
@@ -215,10 +221,21 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
         }
       }
     </form>
+
+    @if (id(); as clienteId) {
+      @if (!naoEncontrado() && !falhaCarga()) {
+        <app-propostas-do-cliente [clienteId]="clienteId" [clienteNome]="nomeSalvo()" />
+      }
+    }
   `,
 })
 export class ClienteFormPage implements ComAlteracoes {
   readonly id = input<string>();
+  /**
+   * `?voltar=`: a tela que abriu o cadastro ("Cadastrar cliente" do wizard da proposta). Validado por `destinoDeVolta`
+   * (só caminhos de `/propostas/`); o salvar volta para lá com `clienteId` do cliente salvo.
+   */
+  readonly voltar = input<string>();
 
   private readonly fb = inject(NonNullableFormBuilder);
   private readonly repo = inject(ClientesRepo);
@@ -237,6 +254,8 @@ export class ClienteFormPage implements ComAlteracoes {
   protected readonly temPendencia = signal(false);
   protected readonly naoEncontrado = signal(false);
   protected readonly falhaCarga = signal(false);
+  /** O nome gravado (não o que está sendo digitado): é o que os cards das propostas mostram. */
+  protected readonly nomeSalvo = signal('');
   /** Versão lida ao abrir o formulário (undefined = cliente novo). */
   private versaoCarregada: number | null | undefined;
 
@@ -253,6 +272,12 @@ export class ClienteFormPage implements ComAlteracoes {
     contatoNome: ['', Validators.maxLength(120)],
     observacoes: ['', Validators.maxLength(2000)],
     enderecos: this.fb.array<GrupoEndereco>([]),
+  });
+
+  /** O link do topo: a proposta de onde veio, como UrlTree (o caminho tem query). */
+  protected readonly voltarPara = computed(() => {
+    const destino = destinoDeVolta(this.voltar());
+    return destino ? this.router.parseUrl(destino) : null;
   });
 
   protected readonly tipo = toSignal(this.form.controls.tipo.valueChanges, { initialValue: 'PF' as TipoPessoa });
@@ -398,10 +423,10 @@ export class ClienteFormPage implements ComAlteracoes {
     };
     this.salvando.set(true);
     try {
-      await this.repo.salvar(dados, this.id(), this.versaoCarregada);
+      const id = await this.repo.salvar(dados, this.id(), this.versaoCarregada);
       this.estadoSalvo = this.estado();
       this.toasts.mostrar('Cliente salvo.');
-      await this.router.navigateByUrl('/clientes');
+      await this.router.navigateByUrl(destinoDeVolta(this.voltar(), { clienteId: id }) ?? '/clientes');
     } catch (e) {
       if (e instanceof ErroCampo) {
         this.erroDocumento.set(e.message);
@@ -456,6 +481,7 @@ export class ClienteFormPage implements ComAlteracoes {
       return;
     }
     this.versaoCarregada = c.version;
+    this.nomeSalvo.set(c.nome);
     this.form.patchValue({
       tipo: c.tipo,
       documento: formatarDocumento(c.documento),

@@ -6,7 +6,7 @@ import { vi } from 'vitest';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
-import { ArquivosService } from './arquivos-service';
+import { ArquivosService, ErroDownload } from './arquivos-service';
 
 describe('ArquivosService', () => {
   let svc: ArquivosService;
@@ -227,5 +227,43 @@ describe('ArquivosService', () => {
     expect(await svc.obterUrl('b7')).toBeNull();
     http.expectNone('/api/arquivos/b6');
     http.expectNone('/api/arquivos/b7');
+  });
+
+  describe('baixarSemCache (PDF da proposta: no-store, P4b-R6)', () => {
+    it('baixa pelo mesmo GET autenticado e devolve o Blob, sem gravar no Dexie nem criar URL', async () => {
+      const p = svc.baixarSemCache('pdf-1');
+      const req = await vi.waitFor(() => http.expectOne('/api/arquivos/pdf-1'));
+      expect(req.request.method).toBe('GET');
+      expect(req.request.responseType).toBe('blob');
+      req.flush(new Blob(['%PDF-1.7'], { type: 'application/pdf' }));
+      const blob = await p;
+      expect(await blob.text()).toBe('%PDF-1.7');
+      expect(await db.arquivos.count()).toBe(0);
+      expect(URL.createObjectURL).not.toHaveBeenCalled();
+    });
+
+    it('nunca usa o cache: mesmo com os bytes lá, vai ao servidor', async () => {
+      await db.arquivos.put({ id: 'pdf-2', mime: 'application/pdf', bytes: new Uint8Array([1]).buffer });
+      const p = svc.baixarSemCache('pdf-2');
+      (await vi.waitFor(() => http.expectOne('/api/arquivos/pdf-2'))).flush(new Blob(['novo']));
+      expect(await (await p).text()).toBe('novo');
+    });
+
+    it('offline ou sem sessão falha sem pedir nada; erro do servidor propaga', async () => {
+      online.set(false);
+      await expect(svc.baixarSemCache('pdf-3')).rejects.toMatchObject({ motivo: 'SEM_INTERNET' });
+      online.set(true);
+      autenticado.set(false);
+      const semSessao = await svc.baixarSemCache('pdf-3').then(() => null, (e: unknown) => e);
+      expect(semSessao).toBeInstanceOf(ErroDownload);
+      expect(semSessao).toMatchObject({ motivo: 'SEM_SESSAO', message: 'Entre de novo para baixar o arquivo.' });
+      http.expectNone('/api/arquivos/pdf-3');
+      autenticado.set(true);
+      const p = svc.baixarSemCache('pdf-4');
+      const erro = p.then(() => null, (e: unknown) => e);
+      (await vi.waitFor(() => http.expectOne('/api/arquivos/pdf-4'))).flush(null, { status: 404, statusText: 'x' });
+      expect(await erro).toBeTruthy();
+      expect(await db.arquivos.count()).toBe(0);
+    });
   });
 });

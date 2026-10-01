@@ -12,7 +12,7 @@ import { ErroCampo } from '../../core/util/erro-campo';
 import { formatarMoedaInput, parseMoeda } from '../../core/util/moeda';
 import { Toasts } from '../../shared/ui/toasts';
 import { CatalogoRepo } from './catalogo-repo';
-import { ItemCatalogoDados, NaturezaItem, UNIDADES } from './item-models';
+import { ItemCatalogoDados, margemPercentual, NaturezaItem, UNIDADES } from './item-models';
 
 const MAX_PRECO = 999_999_999_999.99;
 const naoVazio: ValidatorFn = (c: AbstractControl): ValidationErrors | null =>
@@ -186,10 +186,7 @@ export class ItemFormPage implements ComAlteracoes {
   private readonly valores = toSignal(this.form.valueChanges, { initialValue: this.form.getRawValue() });
   protected readonly margem = computed(() => {
     const v = this.valores();
-    const custo = parseMoeda(v.precoCusto ?? '');
-    const venda = parseMoeda(v.precoVenda ?? '');
-    if (custo === null || venda === null || Number.isNaN(custo) || Number.isNaN(venda) || custo <= 0 || venda <= 0) return null;
-    return (((venda - custo) / venda) * 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+    return margemPercentual(parseMoeda(v.precoCusto ?? ''), parseMoeda(v.precoVenda ?? ''));
   });
 
   /** Estado ao abrir, depois de carregar ou de salvar (P4a-R12). */

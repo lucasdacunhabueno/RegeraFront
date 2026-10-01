@@ -15,7 +15,7 @@ export interface ArquivoEnviado {
   sha256: string;
 }
 
-async function paraBytes(blob: Blob): Promise<ArrayBuffer> {
+export async function paraBytes(blob: Blob): Promise<ArrayBuffer> {
   if (typeof blob.arrayBuffer === 'function') return blob.arrayBuffer();
   return new Promise((resolve, reject) => {
     const leitor = new FileReader();
@@ -33,6 +33,16 @@ function base64(bytes: ArrayBuffer): string {
     binario += String.fromCharCode(...u8.subarray(i, i + 0x8000));
   }
   return btoa(binario);
+}
+
+/** `baixarSemCache` recusou sem fazer o pedido: sem internet ou sem sessão (a mensagem já é para o usuário). */
+export class ErroDownload extends Error {
+  constructor(
+    readonly motivo: 'SEM_INTERNET' | 'SEM_SESSAO',
+    mensagem: string,
+  ) {
+    super(mensagem);
+  }
 }
 
 /** Upload (só online) e exibição de arquivos com cache local dos bytes, para mostrar offline. */
@@ -109,6 +119,21 @@ export class ArquivosService {
     } catch {
       // melhor esforço: tenta de novo no próximo sync
     }
+  }
+
+  /**
+   * Baixa o arquivo direto do servidor (o mesmo `GET /api/arquivos/{id}` autenticado), sem ler nem gravar o cache
+   * local e sem object URL: para o PDF da proposta, que tem valores e é `no-store` também no Dexie (P4b-R6). Sem
+   * internet ou sem sessão falha sem pedir nada (sem sessão o pedido voltaria 401 e marcaria a sessão expirada);
+   * erro do servidor propaga.
+   */
+  async baixarSemCache(id: string): Promise<Blob> {
+    if (!this.conectividade.online()) throw new ErroDownload('SEM_INTERNET', 'Sem internet: o arquivo não está neste aparelho.');
+    if (!this.auth.autenticado()) throw new ErroDownload('SEM_SESSAO', 'Entre de novo para baixar o arquivo.');
+    // o mesmo prazo do upload: o PDF chega a 10 MB numa rede móvel lenta
+    return firstValueFrom(
+      this.http.get(`/api/arquivos/${encodeURIComponent(id)}`, { responseType: 'blob' }).pipe(timeout(60_000)),
+    );
   }
 
   /** Muda a cada limpar(): quem começou um trabalho em segundo plano compara para saber se deve parar. */

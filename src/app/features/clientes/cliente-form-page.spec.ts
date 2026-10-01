@@ -6,6 +6,10 @@ import { ConectividadeService } from '../../core/conectividade/conectividade-ser
 import { ClienteDados, paraClienteLocal } from './cliente-models';
 import { ClienteFormPage } from './cliente-form-page';
 import { ClientesRepo, ErroCampo } from './clientes-repo';
+import { of } from 'rxjs';
+import { AuthService } from '../../core/auth/auth-service';
+import { PropostaLocal } from '../propostas/proposta-models';
+import { PropostasRepo } from '../propostas/propostas-repo';
 import { Toasts } from '../../shared/ui/toasts';
 import { ConsultasExternas } from './consultas-externas';
 
@@ -16,7 +20,24 @@ const existente: ClienteDados = {
   enderecos: [{ tipo: 'PRINCIPAL', cep: '01001000', logradouro: 'Praça da Sé', numero: '1', complemento: null, bairro: 'Sé', cidade: 'São Paulo', uf: 'SP' }],
 };
 
-function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn>; buscar?: Promise<unknown> } = {}) {
+function propostaDe(id: string, p: Partial<PropostaLocal> = {}): PropostaLocal {
+  return {
+    id, version: 1, codigoProvisorio: 'PROV-ABC123', numero: null, revisao: null, tipo: 'VENDA', status: 'RASCUNHO', clienteId: 'id1',
+    templateId: null, responsavelId: 'u1', tecnicoId: null, dataEmissao: '2026-09-20', validadeAte: '2026-10-05', condicoesPagamento: null,
+    prazoExecucao: null, observacoes: null, descontoGeralCentesimos: null, totalItensCentavos: 150000, totalDescontosCentavos: 0,
+    totalCentavos: 150000, motivoEncerramento: null, itens: [], historico: [], documentos: [], atualizadoEm: null, ...p,
+  };
+}
+
+function montar(opcoes: {
+  id?: string; voltar?: string; salvar?: ReturnType<typeof vi.fn>; buscar?: Promise<unknown>;
+  propostas?: PropostaLocal[]; perfil?: 'ADMIN' | 'COMERCIAL' | 'TECNICO';
+} = {}) {
+  const propostas = {
+    observarDoCliente: vi.fn((clienteId: string) => of((opcoes.propostas ?? []).filter((p) => p.clienteId === clienteId))),
+    observarUsuarios: () => of([{ id: 'u1', nome: 'Carla Comercial', perfil: 'COMERCIAL' }]),
+    observarEstadoSync: () => of({ naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() }),
+  };
   const repo = {
     buscar: opcoes.buscar ? vi.fn().mockReturnValue(opcoes.buscar) : vi.fn().mockResolvedValue(paraClienteLocal('id1', 3, existente)),
     salvar: opcoes.salvar ?? vi.fn().mockResolvedValue('novo-id'),
@@ -33,13 +54,16 @@ function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn>; buscar
       { provide: ClientesRepo, useValue: repo },
       { provide: ConsultasExternas, useValue: consultas },
       { provide: ConectividadeService, useValue: { online: signal(true) } },
+      { provide: PropostasRepo, useValue: propostas },
+      { provide: AuthService, useValue: { usuario: signal({ id: 'u1', nome: 'U', email: 'u@u', perfil: opcoes.perfil ?? 'COMERCIAL', ativo: true }) } },
     ],
   });
   const fixture = TestBed.createComponent(ClienteFormPage);
   if (opcoes.id) fixture.componentRef.setInput('id', opcoes.id);
+  if (opcoes.voltar !== undefined) fixture.componentRef.setInput('voltar', opcoes.voltar);
   fixture.detectChanges();
   const navegar = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
-  return { fixture, repo, consultas, navegar, el: fixture.nativeElement as HTMLElement };
+  return { fixture, repo, consultas, navegar, propostas, el: fixture.nativeElement as HTMLElement };
 }
 
 function digitar(fixture: ComponentFixture<unknown>, seletor: string, valor: string) {
@@ -218,6 +242,42 @@ describe('ClienteFormPage', () => {
     clicar(el, '[data-testid=excluir]');
     expect(repo.excluir).not.toHaveBeenCalled();
   });
+  describe('voltar (Cadastrar cliente do wizard da proposta)', () => {
+    async function salvarNovo(voltar: string) {
+      const m = montar({ voltar });
+      digitar(m.fixture, '#documento', '52998224725');
+      digitar(m.fixture, '#nome', 'Maria');
+      clicar(m.el, 'button[type=submit]');
+      await vi.waitFor(() => expect(m.navegar).toHaveBeenCalled());
+      return m;
+    }
+
+    it('salvo, volta ao wizard com o clienteId novo', async () => {
+      const { navegar, fixture } = await salvarNovo('/propostas/nova?tipo=LOCACAO');
+      expect(navegar).toHaveBeenCalledWith('/propostas/nova?tipo=LOCACAO&clienteId=novo-id');
+      expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+    });
+
+    it('o link do topo volta à proposta, sem o clienteId', () => {
+      const { el } = montar({ voltar: '/propostas/p1/editar?passo=1' });
+      const link = el.querySelector<HTMLAnchorElement>('a')!;
+      expect(link.textContent).toContain('Voltar à proposta');
+      expect(link.getAttribute('href')).toBe('/propostas/p1/editar?passo=1');
+      // M3: alvo de 48 px, como o "← Propostas" do detalhe
+      expect(link.classList).toContain('min-h-12');
+      expect(link.classList).toContain('inline-flex');
+    });
+
+    it.each(['https://evil.example/propostas/nova', '//evil.example/propostas/nova', '/usuarios', '/propostas/../usuarios'])(
+      'voltar inválido (%s) é ignorado: vai para /clientes',
+      async (voltar) => {
+        const { navegar, el } = await salvarNovo(voltar);
+        expect(navegar).toHaveBeenCalledWith('/clientes');
+        expect(el.querySelector('a')!.getAttribute('href')).toBe('/clientes');
+      },
+    );
+  });
+
   it('alterações não salvas: limpo ao abrir, sujo ao editar, limpo depois de salvar', async () => {
     const { fixture, el, navegar } = montar();
     const pagina = fixture.componentInstance;
@@ -245,5 +305,64 @@ describe('ClienteFormPage', () => {
     clicar(el, '[data-testid=excluir]');
     await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/clientes'));
     expect(pagina.temAlteracoes()).toBe(false);
+  });
+
+  describe('Propostas do cliente', () => {
+    const secao = (el: HTMLElement) => el.querySelector('[data-testid="propostas-do-cliente"]');
+
+    it('mostra só as propostas deste cliente, com o responsável e o total', async () => {
+      const lista = [
+        propostaDe('a', { numero: 277, revisao: 1, status: 'ENVIADA' }),
+        propostaDe('b', { clienteId: 'outro', numero: 9 }),
+        propostaDe('c', { codigoProvisorio: 'PROV-ZZZ999' }),
+      ];
+      const { fixture, el, propostas } = montar({ id: 'id1', propostas: lista });
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(secao(el)!.textContent).toContain('Maria');
+      });
+      expect(propostas.observarDoCliente).toHaveBeenCalledWith('id1');
+      const cards = secao(el)!.querySelectorAll('app-proposta-card');
+      expect(cards.length).toBe(2);
+      expect(secao(el)!.textContent).toContain('000277');
+      expect(secao(el)!.textContent).toContain('PROV-ZZZ999');
+      expect(secao(el)!.textContent).not.toContain('000009');
+      expect(cards[0].textContent).toContain('Maria');
+      expect(cards[0].textContent).toContain('Responsável: Carla Comercial');
+      expect(cards[0].textContent).toContain('R$');
+      expect(secao(el)!.textContent).not.toContain('Nenhuma proposta para este cliente.');
+    });
+
+    it('sem propostas: texto vazio e "Nova proposta" com o clienteId', async () => {
+      const { fixture, el } = montar({ id: 'id1' });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(secao(el)!.textContent).toContain('Nenhuma proposta para este cliente.');
+      const nova = el.querySelector<HTMLAnchorElement>('[data-testid="nova-proposta"]')!;
+      expect(nova.textContent).toContain('Nova proposta');
+      expect(nova.getAttribute('href')).toBe('/propostas/nova?clienteId=id1');
+    });
+
+    it('o técnico não tem o botão "Nova proposta" nem vê valores', async () => {
+      const { fixture, el } = montar({ id: 'id1', perfil: 'TECNICO', propostas: [propostaDe('a')] });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(el.querySelector('[data-testid="nova-proposta"]')).toBeNull();
+      expect(secao(el)!.textContent).not.toContain('R$');
+    });
+
+    it('cliente novo: sem a seção', () => {
+      const { el, propostas } = montar();
+      expect(secao(el)).toBeNull();
+      expect(propostas.observarDoCliente).not.toHaveBeenCalled();
+    });
+
+    it('a seção não conta como alteração do formulário', async () => {
+      const { fixture, el } = montar({ id: 'id1', propostas: [propostaDe('a')] });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(secao(el)).not.toBeNull();
+      expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+    });
   });
 });

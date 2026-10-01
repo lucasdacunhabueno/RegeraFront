@@ -1,0 +1,1114 @@
+{
+ "_nota": "Casos compartilhados do cálculo de propostas (spec §7.3): PropostaCalculo (servidor) e calcular (front). Gerados por RegeraServer/src/test/resources/gerar-casos-calculo.py (Python decimal, precisão 60, ROUND_HALF_UP). Os dois arquivos precisam ficar IDÊNTICOS; ao mudar, atualize SHA_CASOS_CALCULO nos dois testes. Valores em strings decimais; meses é inteiro ou null e só multiplica quando locacao = true.",
+ "casos": [
+  {
+   "nome": "sem itens",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [],
+   "esperado": {
+    "subtotais": [],
+    "totalItens": "0.00",
+    "totalDescontos": "0.00",
+    "total": "0.00"
+   }
+  },
+  {
+   "nome": "sem itens com desconto geral 12,5",
+   "locacao": false,
+   "descontoGeral": "12.5",
+   "linhas": [],
+   "esperado": {
+    "subtotais": [],
+    "totalItens": "0.00",
+    "totalDescontos": "0.00",
+    "total": "0.00"
+   }
+  },
+  {
+   "nome": "preco zero",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "3",
+     "precoUnitario": "0",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.00"
+    ],
+    "totalItens": "0.00",
+    "totalDescontos": "0.00",
+    "total": "0.00"
+   }
+  },
+  {
+   "nome": "preco zero com desconto e locacao 120 meses",
+   "locacao": true,
+   "descontoGeral": "12.5",
+   "linhas": [
+    {
+     "quantidade": "2.5",
+     "precoUnitario": "0.00",
+     "descontoPercentual": "33.33",
+     "meses": 120
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.00"
+    ],
+    "totalItens": "0.00",
+    "totalDescontos": "0.00",
+    "total": "0.00"
+   }
+  },
+  {
+   "nome": "dizimas: qtd 1,333 x 0,07, desconto 33,33, geral 12,5",
+   "locacao": false,
+   "descontoGeral": "12.5",
+   "linhas": [
+    {
+     "quantidade": "1.333",
+     "precoUnitario": "0.07",
+     "descontoPercentual": "33.33",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.06"
+    ],
+    "totalItens": "0.06",
+    "totalDescontos": "0.04",
+    "total": "0.05"
+   }
+  },
+  {
+   "nome": "qtd 0,001 x 0,01 arredonda para zero",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "0.001",
+     "precoUnitario": "0.01",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.00"
+    ],
+    "totalItens": "0.00",
+    "totalDescontos": "0.00",
+    "total": "0.00"
+   }
+  },
+  {
+   "nome": "qtd 0,001 x 5,00 empate meio centavo",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "0.001",
+     "precoUnitario": "5.00",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.01"
+    ],
+    "totalItens": "0.01",
+    "totalDescontos": "0.00",
+    "total": "0.01"
+   }
+  },
+  {
+   "nome": "qtd maxima 999.999,999 x 1,00",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "999999.999",
+     "precoUnitario": "1.00",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "1000000.00"
+    ],
+    "totalItens": "1000000.00",
+    "totalDescontos": "0.00",
+    "total": "1000000.00"
+   }
+  },
+  {
+   "nome": "qtd maxima 999.999,999 x 0,07 desconto 33,33",
+   "locacao": false,
+   "descontoGeral": "12.5",
+   "linhas": [
+    {
+     "quantidade": "999999.999",
+     "precoUnitario": "0.07",
+     "descontoPercentual": "33.33",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "46669.00"
+    ],
+    "totalItens": "46669.00",
+    "totalDescontos": "29164.62",
+    "total": "40835.38"
+   }
+  },
+  {
+   "nome": "desconto do item 0",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "2",
+     "precoUnitario": "150.00",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "300.00"
+    ],
+    "totalItens": "300.00",
+    "totalDescontos": "0.00",
+    "total": "300.00"
+   }
+  },
+  {
+   "nome": "desconto do item 100",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "2",
+     "precoUnitario": "150.00",
+     "descontoPercentual": "100",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.00"
+    ],
+    "totalItens": "0.00",
+    "totalDescontos": "300.00",
+    "total": "0.00"
+   }
+  },
+  {
+   "nome": "desconto do item 33,33",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "3",
+     "precoUnitario": "99.99",
+     "descontoPercentual": "33.33",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "199.99"
+    ],
+    "totalItens": "199.99",
+    "totalDescontos": "99.98",
+    "total": "199.99"
+   }
+  },
+  {
+   "nome": "desconto do item 99,99 e geral 0,01",
+   "locacao": false,
+   "descontoGeral": "0.01",
+   "linhas": [
+    {
+     "quantidade": "7",
+     "precoUnitario": "13.13",
+     "descontoPercentual": "99.99",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.01"
+    ],
+    "totalItens": "0.01",
+    "totalDescontos": "91.90",
+    "total": "0.01"
+   }
+  },
+  {
+   "nome": "desconto geral 0",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "10.00",
+     "descontoPercentual": "0",
+     "meses": null
+    },
+    {
+     "quantidade": "2",
+     "precoUnitario": "5.55",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "10.00",
+     "11.10"
+    ],
+    "totalItens": "21.10",
+    "totalDescontos": "0.00",
+    "total": "21.10"
+   }
+  },
+  {
+   "nome": "desconto geral 12,5",
+   "locacao": false,
+   "descontoGeral": "12.5",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "10.00",
+     "descontoPercentual": "0",
+     "meses": null
+    },
+    {
+     "quantidade": "2",
+     "precoUnitario": "5.55",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "10.00",
+     "11.10"
+    ],
+    "totalItens": "21.10",
+    "totalDescontos": "2.64",
+    "total": "18.46"
+   }
+  },
+  {
+   "nome": "desconto geral 100",
+   "locacao": false,
+   "descontoGeral": "100",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "10.00",
+     "descontoPercentual": "10",
+     "meses": null
+    },
+    {
+     "quantidade": "2",
+     "precoUnitario": "5.55",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "9.00",
+     "11.10"
+    ],
+    "totalItens": "20.10",
+    "totalDescontos": "21.10",
+    "total": "0.00"
+   }
+  },
+  {
+   "nome": "desconto geral 100 com itens a 100",
+   "locacao": false,
+   "descontoGeral": "100",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "10.00",
+     "descontoPercentual": "100",
+     "meses": null
+    },
+    {
+     "quantidade": "4",
+     "precoUnitario": "0.99",
+     "descontoPercentual": "100",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.00",
+     "0.00"
+    ],
+    "totalItens": "0.00",
+    "totalDescontos": "13.96",
+    "total": "0.00"
+   }
+  },
+  {
+   "nome": "locacao meses 1",
+   "locacao": true,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "250.00",
+     "descontoPercentual": "0",
+     "meses": 1
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "250.00"
+    ],
+    "totalItens": "250.00",
+    "totalDescontos": "0.00",
+    "total": "250.00"
+   }
+  },
+  {
+   "nome": "locacao meses 120",
+   "locacao": true,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "1.5",
+     "precoUnitario": "250.33",
+     "descontoPercentual": "5",
+     "meses": 120
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "42806.43"
+    ],
+    "totalItens": "42806.43",
+    "totalDescontos": "2252.97",
+    "total": "42806.43"
+   }
+  },
+  {
+   "nome": "locacao com e sem meses",
+   "locacao": true,
+   "descontoGeral": "12.5",
+   "linhas": [
+    {
+     "quantidade": "2",
+     "precoUnitario": "100.00",
+     "descontoPercentual": "10",
+     "meses": 12
+    },
+    {
+     "quantidade": "3",
+     "precoUnitario": "7.77",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "2160.00",
+     "23.31"
+    ],
+    "totalItens": "2183.31",
+    "totalDescontos": "512.91",
+    "total": "1910.40"
+   }
+  },
+  {
+   "nome": "venda ignora meses preenchido",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "2",
+     "precoUnitario": "100.00",
+     "descontoPercentual": "10",
+     "meses": 12
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "180.00"
+    ],
+    "totalItens": "180.00",
+    "totalDescontos": "20.00",
+    "total": "180.00"
+   }
+  },
+  {
+   "nome": "empate meio centavo no subtotal: 0,01 com 50%",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "0.01",
+     "descontoPercentual": "50",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.01"
+    ],
+    "totalItens": "0.01",
+    "totalDescontos": "0.00",
+    "total": "0.01"
+   }
+  },
+  {
+   "nome": "empate meio centavo na quantidade: 0,5 x 0,01",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "0.5",
+     "precoUnitario": "0.01",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.01"
+    ],
+    "totalItens": "0.01",
+    "totalDescontos": "0.00",
+    "total": "0.01"
+   }
+  },
+  {
+   "nome": "empate meio centavo no subtotal: 0,05 com 50% (HALF_EVEN daria 0,02)",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "0.05",
+     "descontoPercentual": "50",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.03"
+    ],
+    "totalItens": "0.03",
+    "totalDescontos": "0.02",
+    "total": "0.03"
+   }
+  },
+  {
+   "nome": "empate meio centavo no geral: 0,05 com 50% (HALF_EVEN daria 0,02)",
+   "locacao": false,
+   "descontoGeral": "50",
+   "linhas": [
+    {
+     "quantidade": "5",
+     "precoUnitario": "0.01",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.05"
+    ],
+    "totalItens": "0.05",
+    "totalDescontos": "0.02",
+    "total": "0.03"
+   }
+  },
+  {
+   "nome": "empate meio centavo no geral: 0,12 com 12,5% (HALF_EVEN daria 0,10)",
+   "locacao": false,
+   "descontoGeral": "12.5",
+   "linhas": [
+    {
+     "quantidade": "12",
+     "precoUnitario": "0.01",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.12"
+    ],
+    "totalItens": "0.12",
+    "totalDescontos": "0.01",
+    "total": "0.11"
+   }
+  },
+  {
+   "nome": "empate meio centavo no geral: 0,01 com 50%",
+   "locacao": false,
+   "descontoGeral": "50",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "0.01",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.01"
+    ],
+    "totalItens": "0.01",
+    "totalDescontos": "0.00",
+    "total": "0.01"
+   }
+  },
+  {
+   "nome": "ordem: bruto nao arredondado antes do desconto (1,5 x 0,01, 10%)",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "1.5",
+     "precoUnitario": "0.01",
+     "descontoPercentual": "10",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.01"
+    ],
+    "totalItens": "0.01",
+    "totalDescontos": "0.01",
+    "total": "0.01"
+   }
+  },
+  {
+   "nome": "ordem: bruto nao arredondado antes do desconto (0,125 x 0,10, 60%)",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "0.125",
+     "precoUnitario": "0.10",
+     "descontoPercentual": "60",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.01"
+    ],
+    "totalItens": "0.01",
+    "totalDescontos": "0.00",
+    "total": "0.01"
+   }
+  },
+  {
+   "nome": "ordem com locacao: 0,333 x 0,05 x 3 meses, 10%",
+   "locacao": true,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "0.333",
+     "precoUnitario": "0.05",
+     "descontoPercentual": "10",
+     "meses": 3
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "0.04"
+    ],
+    "totalItens": "0.04",
+    "totalDescontos": "0.01",
+    "total": "0.04"
+   }
+  },
+  {
+   "nome": "venda tipica com varias linhas",
+   "locacao": false,
+   "descontoGeral": "3",
+   "linhas": [
+    {
+     "quantidade": "2.345",
+     "precoUnitario": "19.99",
+     "descontoPercentual": "7.5",
+     "meses": null
+    },
+    {
+     "quantidade": "10",
+     "precoUnitario": "3.33",
+     "descontoPercentual": "0",
+     "meses": null
+    },
+    {
+     "quantidade": "1",
+     "precoUnitario": "1234.56",
+     "descontoPercentual": "15",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "43.36",
+     "33.30",
+     "1049.38"
+    ],
+    "totalItens": "1126.04",
+    "totalDescontos": "222.48",
+    "total": "1092.26"
+   }
+  },
+  {
+   "nome": "muitos itens (50) em locacao",
+   "locacao": true,
+   "descontoGeral": "7.77",
+   "linhas": [
+    {
+     "quantidade": "0.137",
+     "precoUnitario": "79.19",
+     "descontoPercentual": "33.31",
+     "meses": 8
+    },
+    {
+     "quantidade": "0.274",
+     "precoUnitario": "316.76",
+     "descontoPercentual": "66.62",
+     "meses": 15
+    },
+    {
+     "quantidade": "0.411",
+     "precoUnitario": "712.71",
+     "descontoPercentual": "99.93",
+     "meses": null
+    },
+    {
+     "quantidade": "0.548",
+     "precoUnitario": "1267.04",
+     "descontoPercentual": "33.23",
+     "meses": 29
+    },
+    {
+     "quantidade": "0.685",
+     "precoUnitario": "1979.75",
+     "descontoPercentual": "66.54",
+     "meses": 36
+    },
+    {
+     "quantidade": "0.822",
+     "precoUnitario": "2850.84",
+     "descontoPercentual": "99.85",
+     "meses": null
+    },
+    {
+     "quantidade": "0.959",
+     "precoUnitario": "3880.31",
+     "descontoPercentual": "33.15",
+     "meses": 50
+    },
+    {
+     "quantidade": "1.096",
+     "precoUnitario": "5068.16",
+     "descontoPercentual": "66.46",
+     "meses": 57
+    },
+    {
+     "quantidade": "1.233",
+     "precoUnitario": "6414.39",
+     "descontoPercentual": "99.77",
+     "meses": null
+    },
+    {
+     "quantidade": "1.37",
+     "precoUnitario": "7919",
+     "descontoPercentual": "33.07",
+     "meses": 71
+    },
+    {
+     "quantidade": "1.507",
+     "precoUnitario": "9581.99",
+     "descontoPercentual": "66.38",
+     "meses": 78
+    },
+    {
+     "quantidade": "1.644",
+     "precoUnitario": "1403.36",
+     "descontoPercentual": "99.69",
+     "meses": null
+    },
+    {
+     "quantidade": "1.781",
+     "precoUnitario": "3383.11",
+     "descontoPercentual": "32.99",
+     "meses": 92
+    },
+    {
+     "quantidade": "1.918",
+     "precoUnitario": "5521.24",
+     "descontoPercentual": "66.3",
+     "meses": 99
+    },
+    {
+     "quantidade": "2.055",
+     "precoUnitario": "7817.75",
+     "descontoPercentual": "99.61",
+     "meses": null
+    },
+    {
+     "quantidade": "2.192",
+     "precoUnitario": "272.64",
+     "descontoPercentual": "32.91",
+     "meses": 113
+    },
+    {
+     "quantidade": "2.329",
+     "precoUnitario": "2885.91",
+     "descontoPercentual": "66.22",
+     "meses": 120
+    },
+    {
+     "quantidade": "2.466",
+     "precoUnitario": "5657.56",
+     "descontoPercentual": "99.53",
+     "meses": null
+    },
+    {
+     "quantidade": "2.603",
+     "precoUnitario": "8587.59",
+     "descontoPercentual": "32.83",
+     "meses": 14
+    },
+    {
+     "quantidade": "2.74",
+     "precoUnitario": "1676",
+     "descontoPercentual": "66.14",
+     "meses": 21
+    },
+    {
+     "quantidade": "2.877",
+     "precoUnitario": "4922.79",
+     "descontoPercentual": "99.45",
+     "meses": null
+    },
+    {
+     "quantidade": "3.014",
+     "precoUnitario": "8327.96",
+     "descontoPercentual": "32.75",
+     "meses": 35
+    },
+    {
+     "quantidade": "3.151",
+     "precoUnitario": "1891.51",
+     "descontoPercentual": "66.06",
+     "meses": 42
+    },
+    {
+     "quantidade": "3.288",
+     "precoUnitario": "5613.44",
+     "descontoPercentual": "99.37",
+     "meses": null
+    },
+    {
+     "quantidade": "3.425",
+     "precoUnitario": "9493.75",
+     "descontoPercentual": "32.67",
+     "meses": 56
+    },
+    {
+     "quantidade": "3.562",
+     "precoUnitario": "3532.44",
+     "descontoPercentual": "65.98",
+     "meses": 63
+    },
+    {
+     "quantidade": "3.699",
+     "precoUnitario": "7729.51",
+     "descontoPercentual": "99.29",
+     "meses": null
+    },
+    {
+     "quantidade": "3.836",
+     "precoUnitario": "2084.96",
+     "descontoPercentual": "32.59",
+     "meses": 77
+    },
+    {
+     "quantidade": "3.973",
+     "precoUnitario": "6598.79",
+     "descontoPercentual": "65.9",
+     "meses": 84
+    },
+    {
+     "quantidade": "4.11",
+     "precoUnitario": "1271",
+     "descontoPercentual": "99.21",
+     "meses": null
+    },
+    {
+     "quantidade": "4.247",
+     "precoUnitario": "6101.59",
+     "descontoPercentual": "32.51",
+     "meses": 98
+    },
+    {
+     "quantidade": "4.384",
+     "precoUnitario": "1090.56",
+     "descontoPercentual": "65.82",
+     "meses": 105
+    },
+    {
+     "quantidade": "4.521",
+     "precoUnitario": "6237.91",
+     "descontoPercentual": "99.13",
+     "meses": null
+    },
+    {
+     "quantidade": "4.658",
+     "precoUnitario": "1543.64",
+     "descontoPercentual": "32.43",
+     "meses": 119
+    },
+    {
+     "quantidade": "4.795",
+     "precoUnitario": "7007.75",
+     "descontoPercentual": "65.74",
+     "meses": 6
+    },
+    {
+     "quantidade": "4.932",
+     "precoUnitario": "2630.24",
+     "descontoPercentual": "99.05",
+     "meses": null
+    },
+    {
+     "quantidade": "5.069",
+     "precoUnitario": "8411.11",
+     "descontoPercentual": "32.35",
+     "meses": 20
+    },
+    {
+     "quantidade": "5.206",
+     "precoUnitario": "4350.36",
+     "descontoPercentual": "65.66",
+     "meses": 27
+    },
+    {
+     "quantidade": "5.343",
+     "precoUnitario": "447.99",
+     "descontoPercentual": "98.97",
+     "meses": null
+    },
+    {
+     "quantidade": "5.48",
+     "precoUnitario": "6704",
+     "descontoPercentual": "32.27",
+     "meses": 41
+    },
+    {
+     "quantidade": "5.617",
+     "precoUnitario": "3118.39",
+     "descontoPercentual": "65.58",
+     "meses": 48
+    },
+    {
+     "quantidade": "5.754",
+     "precoUnitario": "9691.16",
+     "descontoPercentual": "98.89",
+     "meses": null
+    },
+    {
+     "quantidade": "5.891",
+     "precoUnitario": "6422.31",
+     "descontoPercentual": "32.19",
+     "meses": 62
+    },
+    {
+     "quantidade": "6.028",
+     "precoUnitario": "3311.84",
+     "descontoPercentual": "65.5",
+     "meses": 69
+    },
+    {
+     "quantidade": "6.165",
+     "precoUnitario": "359.75",
+     "descontoPercentual": "98.81",
+     "meses": null
+    },
+    {
+     "quantidade": "6.302",
+     "precoUnitario": "7566.04",
+     "descontoPercentual": "32.11",
+     "meses": 83
+    },
+    {
+     "quantidade": "6.439",
+     "precoUnitario": "4930.71",
+     "descontoPercentual": "65.42",
+     "meses": 90
+    },
+    {
+     "quantidade": "6.576",
+     "precoUnitario": "2453.76",
+     "descontoPercentual": "98.73",
+     "meses": null
+    },
+    {
+     "quantidade": "6.713",
+     "precoUnitario": "135.19",
+     "descontoPercentual": "32.03",
+     "meses": 104
+    },
+    {
+     "quantidade": "6.85",
+     "precoUnitario": "7975",
+     "descontoPercentual": "65.34",
+     "meses": 111
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "57.88",
+     "434.57",
+     "0.21",
+     "13444.67",
+     "16335.38",
+     "3.52",
+     "124381.69",
+     "106193.71",
+     "18.19",
+     "515549.16",
+     "378670.33",
+     "7.15",
+     "371456.09",
+     "353305.44",
+     "62.66",
+     "45307.11",
+     "272453.98",
+     "65.57",
+     "210207.81",
+     "32653.58",
+     "77.90",
+     "590802.35",
+     "84960.72",
+     "116.28",
+     "1226012.81",
+     "269676.79",
+     "203.00",
+     "415136.94",
+     "750959.54",
+     "41.27",
+     "1713920.95",
+     "171585.85",
+     "245.35",
+     "578157.80",
+     "69072.60",
+     "123.24",
+     "576863.95",
+     "209987.49",
+     "24.65",
+     "1020186.32",
+     "289392.29",
+     "618.97",
+     "1590617.37",
+     "475237.58",
+     "26.39",
+     "2686772.74",
+     "988087.45",
+     "204.93",
+     "64152.24",
+     "2101710.05"
+    ],
+    "totalItens": "18315584.51",
+    "totalDescontos": "19857174.14",
+    "total": "16892463.59"
+   }
+  },
+  {
+   "nome": "limite: preco maximo x qtd maxima",
+   "locacao": false,
+   "descontoGeral": "0",
+   "linhas": [
+    {
+     "quantidade": "999999.999",
+     "precoUnitario": "999999999999.99",
+     "descontoPercentual": "0",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "999999998999990000.00"
+    ],
+    "totalItens": "999999998999990000.00",
+    "totalDescontos": "0.00",
+    "total": "999999998999990000.00"
+   }
+  },
+  {
+   "nome": "limite: preco maximo x qtd maxima x 120 meses, 33,33 e geral 12,5",
+   "locacao": true,
+   "descontoGeral": "12.5",
+   "linhas": [
+    {
+     "quantidade": "999999.999",
+     "precoUnitario": "999999999999.99",
+     "descontoPercentual": "33.33",
+     "meses": 120
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "80003999919995199960.00"
+    ],
+    "totalItens": "80003999919995199960.00",
+    "totalDescontos": "49996499950003000035.00",
+    "total": "70003499929995799965.00"
+   }
+  },
+  {
+   "nome": "limite: preco maximo x qtd 1",
+   "locacao": false,
+   "descontoGeral": "0.01",
+   "linhas": [
+    {
+     "quantidade": "1",
+     "precoUnitario": "999999999999.99",
+     "descontoPercentual": "0.01",
+     "meses": null
+    }
+   ],
+   "esperado": {
+    "subtotais": [
+     "999899999999.99"
+    ],
+    "totalItens": "999899999999.99",
+    "totalDescontos": "199990000.00",
+    "total": "999800009999.99"
+   }
+  }
+ ]
+}

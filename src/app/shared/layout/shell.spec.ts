@@ -46,6 +46,15 @@ describe('Shell', () => {
     expect(el.querySelector('[data-testid=status-conexao]')?.textContent).toMatch(/Online|Offline/);
   });
 
+  it('P4c-R12: no desktop o menu lateral não encolhe e a coluna do conteúdo aceita encolher (telas largas rolam dentro de si)', () => {
+    const { el } = montar('ADMIN');
+    const aside = el.querySelector('aside')!;
+    expect(aside.classList).toContain('shrink-0');
+    const coluna = el.querySelector('main')!.parentElement!;
+    expect(coluna.classList).toContain('flex-1');
+    expect(coluna.classList).toContain('min-w-0');
+  });
+
   it('técnico não vê Kanban nem Clientes', () => {
     const { el } = montar('TECNICO');
     expect(el.textContent).not.toContain('Kanban');
