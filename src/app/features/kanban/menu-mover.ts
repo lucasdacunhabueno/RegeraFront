@@ -1,4 +1,4 @@
-import { afterNextRender, Component, ElementRef, inject, Injector, input, output, signal, viewChild, viewChildren } from '@angular/core';
+import { afterNextRender, Component, effect, ElementRef, inject, Injector, input, output, signal, viewChild, viewChildren } from '@angular/core';
 import { LucideChevronDown, LucideDynamicIcon } from '@lucide/angular';
 import { STATUS_PROPOSTA, StatusProposta } from '../propostas/proposta-models';
 
@@ -60,6 +60,13 @@ export class MenuMover {
   private readonly injector = inject(Injector);
   private readonly gatilho = viewChild.required<ElementRef<HTMLButtonElement>>('gatilho');
   private readonly itens = viewChildren<ElementRef<HTMLButtonElement>>('item');
+
+  constructor() {
+    // um CONFLITO chegou com o menu aberto: fecha (o botão fica desabilitado, com a dica)
+    effect(() => {
+      if (this.bloqueado()) this.aberto.set(false);
+    });
+  }
 
   protected rotulo(s: StatusProposta): string {
     return STATUS_PROPOSTA[s].rotulo;

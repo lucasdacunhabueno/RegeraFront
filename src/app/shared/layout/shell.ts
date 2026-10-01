@@ -13,7 +13,7 @@ import { itensPara } from './navegacao';
   imports: [RouterOutlet, RouterLink, RouterLinkActive, LucideDynamicIcon],
   template: `
     <div class="min-h-dvh lg:flex">
-      <aside class="hidden lg:flex lg:w-60 lg:flex-col lg:border-r lg:border-slate-200 lg:bg-white">
+      <aside class="hidden shrink-0 lg:flex lg:w-60 lg:flex-col lg:border-r lg:border-slate-200 lg:bg-white">
         <div class="px-5 py-4 text-lg font-semibold text-blue-700">Regera</div>
         <nav aria-label="Navegação principal" class="flex flex-col gap-1 px-3">
           @for (item of itens(); track item.rota) {
@@ -30,7 +30,8 @@ import { itensPara } from './navegacao';
         </nav>
       </aside>
 
-      <div class="flex min-h-dvh flex-1 flex-col">
+      <!-- min-w-0: o conteúdo largo (o kanban) rola dentro de si em vez de esticar a página e espremer o menu (P4c-R12) -->
+      <div class="flex min-h-dvh min-w-0 flex-1 flex-col">
         <header class="sticky top-0 z-10 flex h-14 items-center border-b border-slate-200 bg-white px-4">
           <span class="font-semibold text-blue-700 lg:hidden">Regera</span>
           <div class="ml-auto flex items-center gap-3 text-sm">

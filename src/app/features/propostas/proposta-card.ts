@@ -25,7 +25,9 @@ export const ESTILO_SELO: Readonly<Record<Selo['tipo'], { cor: string; icone: Lu
        class="block min-h-12 rounded-xl bg-white px-4 py-3 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600">
       <div class="flex items-start justify-between gap-3">
         <p class="min-w-0 truncate font-mono text-sm font-semibold">{{ codigo() }}</p>
-        <span data-status [attr.class]="'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ' + status().cor">{{ status().rotulo }}</span>
+        @if (mostrarStatus()) {
+          <span data-status [attr.class]="'shrink-0 rounded-full px-2 py-0.5 text-xs font-medium ' + status().cor">{{ status().rotulo }}</span>
+        }
       </div>
       <p class="mt-1 truncate font-medium">{{ clienteNome() }}</p>
       <div class="mt-1 flex flex-wrap items-baseline justify-between gap-x-3 gap-y-1 text-sm text-slate-600">
@@ -57,6 +59,8 @@ export class PropostaCard {
   /** false para o TECNICO: o card não mostra o total. */
   readonly mostrarValores = input.required<boolean>();
   readonly selos = input<Selo[]>([]);
+  /** false no kanban: a coluna já diz o status. */
+  readonly mostrarStatus = input(true);
 
   protected readonly codigo = computed(() => rotuloCodigo(this.proposta()));
   protected readonly status = computed(() => STATUS_PROPOSTA[this.proposta().status]);

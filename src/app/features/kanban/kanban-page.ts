@@ -1,10 +1,12 @@
 import { CdkDrag, CdkDragDrop, CdkDropList, CdkDropListGroup } from '@angular/cdk/drag-drop';
+import { CdkScrollable } from '@angular/cdk/scrolling';
 import { NgTemplateOutlet } from '@angular/common';
 import {
   afterNextRender, Component, computed, DestroyRef, DOCUMENT, effect, ElementRef, inject, Injector, signal, Signal, viewChild,
 } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
+import { LucideDynamicIcon, LucideListFilter } from '@lucide/angular';
 import { AuthService } from '../../core/auth/auth-service';
 import { Toasts } from '../../shared/ui/toasts';
 import { ClientesRepo } from '../clientes/clientes-repo';
@@ -68,7 +70,7 @@ function midiaDesktop(): Signal<boolean> {
  */
 @Component({
   selector: 'app-kanban-page',
-  imports: [RouterLink, NgTemplateOutlet, CdkDropListGroup, CdkDropList, CdkDrag, PropostaCard, MenuMover, DialogoMotivo],
+  imports: [RouterLink, NgTemplateOutlet, CdkDropListGroup, CdkDropList, CdkDrag, CdkScrollable, LucideDynamicIcon, PropostaCard, MenuMover, DialogoMotivo],
   styles: `
     .cdk-drag-preview { box-shadow: 0 8px 24px rgb(15 23 42 / 0.2); border-radius: 0.75rem; }
     .cdk-drag-placeholder { opacity: 0.3; }
@@ -80,12 +82,22 @@ function midiaDesktop(): Signal<boolean> {
       <a routerLink="/propostas/nova" class="inline-flex min-h-12 items-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Nova proposta</a>
     </div>
 
-    <div data-filtros class="mb-3 grid grid-cols-1 gap-3 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-end">
-      <div class="sm:col-span-2 lg:min-w-64 lg:flex-1">
-        <label for="busca-kanban" class="sr-only">Buscar propostas</label>
-        <input id="busca-kanban" type="search" [value]="busca()" (input)="busca.set($any($event.target).value)"
-               placeholder="Número, PROV, cliente ou CPF/CNPJ" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+    <!-- celular: a busca e "Filtros", que abre o resto; desktop (lg): tudo numa linha, sempre à vista -->
+    <div data-filtros class="mb-3 flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end">
+      <div class="flex gap-2 lg:min-w-64 lg:flex-1">
+        <div class="min-w-0 flex-1">
+          <label for="busca-kanban" class="sr-only">Buscar propostas</label>
+          <input id="busca-kanban" type="search" [value]="busca()" (input)="busca.set($any($event.target).value)"
+                 placeholder="Número, PROV, cliente ou CPF/CNPJ" class="h-12 w-full rounded-lg border border-slate-300 px-3" />
+        </div>
+        <button type="button" (click)="filtrosAbertos.update((v) => !v)" [attr.aria-expanded]="filtrosAbertos()" aria-controls="filtros-kanban"
+                class="inline-flex h-12 shrink-0 items-center gap-2 rounded-lg border border-slate-300 bg-white px-3 text-sm font-medium text-slate-700 lg:hidden">
+          <svg [lucideIcon]="iconeFiltros" [size]="18" aria-hidden="true"></svg>
+          {{ rotuloFiltros() }}
+        </button>
       </div>
+      <div id="filtros-kanban" class="grid-cols-1 gap-3 sm:grid-cols-2 lg:flex lg:flex-wrap lg:items-end"
+           [class.grid]="filtrosAbertos()" [class.hidden]="!filtrosAbertos()">
       <div class="flex flex-col gap-1">
         <label for="tipo-kanban" class="text-sm text-slate-600">Tipo</label>
         <select id="tipo-kanban" [value]="tipo()" (change)="tipo.set($any($event.target).value)"
@@ -121,22 +133,21 @@ function midiaDesktop(): Signal<boolean> {
                  (input)="emissaoAte.set($any($event.target).value)" class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3" />
         </div>
       </fieldset>
-    </div>
-
-    <div class="mb-2 flex flex-wrap items-center justify-between gap-2">
       <button type="button" (click)="alternarEncerradas()" [attr.aria-pressed]="mostrarEncerradas()"
-              class="inline-flex min-h-12 items-center gap-2 rounded-lg px-2 text-sm text-slate-700">
+              class="inline-flex min-h-12 items-center gap-2 self-start rounded-lg px-2 text-sm text-slate-700 lg:self-auto">
         <span class="inline-block size-4 rounded border" [class.bg-blue-600]="mostrarEncerradas()"
               [class.border-blue-600]="mostrarEncerradas()" [class.border-slate-400]="!mostrarEncerradas()" aria-hidden="true"></span>
         Mostrar encerradas
       </button>
-      <p data-anuncio role="status" aria-live="polite" class="text-sm text-slate-600">{{ anuncio() }}</p>
+      </div>
     </div>
+
+    <p data-anuncio role="status" aria-live="polite" class="mb-2 min-h-5 text-sm text-slate-600">{{ anuncio() }}</p>
 
     @if (carregando()) {
       <p class="py-8 text-center text-slate-500">Carregando…</p>
     } @else if (desktop()) {
-      <div cdkDropListGroup class="flex gap-3 overflow-x-auto pb-2">
+      <div cdkDropListGroup cdkScrollable class="flex gap-3 overflow-x-auto pb-2">
         @for (c of quadro(); track c.status) {
           <section [attr.data-coluna]="c.status" [attr.data-proibida]="proibida(c.status) ? '' : null" [attr.aria-labelledby]="'coluna-' + c.status"
                    class="flex min-w-64 flex-1 flex-col rounded-xl bg-slate-100 transition-opacity" [class.opacity-40]="proibida(c.status)">
@@ -144,7 +155,7 @@ function midiaDesktop(): Signal<boolean> {
             <ul cdkDropList [cdkDropListData]="c.status" [cdkDropListEnterPredicate]="podeEntrar" cdkDropListSortingDisabled
                 (cdkDropListDropped)="soltar($event)" class="flex min-h-24 flex-1 flex-col gap-2 p-2">
               @for (k of c.cartoes; track k.proposta.id) {
-                <li cdkDrag [cdkDragData]="k.proposta" [cdkDragDisabled]="k.conflito || k.destinos.length === 0"
+                <li cdkDrag [cdkDragData]="k.proposta" [cdkDragDisabled]="k.conflito || k.destinos.length === 0" [cdkDragStartDelay]="atrasoArrasto"
                     (cdkDragStarted)="arrastando.set(k.proposta)" (cdkDragEnded)="arrastando.set(null)">
                   <ng-container *ngTemplateOutlet="cartao; context: { $implicit: k }" />
                 </li>
@@ -155,9 +166,9 @@ function midiaDesktop(): Signal<boolean> {
       </div>
     } @else {
       <div role="tablist" aria-label="Colunas do kanban"
-           class="-mx-4 mb-3 flex snap-x gap-2 overflow-x-auto px-4 pb-1">
+           class="-mx-4 mb-3 flex snap-x scroll-px-4 gap-2 overflow-x-auto px-4 pb-1">
         @for (c of quadro(); track c.status) {
-          <button type="button" role="tab" [id]="'aba-' + c.status" [attr.aria-controls]="'painel-' + c.status"
+          <button type="button" role="tab" [id]="'aba-' + c.status" [attr.aria-controls]="ativa()?.status === c.status ? 'painel-' + c.status : null"
                   [attr.aria-selected]="ativa()?.status === c.status" [tabindex]="ativa()?.status === c.status ? 0 : -1"
                   (click)="aba.set(c.status)" (keydown)="tecladoAbas($event)"
                   class="inline-flex min-h-12 shrink-0 snap-start items-center gap-2 rounded-full border px-4 text-sm"
@@ -199,7 +210,7 @@ function midiaDesktop(): Signal<boolean> {
     <ng-template #cartao let-k>
       <div [attr.data-proposta]="k.proposta.id" class="rounded-xl bg-white shadow-sm">
         <app-proposta-card [proposta]="k.proposta" [clienteNome]="k.clienteNome" [responsavelNome]="k.responsavelNome"
-                           [mostrarValores]="!restrito()" [selos]="k.selos" />
+                           [mostrarValores]="!restrito()" [selos]="k.selos" [mostrarStatus]="false" />
         @if (k.destinos.length > 0) {
           <app-menu-mover class="block px-4 pb-3" [destinos]="k.destinos" [codigo]="k.codigo" [bloqueado]="k.conflito"
                           (escolhido)="aoEscolher(k.proposta, $event)" />
@@ -246,6 +257,19 @@ export class KanbanPage {
   protected readonly emissaoAte = signal('');
   protected readonly mostrarEncerradas = signal(false);
   protected readonly tipos = TIPOS_PROPOSTA;
+  /** Celular: os filtros além da busca ficam atrás de "Filtros" (no desktop, sempre à vista). */
+  protected readonly filtrosAbertos = signal(false);
+  protected readonly iconeFiltros = LucideListFilter;
+  /** Notebook com toque: segurar antes de arrastar, para o toque ainda rolar o quadro; no mouse, na hora. */
+  protected readonly atrasoArrasto = { touch: 300, mouse: 0 };
+
+  /** Os filtros ativos atrás de "Filtros" (a busca fica sempre à vista e não conta). */
+  private readonly filtrosAtivos = computed(
+    () =>
+      [this.tipo() !== 'TODOS', this.ehAdmin() && !!this.responsavel(), !!this.emissaoDe(), !!this.emissaoAte(), this.mostrarEncerradas()]
+        .filter(Boolean).length,
+  );
+  protected readonly rotuloFiltros = computed(() => (this.filtrosAtivos() > 0 ? `Filtros (${this.filtrosAtivos()})` : 'Filtros'));
 
   /** A aba aberta no celular (cai na primeira se a coluna dela some). */
   protected readonly aba = signal<StatusProposta>('RASCUNHO');
@@ -367,7 +391,8 @@ export class KanbanPage {
 
   protected soltar(e: CdkDragDrop<StatusProposta, StatusProposta, PropostaLocal>): void {
     this.arrastando.set(null);
-    if (e.previousContainer === e.container) return;
+    // o CDK emite no último container que aceitou o card, mesmo solto fora dele (sobre uma proibida ou fora do quadro)
+    if (e.previousContainer === e.container || !e.isPointerOverContainer) return;
     this.mover(e.item.data, e.container.data, null);
   }
 
@@ -394,6 +419,17 @@ export class KanbanPage {
 
   protected async transicionar(p: PropostaLocal, para: StatusProposta, motivo?: string | null): Promise<void> {
     if (this.ocupado()) return;
+    // o diálogo pode ter ficado aberto enquanto o sync mudava a proposta: confere de novo com o estado de agora
+    const atual = this.propostas()?.find((x) => x.id === p.id) ?? p;
+    if (!this.soltavel(atual, para)) {
+      this.dialogo.set(null);
+      this.toasts.erro(
+        this.estado().comConflito.has(p.id)
+          ? 'Resolva a pendência primeiro.'
+          : `A proposta mudou e não pode mais ir para ${STATUS_PROPOSTA[para].rotulo}.`,
+      );
+      return;
+    }
     this.ocupado.set(true);
     try {
       if (motivo === undefined) await this.repo.transicionar(p.id, para);

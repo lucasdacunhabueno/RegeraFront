@@ -111,6 +111,16 @@ describe('MenuMover', () => {
     expect(document.activeElement).toBe(gatilho());
   });
 
+  it('aberto, fecha se ficar bloqueado (um CONFLITO chegou)', async () => {
+    const { itens, abrir, host, fixture, gatilho } = montar();
+    await abrir();
+    expect(itens().length).toBe(4);
+    host.bloqueado.set(true);
+    fixture.detectChanges();
+    expect(itens()).toEqual([]);
+    expect(gatilho().getAttribute('aria-expanded')).toBe('false');
+  });
+
   it('bloqueado (CONFLITO): desabilitado, com a dica "Resolva a pendência primeiro."', () => {
     const { gatilho, fixture, el, host } = montar();
     host.bloqueado.set(true);

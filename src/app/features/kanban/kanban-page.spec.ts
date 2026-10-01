@@ -1,4 +1,5 @@
 import { CdkDrag, CdkDropList, CdkDropListGroup } from '@angular/cdk/drag-drop';
+import { CdkScrollable } from '@angular/cdk/scrolling';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { By } from '@angular/platform-browser';
@@ -136,6 +137,30 @@ function alterar(fixture: Fixture, el: HTMLElement, seletor: string, valor: stri
   fixture.detectChanges();
 }
 
+const listas = (fixture: Fixture) =>
+  new Map(fixture.debugElement.queryAll(By.directive(CdkDropList)).map((d) => {
+    const l = d.injector.get(CdkDropList) as CdkDropList<StatusProposta>;
+    return [l.data, l] as const;
+  }));
+const arrastos = (fixture: Fixture) =>
+  new Map(fixture.debugElement.queryAll(By.directive(CdkDrag)).map((d) => {
+    const g = d.injector.get(CdkDrag) as CdkDrag<PropostaLocal>;
+    return [g.data.id, g] as const;
+  }));
+
+/**
+ * O `dropped` do CDK. Ele sai no último container que aceitou o card (`_dropContainer`), mesmo quando o ponteiro foi
+ * solto fora dele (`sobre` false: em cima de uma coluna proibida ou fora do quadro).
+ */
+function soltarCard(fixture: Fixture, id: string, de: StatusProposta, para: StatusProposta, sobre = true): void {
+  const l = listas(fixture);
+  l.get(para)!.dropped.emit({
+    previousContainer: l.get(de)!, container: l.get(para)!, item: arrastos(fixture).get(id)!, previousIndex: 0, currentIndex: 0,
+    isPointerOverContainer: sobre, distance: { x: 0, y: 0 }, dropPoint: { x: 0, y: 0 }, event: new MouseEvent('mouseup'),
+  } as never);
+  fixture.detectChanges();
+}
+
 describe('KanbanPage', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
@@ -195,6 +220,8 @@ describe('KanbanPage', () => {
       expect(c.textContent).toContain('R$ 1.500,00');
       expect(c.textContent).toContain('Carla Comercial');
       expect(c.querySelector('a')?.getAttribute('href')).toBe('/propostas/a');
+      // a coluna já diz o status: o card não repete o selo de status
+      expect(el.querySelectorAll('[data-status]').length).toBe(0);
     });
 
     it('"Mostrar encerradas" acrescenta Recusada e Cancelada; desligar tira de novo', () => {
@@ -213,17 +240,6 @@ describe('KanbanPage', () => {
     });
 
     describe('arrastar e soltar (CDK)', () => {
-      const listas = (fixture: Fixture) =>
-        new Map(fixture.debugElement.queryAll(By.directive(CdkDropList)).map((d) => {
-          const l = d.injector.get(CdkDropList) as CdkDropList<StatusProposta>;
-          return [l.data, l] as const;
-        }));
-      const arrastos = (fixture: Fixture) =>
-        new Map(fixture.debugElement.queryAll(By.directive(CdkDrag)).map((d) => {
-          const g = d.injector.get(CdkDrag) as CdkDrag<PropostaLocal>;
-          return [g.data.id, g] as const;
-        }));
-
       it('as colunas estão num cdkDropListGroup, sem reordenar dentro da coluna', () => {
         const { fixture } = montar({ desktop: true });
         const l = listas(fixture);
@@ -232,6 +248,22 @@ describe('KanbanPage', () => {
         const grupo = fixture.debugElement.query(By.directive(CdkDropListGroup));
         expect(grupo).not.toBeNull();
         expect(fixture.debugElement.queryAll(By.directive(CdkDropList)).every((d) => grupo.nativeElement.contains(d.nativeElement))).toBe(true);
+      });
+
+      it('o quadro é cdkScrollable (o arrasto rola até as colunas fora da tela) e rola dentro de si', () => {
+        const { fixture } = montar({ desktop: true });
+        const rolavel = fixture.debugElement.query(By.directive(CdkScrollable));
+        expect(rolavel).not.toBeNull();
+        expect(rolavel.nativeElement).toBe(fixture.debugElement.query(By.directive(CdkDropListGroup)).nativeElement);
+        expect((rolavel.nativeElement as HTMLElement).classList).toContain('overflow-x-auto');
+      });
+
+      it('no toque (notebook híbrido) o arrasto só começa depois de segurar 300 ms; no mouse, na hora', () => {
+        const { fixture } = montar({ desktop: true });
+        expect([...arrastos(fixture).values()].every((g) => {
+          const atraso = g.dragStartDelay as { touch: number; mouse: number };
+          return atraso.touch === 300 && atraso.mouse === 0;
+        })).toBe(true);
       });
 
       it('o predicado de entrada vem do podeSoltar (a própria coluna aceita a volta)', () => {
@@ -270,14 +302,7 @@ describe('KanbanPage', () => {
 
       it('soltar numa coluna permitida transiciona; na mesma coluna ou numa proibida, nada muda', async () => {
         const { fixture, repo, el } = montar({ desktop: true });
-        const l = listas(fixture);
-        const soltar = (id: string, de: StatusProposta, para: StatusProposta) => {
-          l.get(para)!.dropped.emit({
-            previousContainer: l.get(de)!, container: l.get(para)!, item: arrastos(fixture).get(id)!, previousIndex: 0, currentIndex: 0,
-            isPointerOverContainer: true, distance: { x: 0, y: 0 }, dropPoint: { x: 0, y: 0 }, event: new MouseEvent('mouseup'),
-          } as never);
-          fixture.detectChanges();
-        };
+        const soltar = (id: string, de: StatusProposta, para: StatusProposta) => soltarCard(fixture, id, de, para);
         soltar('a', 'ENVIADA', 'ENVIADA');
         soltar('a', 'ENVIADA', 'FINALIZADA');
         soltar('i', 'FINALIZADA', 'RASCUNHO');
@@ -288,10 +313,36 @@ describe('KanbanPage', () => {
         expect(repo.transicionar).toHaveBeenCalledExactlyOnceWith('a', 'APROVADA');
       });
 
+      it('I1: soltar fora da coluna aceita (sobre uma proibida ou fora do quadro) não move, mesmo com o dropped do CDK', async () => {
+        const { fixture, repo, navegar, el } = montar({ desktop: true });
+        // passou por Aprovada (aceita) e foi solto sobre Em execução (esmaecida): o CDK emite em Aprovada
+        soltarCard(fixture, 'a', 'ENVIADA', 'APROVADA', false);
+        soltarCard(fixture, 'b', 'RASCUNHO', 'ENVIADA', false);
+        await fixture.whenStable();
+        expect(repo.transicionar).not.toHaveBeenCalled();
+        expect(navegar).not.toHaveBeenCalled();
+        expect(el.querySelector('[role="dialog"]')).toBeNull();
+        expect(codigos(coluna(el, 'ENVIADA'))).toEqual(['000015', '000277', '000018']);
+      });
+
+      it('m5: erro do repositório no arrasto (sem gatilho) vira toast e nada se move', async () => {
+        const { fixture, el, erro } = montar({
+          desktop: true,
+          transicionar: async () => {
+            throw new ErroCampo('proposta', 'Você só altera as propostas em que é o responsável.');
+          },
+        });
+        soltarCard(fixture, 'a', 'ENVIADA', 'APROVADA');
+        await fixture.whenStable();
+        fixture.detectChanges();
+        expect(erro).toHaveBeenCalledWith('Você só altera as propostas em que é o responsável.');
+        expect(codigos(coluna(el, 'ENVIADA'))).toContain('000277');
+        expect(el.querySelector('[data-anuncio]')?.textContent?.trim()).toBe('');
+      });
+
       it('soltar RASCUNHO em Enviada abre o wizard no passo de envio (o card não se move)', () => {
         const { fixture, repo, navegar } = montar({ desktop: true });
-        const l = listas(fixture);
-        l.get('ENVIADA')!.dropped.emit({ previousContainer: l.get('RASCUNHO')!, container: l.get('ENVIADA')!, item: arrastos(fixture).get('b')! } as never);
+        soltarCard(fixture, 'b', 'RASCUNHO', 'ENVIADA');
         expect(navegar).toHaveBeenCalledWith(['/propostas', 'b', 'editar'], { queryParams: { passo: 4 } });
         expect(repo.transicionar).not.toHaveBeenCalled();
       });
@@ -300,9 +351,7 @@ describe('KanbanPage', () => {
         const { fixture, repo, el } = montar({ desktop: true, usuario: ADMIN });
         botao(el, 'Mostrar encerradas')!.click();
         fixture.detectChanges();
-        const l = listas(fixture);
-        l.get('RECUSADA')!.dropped.emit({ previousContainer: l.get('ENVIADA')!, container: l.get('RECUSADA')!, item: arrastos(fixture).get('a')! } as never);
-        fixture.detectChanges();
+        soltarCard(fixture, 'a', 'ENVIADA', 'RECUSADA');
         expect(el.querySelector('[role="dialog"] h2')?.textContent?.trim()).toBe('Recusar proposta');
         botao(el, 'Cancelar')!.click();
         fixture.detectChanges();
@@ -412,6 +461,73 @@ describe('KanbanPage', () => {
       expect(el.querySelector('[data-anuncio]')?.textContent?.trim()).toBe('');
     });
 
+    it('m5: erro ao gravar depois de confirmar o motivo: o diálogo fica aberto, com o motivo digitado, e sai um toast', async () => {
+      const { fixture, el, erro, repo } = montar({
+        desktop: true,
+        transicionar: async () => {
+          throw new ErroCampo('proposta', 'Não foi possível concluir. Tente de novo.');
+        },
+      });
+      escolher(fixture, el, 'a', 'Recusada');
+      const campo = el.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!;
+      campo.value = 'Cliente achou caro';
+      campo.dispatchEvent(new Event('input'));
+      fixture.detectChanges();
+      botao(el, 'Recusar')!.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(repo.transicionar).toHaveBeenCalledWith('a', 'RECUSADA', 'Cliente achou caro');
+      expect(erro).toHaveBeenCalledWith('Não foi possível concluir. Tente de novo.');
+      expect(el.querySelector('[role="dialog"]')).not.toBeNull();
+      expect(el.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!.value).toBe('Cliente achou caro');
+      expect(botao(el, 'Recusar')!.disabled).toBe(false);
+      expect(codigos(coluna(el, 'ENVIADA'))).toContain('000277');
+    });
+
+    it('m6: um CONFLITO chega com o diálogo aberto: confirmar não grava, fecha o diálogo e avisa', async () => {
+      const estado = new BehaviorSubject<EstadoSync>(VAZIO);
+      const { fixture, el, erro, repo } = montar({ desktop: true, estado });
+      escolher(fixture, el, 'a', 'Recusada');
+      const campo = el.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!;
+      campo.value = 'Cliente achou caro';
+      campo.dispatchEvent(new Event('input'));
+      estado.next({ ...VAZIO, comPendencia: new Set(['a']), comConflito: new Set(['a']) });
+      fixture.detectChanges();
+      botao(el, 'Recusar')!.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(repo.transicionar).not.toHaveBeenCalled();
+      expect(el.querySelector('[role="dialog"]')).toBeNull();
+      expect(erro).toHaveBeenCalledWith('Resolva a pendência primeiro.');
+      expect(gatilhoDe(el, 'a')!.disabled).toBe(true);
+    });
+
+    it('m6: o status mudou pelo sync com o diálogo aberto (o destino não vale mais): não grava, fecha e avisa', async () => {
+      const todas = new BehaviorSubject<PropostaLocal[]>(LISTA);
+      const { fixture, el, erro, repo } = montar({ desktop: true, todas });
+      escolher(fixture, el, 'a', 'Recusada');
+      const campo = el.querySelector<HTMLTextAreaElement>('[role="dialog"] textarea')!;
+      campo.value = 'Cliente achou caro';
+      campo.dispatchEvent(new Event('input'));
+      todas.next(LISTA.map((p) => (p.id === 'a' ? { ...p, status: 'APROVADA' as const } : p)));
+      fixture.detectChanges();
+      botao(el, 'Recusar')!.click();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(repo.transicionar).not.toHaveBeenCalled();
+      expect(el.querySelector('[role="dialog"]')).toBeNull();
+      expect(erro).toHaveBeenCalledWith('A proposta mudou e não pode mais ir para Recusada.');
+    });
+
+    it('m6: com o menu aberto, um CONFLITO que chega fecha o menu', () => {
+      const estado = new BehaviorSubject<EstadoSync>(VAZIO);
+      const { fixture, el } = montar({ desktop: true, estado });
+      expect(abrirMenu(fixture, el, 'a').length).toBe(4);
+      estado.next({ ...VAZIO, comPendencia: new Set(['a']), comConflito: new Set(['a']) });
+      fixture.detectChanges();
+      expect(cartao(el, 'a')!.querySelector('[role="menu"]')).toBeNull();
+    });
+
     it('com CONFLITO: sem arrastar e "Mover para…" desabilitado, com "Resolva a pendência primeiro"', () => {
       const { fixture, el } = montar({ desktop: true, estado: of({ ...VAZIO, comPendencia: new Set(['a']), comConflito: new Set(['a']) }) });
       const g = gatilhoDe(el, 'a')!;
@@ -467,6 +583,39 @@ describe('KanbanPage', () => {
       expect(todosCodigos(el)).toEqual(['000018']);
     });
 
+    it('k1: no celular só a busca fica à vista; "Filtros" abre o resto e conta os ativos', () => {
+      const { fixture, el } = montar();
+      const filtros = [...el.querySelectorAll('button')].find((b) => b.textContent?.trim().startsWith('Filtros'))!;
+      const painel = () => el.querySelector<HTMLElement>('#' + filtros.getAttribute('aria-controls'))!;
+      expect(el.querySelector('#busca-kanban')).not.toBeNull();
+      expect(filtros.classList).toContain('lg:hidden');
+      expect(filtros.getAttribute('aria-expanded')).toBe('false');
+      expect(filtros.textContent?.trim()).toBe('Filtros');
+      // fechado: oculto no celular, sempre à vista no desktop (lg)
+      expect(painel().classList).toContain('hidden');
+      expect(painel().className).toMatch(/\blg:(flex|contents|grid)\b/);
+      for (const id of ['#tipo-kanban', '#responsavel-kanban', '#emissao-de', '#emissao-ate']) expect(painel().querySelector(id)).not.toBeNull();
+      expect([...painel().querySelectorAll('button')].some((b) => b.textContent?.trim() === 'Mostrar encerradas')).toBe(true);
+      filtros.click();
+      fixture.detectChanges();
+      expect(filtros.getAttribute('aria-expanded')).toBe('true');
+      expect(painel().classList).not.toContain('hidden');
+      alterar(fixture, el, '#tipo-kanban', 'SERVICO');
+      alterar(fixture, el, '#emissao-de', '2026-09-01', 'input');
+      expect(filtros.textContent?.trim()).toBe('Filtros (2)');
+      botao(el, 'Mostrar encerradas')!.click();
+      alterar(fixture, el, '#responsavel-kanban', ADMIN.id);
+      alterar(fixture, el, '#emissao-ate', '2026-09-30', 'input');
+      expect(filtros.textContent?.trim()).toBe('Filtros (5)');
+      // a busca fica de fora da conta (está sempre à vista)
+      alterar(fixture, el, '#busca-kanban', '277', 'input');
+      expect(filtros.textContent?.trim()).toBe('Filtros (5)');
+      filtros.click();
+      fixture.detectChanges();
+      expect(filtros.getAttribute('aria-expanded')).toBe('false');
+      expect(painel().classList).toContain('hidden');
+    });
+
     it('o comercial não vê o filtro de responsável', () => {
       const { el } = montar({ desktop: true, usuario: COMERCIAL });
       expect(el.querySelector('#responsavel-kanban')).toBeNull();
@@ -487,7 +636,12 @@ describe('KanbanPage', () => {
       expect(abas(el).map((a) => a.getAttribute('aria-selected'))).toEqual(['true', 'false', 'false', 'false', 'false']);
       expect(abas(el).map((a) => a.tabIndex)).toEqual([0, -1, -1, -1, -1]);
       expect(painel(el).getAttribute('aria-labelledby')).toBe(abas(el)[0].id);
-      expect(abas(el)[0].getAttribute('aria-controls')).toBe(painel(el).id);
+      // m3: só o painel ativo existe, então só a aba ativa aponta para ele
+      expect(abas(el).map((a) => a.getAttribute('aria-controls'))).toEqual([painel(el).id, null, null, null, null]);
+      // k2: o encaixe do scroll respeita a margem da página (a primeira aba não cola na borda)
+      const faixa = el.querySelector('[role="tablist"]')!;
+      expect(faixa.classList).toContain('px-4');
+      expect(faixa.classList).toContain('scroll-px-4');
       expect(codigos(painel(el))).toEqual(['PROV-B00000']);
       expect(fixture.debugElement.queryAll(By.directive(CdkDrag)).length).toBe(0);
       expect(el.querySelectorAll('[data-coluna]').length).toBe(1);
@@ -498,6 +652,8 @@ describe('KanbanPage', () => {
       abas(el)[1].click();
       fixture.detectChanges();
       expect(abas(el)[1].getAttribute('aria-selected')).toBe('true');
+      expect(abas(el)[1].getAttribute('aria-controls')).toBe(painel(el).id);
+      expect(abas(el)[0].getAttribute('aria-controls')).toBeNull();
       expect(codigos(painel(el))).toEqual(['000015', '000277', '000018']);
       expect(painel(el).querySelector('[data-total]')?.textContent?.trim()).toBe('R$ 2.100,00');
       const tecla = (key: string) => {

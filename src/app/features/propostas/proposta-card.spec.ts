@@ -20,6 +20,7 @@ function montar(entradas: {
   responsavelNome?: string | null;
   mostrarValores?: boolean;
   selos?: Selo[];
+  mostrarStatus?: boolean;
 } = {}) {
   TestBed.configureTestingModule({ providers: [provideRouter([])] });
   const fixture = TestBed.createComponent(PropostaCard);
@@ -28,11 +29,20 @@ function montar(entradas: {
   fixture.componentRef.setInput('responsavelNome', entradas.responsavelNome === undefined ? 'Carla Comercial' : entradas.responsavelNome);
   fixture.componentRef.setInput('mostrarValores', entradas.mostrarValores ?? true);
   fixture.componentRef.setInput('selos', entradas.selos ?? []);
+  if (entradas.mostrarStatus !== undefined) fixture.componentRef.setInput('mostrarStatus', entradas.mostrarStatus);
   fixture.detectChanges();
   return fixture.nativeElement as HTMLElement;
 }
 
 describe('PropostaCard', () => {
+  it('mostra o status por padrão; mostrarStatus false (coluna do kanban, que já diz o status) o tira', () => {
+    expect(montar().querySelector('[data-status]')?.textContent?.trim()).toBe('Enviada');
+    TestBed.resetTestingModule();
+    const el = montar({ mostrarStatus: false });
+    expect(el.querySelector('[data-status]')).toBeNull();
+    expect(el.textContent).toContain('000277-R2');
+  });
+
   it('o card inteiro é um link para o detalhe, com alvo de 48 px', () => {
     const el = montar();
     const links = el.querySelectorAll('a');
