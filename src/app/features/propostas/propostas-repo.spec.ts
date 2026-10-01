@@ -508,6 +508,19 @@ describe('PropostasRepo', () => {
       expect((await fila()).map((x) => x.op)).toEqual(['UPSERT']);
     });
 
+    it('versaoCarregada (P4c-R9): a base da mutação e da cópia local é a versão que a tela carregou', async () => {
+      await existente('RASCUNHO', { version: 5 });
+      usuario.set(ADMIN);
+      await repo.atribuir('p1', { responsavelId: OUTRO_COMERCIAL.id }, 4);
+      expect((await fila()).map((m) => [m.op, m.baseVersion])).toEqual([['UPSERT', 4]]);
+      expect((await db.propostas.get('p1'))!.version).toBe(4);
+      // sem versaoCarregada, a da cópia local (como antes)
+      await db.outbox.clear();
+      await existente('RASCUNHO', { version: 5 });
+      await repo.atribuir('p1', { responsavelId: OUTRO_COMERCIAL.id });
+      expect((await fila())[0].baseVersion).toBe(5);
+    });
+
     it('recusa em status terminal e técnico que não é TECNICO', async () => {
       await existente('APROVADA');
       expect((await erroDe(repo.atribuir('p1', { tecnicoId: COMERCIAL.id }))).campo).toBe('tecnicoId');
@@ -523,6 +536,29 @@ describe('PropostasRepo', () => {
       usuario.set(ADMIN);
       expect((await erroDe(repo.atribuir('p1', { tecnicoId: TECNICO.id }))).codigo).toBe('PROPOSTA_NAO_EDITAVEL');
       expect(await db.outbox.count()).toBe(0);
+    });
+  });
+
+  describe('"Manter as minhas" do wizard e depois Adicionar (P4c-R9, outbox real)', () => {
+    // o pull trouxe a edição de outro aparelho (versão 5); a tela representa a 4 e o usuário manteve as dele
+    it('a mutação de base antiga fica primeira; o Adicionar e as gravações seguintes coalescem nela (base 4)', async () => {
+      await existente('RASCUNHO', { version: 5, observacoes: 'de lá' });
+      await repo.salvarRascunho('p1', { observacoes: 'minha' }, 4);
+      await repo.adicionarItem('p1', paraItemLocal('i-venda', 1, item('P-1')));
+      await repo.salvarRascunho('p1', { prazoExecucao: '20 dias' }, 4);
+      const doP1 = (await fila()).filter((m) => m.agregadoId === 'p1');
+      expect(doP1.map((m) => m.baseVersion)).toEqual([4]);
+      expect(doP1[0].dados).toMatchObject({ observacoes: 'minha', prazoExecucao: '20 dias' });
+      expect((doP1[0].dados as PropostaDados).itens).toHaveLength(2);
+    });
+
+    it('com a primeira em voo, o Adicionar entra atrás dela também com a base 4 (a da cópia local)', async () => {
+      await existente('RASCUNHO', { version: 5, observacoes: 'de lá' });
+      await repo.salvarRascunho('p1', { observacoes: 'minha' }, 4);
+      const [primeira] = await fila();
+      await db.outbox.update(primeira.seq!, { enviando: true });
+      await repo.adicionarItem('p1', paraItemLocal('i-venda', 1, item('P-1')));
+      expect((await fila()).filter((m) => m.agregadoId === 'p1').map((m) => m.baseVersion)).toEqual([4, 4]);
     });
   });
 

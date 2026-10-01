@@ -121,8 +121,9 @@ function repoFalso(iniciais: PropostaLocal[]) {
       if (versaoCarregada !== undefined) p.version = versaoCarregada;
       emitir(id);
     }),
-    atribuir: vi.fn(async (id: string, m: { responsavelId?: string; tecnicoId?: string | null }) => {
+    atribuir: vi.fn(async (id: string, m: { responsavelId?: string; tecnicoId?: string | null }, versaoCarregada?: number | null) => {
       Object.assign(ler(id), m);
+      if (versaoCarregada !== undefined) ler(id).version = versaoCarregada;
       emitir(id);
     }),
     adicionarItem: vi.fn(async (id: string, i: ItemLocal) => {
@@ -807,19 +808,98 @@ describe('WizardPropostaPage', () => {
       expect(repo.salvarRascunho).not.toHaveBeenCalled();
     });
 
-    it('"Manter as minhas" grava com a versão base antiga: o servidor responde CONFLITO (Pendências)', async () => {
-      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3' });
+    it('"Manter as minhas" grava na hora os passos em colisão com a versão base antiga (CONFLITO no servidor, P4c-R9)', async () => {
+      const { fixture, el, repo, pagina } = await montar({ id: 'p1', passo: '3' });
       digitar(fixture, el.querySelector<HTMLTextAreaElement>('#observacoes')!, 'Minha obs.');
       repo.foraDoAparelho('p1', (p) => (p.observacoes = 'Obs. de lá'));
       await ate(fixture, () => expect(banner(el)).not.toBeNull());
       botao(el, 'Manter as minhas')!.click();
+      await vi.waitFor(() => expect(repo.salvarRascunho).toHaveBeenCalledTimes(1));
       fixture.detectChanges();
       expect(banner(el)).toBeNull();
-      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
-      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
       const [, edicao, versao] = repo.salvarRascunho.mock.calls[0];
       expect(edicao.observacoes).toBe('Minha obs.');
       expect(versao).toBe(1);
+      expect(pagina.temAlteracoes()).toBe(false);
+      // o resto da edição segue com a base antiga (a mutação dela já está na frente da fila)
+      digitar(fixture, el.querySelector<HTMLInputElement>('#prazo-execucao')!, '20 dias');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
+      expect(repo.salvarRascunho.mock.calls[1][2]).toBe(1);
+    });
+
+    it('"Manter as minhas" com campo inválido no passo em colisão: não grava, a faixa fica e o campo recebe o foco', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3' });
+      digitar(fixture, el.querySelector<HTMLInputElement>('#desconto-geral')!, '1.234');
+      repo.foraDoAparelho('p1', (p) => (p.descontoGeralCentesimos = 500));
+      await ate(fixture, () => expect(banner(el)).not.toBeNull());
+      botao(el, 'Manter as minhas')!.click();
+      await vi.waitFor(() => expect(document.activeElement).toBe(el.querySelector('#desconto-geral')));
+      fixture.detectChanges();
+      expect(banner(el)).not.toBeNull();
+      expect(repo.salvarRascunho).not.toHaveBeenCalled();
+    });
+
+    it('"Manter as minhas" com só o responsável trocado (ADMIN): atribuir com a versão base antiga (N-3)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3', usuario: ADMIN });
+      escolher(fixture, el.querySelector<HTMLSelectElement>('#responsavel')!, 'u-com2');
+      repo.foraDoAparelho('p1', (p) => (p.responsavelId = ADMIN.id));
+      await ate(fixture, () => expect(banner(el)).not.toBeNull());
+      botao(el, 'Manter as minhas')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalled());
+      expect(repo.atribuir).toHaveBeenCalledWith('p1', { responsavelId: 'u-com2' }, 1);
+    });
+
+    it('sem "Manter", o responsável vai por atribuir sem versão (a da cópia local)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '3', usuario: ADMIN });
+      escolher(fixture, el.querySelector<HTMLSelectElement>('#responsavel')!, 'u-com2');
+      el.querySelector<HTMLButtonElement>('[data-testid=continuar]')!.click();
+      await ate(fixture, () => expect(titulo(el)).toBe('Revisão'));
+      expect(repo.atribuir.mock.calls[0]).toEqual(['p1', { responsavelId: 'u-com2' }]);
+    });
+
+    it('com a faixa aberta, Adicionar fica desabilitado e nada é adicionado (N-1)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '2' });
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '3');
+      repo.foraDoAparelho('p1', (p) => (p.itens[0].precoUnitarioCentavos = 99900));
+      await ate(fixture, () => expect(banner(el)).not.toBeNull());
+      digitar(fixture, el.querySelector<HTMLInputElement>('#busca-catalogo')!, 'ger');
+      const adicionar = el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!;
+      expect(adicionar.disabled).toBe(true);
+      adicionar.click();
+      await fixture.whenStable();
+      expect(repo.adicionarItem).not.toHaveBeenCalled();
+      expect(banner(el)).not.toBeNull();
+    });
+
+    it('Adicionar relê antes: a edição de lá que ainda não chegou pela observação abre a faixa e nada é adicionado', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '2' });
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '3');
+      repo.foraDoAparelho('p1', (p) => (p.itens[0].precoUnitarioCentavos = 99900), { emitir: false });
+      digitar(fixture, el.querySelector<HTMLInputElement>('#busca-catalogo')!, 'ger');
+      el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!.click();
+      await ate(fixture, () => expect(banner(el)).not.toBeNull());
+      expect(repo.adicionarItem).not.toHaveBeenCalled();
+      expect(campoDaLinha(el, 'l1', 'quantidade')!.value).toBe('3');
+    });
+
+    it('edição de lá no meio do Adicionar: o gravado não é "o de antes + a linha nova", então é colisão (N-1)', async () => {
+      const { fixture, el, repo } = await montar({ id: 'p1', passo: '2' });
+      digitar(fixture, campoDaLinha(el, 'l1', 'quantidade')!, '3');
+      const original = repo.adicionarItem.getMockImplementation()!;
+      repo.adicionarItem.mockImplementationOnce(async (id, item) => {
+        repo.foraDoAparelho(id, (p) => (p.itens[0].precoUnitarioCentavos = 99900), { emitir: false });
+        return original(id, item);
+      });
+      digitar(fixture, el.querySelector<HTMLInputElement>('#busca-catalogo')!, 'ger');
+      el.querySelector<HTMLButtonElement>('[data-testid=adicionar-item]')!.click();
+      await ate(fixture, () => expect(banner(el)).not.toBeNull());
+      expect(campoDaLinha(el, 'l-i2', 'quantidade')).not.toBeNull();
+      // a base não avançou: manter grava com a versão antiga
+      botao(el, 'Manter as minhas')!.click();
+      await vi.waitFor(() => expect(repo.salvarRascunho).toHaveBeenCalled());
+      expect(repo.salvarRascunho.mock.calls[0][2]).toBe(1);
+      expect(repo.salvarRascunho.mock.calls[0][1].itens!.map((l) => [l.id, l.quantidadeMilesimos])).toEqual([['l1', 3000], ['l-i2', 1000]]);
     });
 
     it('ack do próprio push (versão e número, nenhum campo): sem faixa, a base e o código avançam', async () => {
@@ -888,6 +968,17 @@ describe('WizardPropostaPage', () => {
       expect(segunda).toBe(primeira);
       expect(segunda.name).toBe('Proposta-PROV-ABC123.pdf');
       await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+    });
+
+    it('a folha do rodapé respeita a área segura e a página ganha espaço para o fim da revisão (N-2)', async () => {
+      Object.defineProperty(navigator, 'share', { configurable: true, writable: true, value: vi.fn().mockRejectedValue(new DOMException('x', 'NotAllowedError')) });
+      Object.defineProperty(navigator, 'canShare', { configurable: true, writable: true, value: () => true });
+      const { fixture, el } = await montar({ id: 'p1', passo: '4' });
+      expect(el.querySelector('[data-testid=pagina-wizard]')!.classList).not.toContain('pb-72');
+      el.querySelector<HTMLButtonElement>('[data-testid=enviar]')!.click();
+      await ate(fixture, () => expect(el.querySelector('[role=dialog]')).not.toBeNull());
+      expect(el.querySelector('[data-testid=folha-pdf-pronto]')!.classList).toContain('pb-[calc(1rem+env(safe-area-inset-bottom))]');
+      expect(el.querySelector('[data-testid=pagina-wizard]')!.classList).toContain('pb-72');
     });
 
     it('fechar o painel também vai ao detalhe', async () => {

@@ -42,7 +42,9 @@ const CAMPOS: readonly CampoDaTela[] = [
                   <p class="truncate font-medium">{{ i.nome }}</p>
                   <p class="truncate text-sm text-slate-500">{{ i.codigo }} · {{ i.unidade }}</p>
                 </div>
-                <button type="button" data-testid="adicionar-item" (click)="adicionar.emit(i)" [disabled]="adicionando()"
+                <!-- com a faixa de colisão aberta, nada entra até o usuário escolher (P4c-R9) -->
+                <button type="button" data-testid="adicionar-item" (click)="adicionar.emit(i)"
+                        [disabled]="adicionando() || e.colisao().size > 0"
                         [attr.aria-label]="'Adicionar ' + i.nome"
                         class="h-12 shrink-0 rounded-lg border border-blue-600 px-4 text-sm font-semibold text-blue-700 disabled:opacity-60">
                   Adicionar

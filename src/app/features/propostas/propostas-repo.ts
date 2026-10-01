@@ -542,9 +542,14 @@ export class PropostasRepo {
 
   /**
    * Atribuição (P4b-R3), em qualquer status não terminal: o responsável só o ADMIN troca (por um ADMIN ou COMERCIAL);
-   * o técnico, o ADMIN ou o responsável (por um TECNICO, ou nenhum).
+   * o técnico, o ADMIN ou o responsável (por um TECNICO, ou nenhum). versaoCarregada: como em `salvarRascunho`, a
+   * versão que a tela carregou (P4c-R9: o "Manter as minhas" do wizard grava com ela, e o servidor dá CONFLITO).
    */
-  async atribuir(id: string, mudanca: { responsavelId?: string; tecnicoId?: string | null }): Promise<void> {
+  async atribuir(
+    id: string,
+    mudanca: { responsavelId?: string; tecnicoId?: string | null },
+    versaoCarregada?: number | null,
+  ): Promise<void> {
     const u = this.usuario();
     const atual = await this.carregar(id);
     const ehResponsavel = atual.responsavelId === u.id;
@@ -561,7 +566,8 @@ export class PropostasRepo {
       }
     }
     if (tecnicoId !== atual.tecnicoId) await this.conferirTecnico(atual, u, tecnicoId);
-    await this.gravar({ ...atual, responsavelId, tecnicoId }, atual.version);
+    const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
+    await this.gravar({ ...atual, responsavelId, tecnicoId, version }, version);
   }
 
   /**

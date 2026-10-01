@@ -45,10 +45,11 @@ export interface ModoWizard {
   /** null = a proposta pode ser aberta neste modo; senão, o toast (e a tela volta para o detalhe). */
   recusar(p: PropostaLocal): string | null;
   /**
-   * Grava a edição de um passo e devolve a proposta como ficou no aparelho. `versaoBase`: a versão que a tela
-   * representa (P4c-R7), a base para o servidor detectar a edição de outro aparelho.
+   * Grava a edição de um passo e devolve a proposta como ficou no aparelho. `versao.base`: a versão que a tela
+   * representa (P4c-R7), a base para o servidor detectar a edição de outro aparelho; `versao.manter`: depois de
+   * "Manter as minhas", toda escrita leva essa base (P4c-R9), inclusive a da atribuição.
    */
-  salvar(injector: Injector, id: string, edicao: EdicaoWizard, versaoBase: number | null): Promise<PropostaLocal>;
+  salvar(injector: Injector, id: string, edicao: EdicaoWizard, versao: { base: number | null; manter: boolean }): Promise<PropostaLocal>;
   /** Acrescenta o item do catálogo e devolve a linha nova e a proposta como ficou. */
   adicionarItem(injector: Injector, id: string, item: ItemLocal): Promise<{ linha: ItemPropostaLocal; proposta: PropostaLocal }>;
 }
@@ -64,12 +65,16 @@ export const MODOS_WIZARD: Readonly<Record<string, ModoWizard>> = {
     passos: [1, 2, 3, 4],
     rotuloSalvar: 'Salvar rascunho',
     recusar: (p) => (podeEditar(p.status) ? null : 'Só rascunhos podem ser editados.'),
-    async salvar(injector, id, edicao, versaoBase) {
+    async salvar(injector, id, edicao, versao) {
       const repo = injector.get(PropostasRepo);
       const { responsavelId, ...resto } = edicao;
-      if (Object.keys(resto).length > 0) await repo.salvarRascunho(id, resto, versaoBase);
-      // o responsável não é campo do rascunho: só o ADMIN troca, por `atribuir` (P4b-R3)
-      if (responsavelId !== undefined) await repo.atribuir(id, { responsavelId });
+      if (Object.keys(resto).length > 0) await repo.salvarRascunho(id, resto, versao.base);
+      // o responsável não é campo do rascunho: só o ADMIN troca, por `atribuir` (P4b-R3); fora do "Manter", com a
+      // versão da cópia local (o ack da edição acima pode ter chegado no meio)
+      if (responsavelId !== undefined) {
+        if (versao.manter) await repo.atribuir(id, { responsavelId }, versao.base);
+        else await repo.atribuir(id, { responsavelId });
+      }
       return recarregar(repo, id);
     },
     async adicionarItem(injector, id, item) {
@@ -144,6 +149,9 @@ const ENVIADA_SEM_NUMERO = 'Proposta enviada. O número chega quando sincronizar
     @if (carregando()) {
       <p class="py-8 text-center text-slate-500">Carregando…</p>
     } @else {
+      <!-- com a folha "PDF pronto" fixa no rodapé do celular, o fim da revisão continua alcançável (N-2) -->
+      <!-- [class.x] e não [class]="…": o classMap leva ~2 kB do core para o bundle inicial -->
+      <div data-testid="pagina-wizard" class="block sm:pb-0" [class.pb-72]="!!pdfPronto()">
       @switch (atual()) {
         @case (1) { <app-passo-cliente (cadastrar)="cadastrarCliente()" /> }
         @case (2) { <app-passo-itens [adicionando]="adicionando()" (adicionar)="adicionarItem($event)" (anunciar)="anuncio.set($event)" /> }
@@ -152,7 +160,8 @@ const ENVIADA_SEM_NUMERO = 'Proposta enviada. O número chega quando sincronizar
       }
 
       @if (pdfPronto(); as arquivo) {
-        <div class="fixed inset-x-0 bottom-0 z-40 p-4 sm:static sm:mt-4 sm:p-0">
+        <div data-testid="folha-pdf-pronto"
+             class="fixed inset-x-0 bottom-0 z-40 p-4 pb-[calc(1rem+env(safe-area-inset-bottom))] sm:static sm:mt-4 sm:p-0">
           <app-pdf-pronto [arquivo]="arquivo" (concluido)="aposCompartilhar($event, arquivo)" />
         </div>
       } @else {
@@ -180,6 +189,7 @@ const ENVIADA_SEM_NUMERO = 'Proposta enviada. O número chega quando sincronizar
           </button>
         </div>
       }
+      </div>
     }
   `,
 })
@@ -315,9 +325,24 @@ export class WizardPropostaPage implements ComAlteracoes {
     this.anuncio.set('Os passos foram recarregados com o que foi gravado no outro aparelho.');
   }
 
-  protected manterMinhas(): void {
-    this.e.manterMinhas();
-    this.anuncio.set('Suas alterações serão gravadas; a diferença vai para Pendências.');
+  /**
+   * P4c-R9: grava na hora os passos em colisão, com a versão base antiga (a mutação dela fica primeira na fila e o
+   * servidor responde CONFLITO, resolvido em Pendências). Com erro num desses passos, nada muda: a faixa fica e o
+   * foco vai ao campo.
+   */
+  protected async manterMinhas(): Promise<void> {
+    if (this.ocupado()) return;
+    const invalido = [...this.e.colisao()].sort().find((n) => !this.e.valido(n, false));
+    if (invalido !== undefined) {
+      if (this.atual() !== invalido) this.ir(invalido, false);
+      this.anuncio.set('Corrija os campos destacados para manter as suas alterações.');
+      this.focarPrimeiroErro();
+      return;
+    }
+    for (const n of this.e.manterMinhas()) {
+      if (!(await this.gravar(n))) return;
+    }
+    this.anuncio.set('Suas alterações foram gravadas; a diferença vai para Pendências.');
   }
 
   // ---- itens ----
@@ -325,13 +350,25 @@ export class WizardPropostaPage implements ComAlteracoes {
   protected async adicionarItem(item: ItemLocal): Promise<void> {
     const id = this.e.id();
     if (!id || this.ocupado()) return;
+    if (this.e.colisao().size > 0) {
+      this.focar('#aviso-colisao');
+      return;
+    }
     this.adicionando.set(true);
     this.gravando++;
     try {
+      // P4c-R9: relê e reconcilia antes (uma edição de lá que a observação ainda não trouxe vira colisão aqui)
+      const atual = await this.repo.buscar(id);
+      if (atual) this.e.reconciliar(atual);
+      if (this.e.colisao().size > 0) {
+        this.focar('#aviso-colisao');
+        return;
+      }
       const { linha, proposta } = await this.config().adicionarItem(this.injector, id, item);
       this.e.anexarLinha(linha, proposta);
       this.anuncio.set(`${linha.nome ?? 'Item'} adicionado.`);
       this.passoItens()?.aposAdicionar(linha.id);
+      if (this.e.colisao().size > 0) this.focar('#aviso-colisao');
     } catch (err) {
       this.toasts.erro(mensagemErroProposta(err));
     } finally {
@@ -540,7 +577,7 @@ export class WizardPropostaPage implements ComAlteracoes {
       if (!edicao) return false;
       const tocouOutros = n === 1 && !!atual && atual.tipo !== this.e.tipo();
       this.e.errosServidor.set({});
-      const p = await this.config().salvar(this.injector, id, edicao, this.e.versaoBase());
+      const p = await this.config().salvar(this.injector, id, edicao, { base: this.e.versaoBase(), manter: this.e.mantendo() });
       this.e.aposSalvar(n, p, tocouOutros);
       return true;
     } catch (err) {
@@ -601,8 +638,17 @@ export class WizardPropostaPage implements ComAlteracoes {
     if (padrao) this.e.templateId.set(padrao);
   }
 
+  /** O primeiro campo com erro; sem campo, a mensagem focável (ex.: "Inclua pelo menos um item."), nunca a faixa. */
   private focarPrimeiroErro(): void {
-    this.focar('[aria-invalid="true"], [role="alert"][tabindex]');
+    afterNextRender(
+      () => {
+        const raiz = this.host.nativeElement;
+        const alvo = raiz.querySelector<HTMLElement>('[aria-invalid="true"]')
+          ?? raiz.querySelector<HTMLElement>('[role="alert"][tabindex]:not(#aviso-colisao)');
+        alvo?.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   private focar(seletor: string): void {

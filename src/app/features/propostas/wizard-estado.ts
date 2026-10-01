@@ -356,13 +356,24 @@ export class EstadoWizard {
     this.reconciliar(p, { gravados: passos });
   }
 
-  /** "Manter as minhas": a tela fica com o que o usuário digitou; gravar com a versão base antiga dá CONFLITO. */
-  manterMinhas(): void {
+  /**
+   * "Manter as minhas": a tela fica com o que o usuário digitou e a versão base para de avançar. Devolve os passos em
+   * colisão, que a página grava na hora com a base antiga (P4c-R9): essa mutação fica primeira na fila, as seguintes
+   * coalescem nela ou esperam atrás, e o servidor responde CONFLITO.
+   */
+  manterMinhas(): Passo[] {
     const p = this.fresca;
-    if (!p) return;
-    for (const n of this.colisao()) if (n !== 4) this.ignoradas.set(n, instantaneo(camposDe(p, n)));
+    const passos = [...this.colisao()].sort();
+    if (!p) return [];
+    for (const n of passos) if (n !== 4) this.ignoradas.set(n, instantaneo(camposDe(p, n)));
     this.mantidas = true;
     this.colisao.set(new Set());
+    return passos;
+  }
+
+  /** Depois de "Manter as minhas": as gravações seguem com a base antiga (inclusive a troca de responsável, N-3). */
+  mantendo(): boolean {
+    return this.mantidas;
   }
 
   sujo(n: Passo): boolean {
@@ -419,10 +430,16 @@ export class EstadoWizard {
 
   // ---- edição das linhas ----
 
-  /** A linha que `adicionarItem` gravou, no fim da lista da tela (as outras linhas da tela ficam como estão). */
+  /**
+   * A linha que `adicionarItem` gravou, no fim da lista da tela (as outras linhas da tela ficam como estão). O gravado
+   * do passo 2 só vira a nova base se for exatamente o de antes mais a linha nova (P4c-R9); qualquer outra diferença é
+   * de outro aparelho e passa por `reconciliar` como tal (colisão, se o passo tem alteração daqui).
+   */
   anexarLinha(linha: PropostaLocal['itens'][number], p: PropostaLocal): void {
+    const antes = this.salvo()[2];
+    const esperado = antes ? instantaneo([...(JSON.parse(antes) as LinhaEditavel[]), paraLinhaEditavel(linha)]) : null;
     this.linhas.update((l) => [...l.filter((x) => x.id !== linha.id), paraLinhaEditavel(linha)]);
-    this.reconciliar(p, { tocados: [2] });
+    this.reconciliar(p, esperado === instantaneo(camposDe(p, 2)) ? { tocados: [2] } : {});
   }
 
   alterarLinha(id: string, campo: 'quantidade' | 'preco' | 'desconto' | 'meses', valor: string): void {
