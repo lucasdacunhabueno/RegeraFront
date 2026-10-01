@@ -5,6 +5,7 @@ import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
+import { AnexoOsLocal, paraOsLocal } from '../../features/os/os-models';
 import { paraPropostaLocal, PropostaDados } from '../../features/propostas/proposta-models';
 import { ErroProposta, LinhaRascunho } from '../../features/propostas/propostas-repo';
 import type { UsuarioSessao } from '../auth/auth-models';
@@ -12,7 +13,7 @@ import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
 import { PendenciasService } from './pendencias-service';
-import { MutacaoLocal, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
+import { MutacaoLocal, Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
 
 const dados = (nome: string, documento = '52998224725'): ClienteDados => ({
@@ -403,6 +404,60 @@ describe('PendenciasService', () => {
       expect(await db.propostas.get('p1')).toBeUndefined();
       expect((await db.documentos.toArray()).map((d) => d.id)).toEqual(['d9']);
       expect(await db.pendencias.count()).toBe(0);
+    });
+
+    describe('OS e anexos da OS', () => {
+      const osDados = { codigoProvisorio: 'OSP-0Z9XY7', tipo: 'INSTALACAO', status: 'ABERTA', urgente: false,
+        assinaturaRecusada: false, itens: [], notas: [] } as const;
+      const anexo = (id: string, osId: string, enviado: boolean): AnexoOsLocal => ({
+        id, osId, tipo: 'FOTO', sha256: 'b'.repeat(64), legenda: null, momento: null, tiradaEm: null, assinanteNome: null,
+        assinantePapel: null, revisaoOs: null, codigoExibido: null, bytes: enviado ? null : new ArrayBuffer(3),
+        miniatura: new ArrayBuffer(2), enviado, arquivoId: enviado ? `a-${id}` : null,
+      });
+      const uploadOs = (mutationId: string, anexoId: string): MutacaoLocal => ({
+        mutationId, entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', op: 'UPLOAD', baseVersion: null,
+        dados: { anexoId }, separada: true, criadaEm: '',
+      });
+
+      it('descartar o upload recusado de um anexo apaga só esse anexo não enviado e libera a OS', async () => {
+        await db.os.put(paraOsLocal('o1', 3, { ...osDados, itens: [], notas: [] }));
+        await db.anexosOs.bulkPut([anexo('f1', 'o1', false), anexo('f2', 'o1', false), anexo('f0', 'o1', true)]);
+        await db.outbox.add(uploadOs('up2', 'f2'));
+        const p: Pendencia = {
+          mutationId: 'up1', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '',
+          erro: { codigo: 'LIMITE_FOTOS', mensagem: 'x' }, mutacao: uploadOs('up1', 'f1'),
+        };
+        await db.pendencias.put(p);
+
+        await svc.descartar(p);
+
+        expect(await db.pendencias.count()).toBe(0);
+        expect((await db.anexosOs.toArray()).map((a) => a.id).sort()).toEqual(['f0', 'f2']);
+        expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['up2']);
+        expect(await db.os.get('o1')).toBeDefined();
+        expect(TestBed.inject(SyncService).sincronizar).toHaveBeenCalled();
+      });
+
+      it('descartar a criação recusada da OS apaga a local, os anexos dela e os uploads da fila', async () => {
+        await db.os.put(paraOsLocal('o1', null, { ...osDados, itens: [], notas: [] }));
+        await db.anexosOs.bulkPut([anexo('f1', 'o1', false), anexo('f0', 'o1', true), anexo('f9', 'o9', true)]);
+        await db.outbox.add(uploadOs('up1', 'f1'));
+        const mutacao: MutacaoLocal = {
+          mutationId: 'mo', entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: null, dados: osDados, criadaEm: '',
+        };
+        const p: Pendencia = {
+          mutationId: 'mo', entidade: 'os', agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '',
+          erro: { codigo: 'VALIDACAO', mensagem: 'x' }, mutacao,
+        };
+        await db.pendencias.put(p);
+
+        await svc.descartar(p);
+
+        expect(await db.os.get('o1')).toBeUndefined();
+        expect((await db.anexosOs.toArray()).map((a) => a.id)).toEqual(['f9']);
+        expect(await db.outbox.count()).toBe(0);
+        expect(await db.pendencias.count()).toBe(0);
+      });
     });
 
     it('P4b-R17: manter a minha rebaseia no lugar — [E1 CONFLITO, T ENVIADA, UPLOAD d1, T APROVADA]', async () => {

@@ -7,8 +7,9 @@ import { RegeraDb } from '../db/regera-db';
 import type { PropostaDados } from '../../features/propostas/proposta-models';
 import { EdicaoRascunho, PropostasRepo } from '../../features/propostas/propostas-repo';
 import { Adaptador, adaptadorDe, RegistroLocal } from './adaptadores';
-import { DadosUpload, Mudanca, MutacaoLocal, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
+import { Mudanca, MutacaoLocal, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
+import { ehUpload, tabelasDeUpload, tiposUpload, tipoUploadDe } from './tipos-upload';
 
 /**
  * Decisões do usuário sobre conflitos e rejeições (§11.5). Toda ação relê a pendência gravada dentro da própria
@@ -89,10 +90,10 @@ export class PendenciasService {
   async descartar(daTela: Pendencia): Promise<void> {
     const p = await this.gravada(daTela);
     if (!p) return;
-    if (p.entidade === TIPO_UPLOAD_DOCUMENTO) return this.descartarUpload(p);
+    if (ehUpload(p)) return this.descartarUpload(p);
     if (p.mutacao.baseVersion === null) {
       const tabela = this.adaptador(p).tabela(this.db);
-      await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
+      await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, ...tabelasDeUpload(this.db), tabela], async () => {
         if (!(await this.gravada(p))) return;
         await this.limparAgregado(p);
         await this.apagarLocal(p, tabela, p.agregadoId);
@@ -119,7 +120,7 @@ export class PendenciasService {
     // atualização: o agregado local existe no servidor, então restaura a cópia dele em vez de apagar
     const proprio = p.mutacao.baseVersion !== null ? await this.buscarNoServidor(p, p.agregadoId) : null;
     const tabela = adaptador.tabela(this.db);
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela, this.db.propostas], async () => {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, ...tabelasDeUpload(this.db), tabela, this.db.propostas], async () => {
       if (!(await this.gravada(p))) return;
       await this.limparAgregado(p);
       if (proprio && !proprio.deleted) {
@@ -172,20 +173,20 @@ export class PendenciasService {
   }
 
   /**
-   * Upload recusado: some com o envio — a pendência e o PDF local ainda não enviado. A proposta e as mutações dela
-   * na fila ficam e voltam a sair.
+   * Upload recusado (PDF da proposta ou anexo da OS): some com o envio — a pendência e o registro local ainda não
+   * enviado. O agregado e as mutações dele na fila ficam e voltam a sair.
    */
   private async descartarUpload(p: Pendencia): Promise<void> {
-    const documentoId = (p.mutacao.dados as DadosUpload | null)?.documentoId;
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos], async () => {
+    const tipo = tipoUploadDe(p.entidade)!;
+    const id = tipo.idDe(p.mutacao.dados);
+    const tabela = tipo.tabela(this.db);
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
       if (!(await this.gravada(p))) return;
       await this.db.pendencias.delete(p.mutationId);
-      if (!documentoId) return;
-      await this.db.outbox
-        .filter((m) => m.entidade === TIPO_UPLOAD_DOCUMENTO && (m.dados as DadosUpload | null)?.documentoId === documentoId)
-        .delete();
-      const doc = await this.db.documentos.get(documentoId);
-      if (doc && !doc.enviado) await this.db.documentos.delete(documentoId);
+      if (!id) return;
+      await this.db.outbox.filter((m) => m.entidade === tipo.entidade && tipo.idDe(m.dados) === id).delete();
+      const registro = await tabela.get(id);
+      if (registro && !registro.enviado) await tabela.delete(id);
     });
     void this.sync.sincronizar();
   }
@@ -204,31 +205,32 @@ export class PendenciasService {
 
   /**
    * Apaga o registro local da pendência. P4b-R30: se é uma proposta, os PDFs dela saem junto, enviados ou não (têm
-   * valores, e o tombstone que os apagaria já passou pelo cursor); nada dela fica na fila depois de `limparAgregado`.
-   * Precisa de `documentos` na transação.
+   * valores, e o tombstone que os apagaria já passou pelo cursor); numa OS, os anexos dela. Nada dele fica na fila
+   * depois de `limparAgregado`. Precisa das tabelas de upload (`tabelasDeUpload`) na transação.
    */
   private async apagarLocal(p: Pendencia, tabela: Table<RegistroLocal, string>, id: string): Promise<void> {
     await tabela.delete(id);
-    if (p.entidade === 'proposta') await this.db.documentos.where('propostaId').equals(id).delete();
+    for (const t of tiposUpload(p.entidade)) await t.tabela(this.db).where(t.campoAgregado).equals(id).delete();
   }
 
   /**
-   * Tira da fila e das pendências tudo do agregado. P4b-R14: os uploads de PDF que saem junto não têm mais como ser
-   * enviados, então os documentos locais deles ainda não enviados são apagados; os já enviados ficam (cópia do servidor)
-   * enquanto a proposta local fica; quando ela também sai, `apagarLocal` leva todos (P4b-R30). Precisa de `documentos`
-   * na transação.
+   * Tira da fila e das pendências tudo do agregado. P4b-R14: os uploads (PDF da proposta, anexo da OS) que saem junto
+   * não têm mais como ser enviados, então os registros locais deles ainda não enviados são apagados; os já enviados
+   * ficam (cópia do servidor) enquanto o agregado local fica; quando ele também sai, `apagarLocal` leva todos
+   * (P4b-R30). Precisa das tabelas de upload (`tabelasDeUpload`) na transação.
    */
   private async limparAgregado(p: Pendencia): Promise<void> {
     const naFila = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
     const pendentes = await this.db.pendencias.where('agregadoId').equals(p.agregadoId).toArray();
-    const documentoIds = [...naFila, ...pendentes.map((x) => x.mutacao)]
-      .filter((m) => m.entidade === TIPO_UPLOAD_DOCUMENTO)
-      .map((m) => (m.dados as DadosUpload | null)?.documentoId)
-      .filter((id): id is string => !!id);
+    const mutacoes = [...naFila, ...pendentes.map((x) => x.mutacao)];
     await this.db.pendencias.where('agregadoId').equals(p.agregadoId).delete();
     await this.db.outbox.where('agregadoId').equals(p.agregadoId).delete();
-    if (documentoIds.length > 0) {
-      await this.db.documentos.where('id').anyOf(documentoIds).filter((d) => !d.enviado).delete();
+    for (const t of tiposUpload()) {
+      const ids = mutacoes
+        .filter((m) => m.entidade === t.entidade)
+        .map((m) => t.idDe(m.dados))
+        .filter((id): id is string => !!id);
+      if (ids.length > 0) await t.tabela(this.db).where('id').anyOf(ids).filter((r) => !r.enviado).delete();
     }
   }
 
@@ -236,7 +238,7 @@ export class PendenciasService {
   private async aplicarEClear(p: Pendencia, id: string, m: Mudanca | null): Promise<void> {
     const adaptador = this.adaptador(p);
     const tabela = adaptador.tabela(this.db);
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, this.db.documentos, tabela], async () => {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, ...tabelasDeUpload(this.db), tabela], async () => {
       if (!(await this.gravada(p))) return;
       await this.limparAgregado(p);
       if (!m || m.deleted) {

@@ -3,6 +3,7 @@ import Dexie, { type Table } from 'dexie';
 import type { ClienteLocal } from '../../features/clientes/cliente-models';
 import type { ItemLocal } from '../../features/catalogo/item-models';
 import type { EmpresaLocal } from '../../features/empresa/empresa-models';
+import type { AnexoOsLocal, OsLocal } from '../../features/os/os-models';
 import type { DocumentoLocal, PropostaLocal } from '../../features/propostas/proposta-models';
 import type { TemplateLocal } from '../../features/templates/template-models';
 import type { MutacaoLocal, Pendencia, UsuarioResumo } from '../sync/sync-models';
@@ -31,6 +32,8 @@ export class RegeraDb extends Dexie {
   templates!: Table<TemplateLocal, string>;
   propostas!: Table<PropostaLocal, string>;
   documentos!: Table<DocumentoLocal, string>;
+  os!: Table<OsLocal, string>;
+  anexosOs!: Table<AnexoOsLocal, string>;
   private readonly aoLimparTudo = new Set<() => void>();
 
   constructor() {
@@ -91,6 +94,29 @@ export class RegeraDb extends Dexie {
       })
       .upgrade(async (tx) => {
         // fronts P4a pularam proposta como entidade desconhecida e avançaram o cursor: puxa tudo de novo
+        await tx.table('meta').bulkDelete(['cursor', 'cursorDono']);
+      });
+    this.version(6)
+      .stores({
+        meta: 'chave',
+        clientes: 'id, documento, nomeBusca',
+        outbox: '++seq, agregadoId',
+        pendencias: 'mutationId, agregadoId',
+        usuarios: 'id',
+        itens: 'id, codigo, nomeBusca',
+        empresa: 'id',
+        arquivos: 'id',
+        templates: 'id, tipoProposta, nomeBusca',
+        propostas: 'id, status, clienteId, responsavelId, tecnicoId, codigoProvisorio, numero',
+        documentos: 'id, propostaId',
+        os: 'id, status, tecnicoId, responsavelId, propostaId, clienteId, codigoProvisorio, numero, dataPrevista',
+        // os bytes de cada anexo até o upload, e a miniatura depois. Sem índice em `enviado`: boolean não é chave do
+        // IndexedDB (o registro sairia do índice); filtra-se em memória pelo `osId`, como em `documentos`
+        anexosOs: 'id, osId, tipo',
+      })
+      .upgrade(async (tx) => {
+        // fronts P4 pularam os como entidade desconhecida e avançaram o cursor: puxa tudo de novo (a fila e as
+        // pendências ficam)
         await tx.table('meta').bulkDelete(['cursor', 'cursorDono']);
       });
   }

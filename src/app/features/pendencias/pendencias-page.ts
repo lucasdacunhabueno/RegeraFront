@@ -8,7 +8,7 @@ import { ConectividadeService } from '../../core/conectividade/conectividade-ser
 import { mensagemDeErro } from '../../core/http/erro-api';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { PendenciasService } from '../../core/sync/pendencias-service';
-import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
+import { Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { Toasts } from '../../shared/ui/toasts';
 import { compartilharArquivo, ResultadoCompartilhar } from '../propostas/compartilhar';
@@ -197,6 +197,11 @@ export class PendenciasPage {
         const codigo = this.codigoDaProposta(p);
         return codigo ? `PDF da proposta ${codigo}` : 'PDF da proposta';
       }
+      // os títulos com o código da OS ("OS OS-000123", "Foto da OS …") vêm com as pendências da OS (M2-P2 T5)
+      case 'os':
+        return 'OS';
+      case TIPO_UPLOAD_ANEXO_OS:
+        return 'Anexo da OS';
     }
   }
 

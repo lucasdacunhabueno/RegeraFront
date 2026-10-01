@@ -1,7 +1,8 @@
+import type { AnexoOsDados } from '../../features/os/os-models';
 import type { DocumentoDados } from '../../features/propostas/proposta-models';
 import { Perfil } from '../auth/auth-models';
 
-export type Entidade = 'cliente' | 'item_catalogo' | 'empresa' | 'template_proposta' | 'proposta';
+export type Entidade = 'cliente' | 'item_catalogo' | 'empresa' | 'template_proposta' | 'proposta' | 'os';
 /** Operações do push (`/api/sync/push`). */
 export type Operacao = 'UPSERT' | 'DELETE';
 
@@ -12,13 +13,28 @@ export type Operacao = 'UPSERT' | 'DELETE';
  */
 export const TIPO_UPLOAD_DOCUMENTO = 'documento_proposta' as const;
 
-/** O que pode estar na outbox: um agregado do sync ou o upload de um documento. */
-export type EntidadeOutbox = Entidade | typeof TIPO_UPLOAD_DOCUMENTO;
+/**
+ * `entidade` das mutações de upload de um anexo da OS (FOTO, ASSINATURA ou o PDF): `POST /api/os/{id}/anexos`, fora
+ * do lote do push, com `agregadoId` = id da OS (sai depois da mutação que deixou a OS no status exigido), `op: 'UPLOAD'`
+ * e `dados: { anexoId }` (registro da tabela `anexosOs`). A OS não tem valores: o perfil TECNICO não apaga estas.
+ */
+export const TIPO_UPLOAD_ANEXO_OS = 'anexo_os' as const;
+
+/** As `entidade` de upload (ver `tipos-upload.ts`). */
+export type EntidadeUpload = typeof TIPO_UPLOAD_DOCUMENTO | typeof TIPO_UPLOAD_ANEXO_OS;
+
+/** O que pode estar na outbox: um agregado do sync ou um upload. */
+export type EntidadeOutbox = Entidade | EntidadeUpload;
 export type OperacaoOutbox = Operacao | 'UPLOAD';
 
-/** `dados` de uma mutação de upload. */
+/** `dados` de uma mutação de upload do documento da proposta. */
 export interface DadosUpload {
   documentoId: string;
+}
+
+/** `dados` de uma mutação de upload de anexo da OS. */
+export interface DadosUploadAnexoOs {
+  anexoId: string;
 }
 
 export interface MutacaoLocal {
@@ -41,6 +57,13 @@ export interface RespostaDocumento {
   documento: DocumentoDados;
   /** Versão da proposta depois do upload (que a "toca"): `baseVersion` da próxima mutação dela. */
   versaoProposta: number;
+}
+
+/** Resposta do upload do anexo da OS (201 novo, 200 repetição idempotente). P4b-R9. */
+export interface RespostaAnexoOs {
+  anexo: AnexoOsDados;
+  /** Versão da OS depois do upload (que a "toca"): `baseVersion` da próxima mutação dela. */
+  versaoOs: number;
 }
 
 export interface ErroMutacao {

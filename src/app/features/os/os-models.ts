@@ -243,6 +243,25 @@ export interface OsLocal {
 
 // --- dados <-> local ---
 
+/** O anexo do pull ou da resposta do upload (o mesmo `AnexoOsDados`), lido campo a campo, com as chaves ausentes como null. */
+export function paraAnexoOsServidor(a: AnexoOsDados): AnexoOsServidor {
+  return {
+    id: a.id,
+    tipo: a.tipo,
+    arquivoId: a.arquivoId,
+    sha256: a.sha256,
+    legenda: a.legenda ?? null,
+    momento: a.momento ?? null,
+    tiradaEm: a.tiradaEm ?? null,
+    assinanteNome: a.assinanteNome ?? null,
+    assinantePapel: a.assinantePapel ?? null,
+    revisaoOs: a.revisaoOs ?? null,
+    codigoExibido: a.codigoExibido ?? null,
+    autorId: a.autorId,
+    criadoEm: a.criadoEm,
+  };
+}
+
 export function paraOsLocal(id: string, version: number | null, d: OsDados): OsLocal {
   return {
     id,
@@ -288,21 +307,7 @@ export function paraOsLocal(id: string, version: number | null, d: OsDados): OsL
       ordem: i.ordem ?? null,
     })),
     notas: (d.notas ?? []).map((n) => ({ id: n.id, texto: n.texto, autorId: n.autorId ?? null, criadaEm: n.criadaEm ?? null })),
-    anexos: (d.anexos ?? []).map((a) => ({
-      id: a.id,
-      tipo: a.tipo,
-      arquivoId: a.arquivoId,
-      sha256: a.sha256,
-      legenda: a.legenda ?? null,
-      momento: a.momento ?? null,
-      tiradaEm: a.tiradaEm ?? null,
-      assinanteNome: a.assinanteNome ?? null,
-      assinantePapel: a.assinantePapel ?? null,
-      revisaoOs: a.revisaoOs ?? null,
-      codigoExibido: a.codigoExibido ?? null,
-      autorId: a.autorId,
-      criadoEm: a.criadoEm,
-    })),
+    anexos: (d.anexos ?? []).map(paraAnexoOsServidor),
     historico: (d.historico ?? []).map((h) => ({
       statusDe: h.statusDe ?? null,
       statusPara: h.statusPara,
