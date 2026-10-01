@@ -188,9 +188,11 @@ export interface AnexoOsServidor {
 }
 
 /**
- * Anexo guardado no aparelho (tabela `anexosOs`), do momento da captura até depois do upload. Como o `DocumentoLocal`
- * da proposta, bytes em ArrayBuffer (clona em qualquer IndexedDB). Depois do upload aceito ficam só a miniatura e os
- * metadados (P4b-R26); no DOCUMENTO, os bytes da revisão atual. Na ASSINATURA, `tiradaEm` é o `assinadaEm` do upload.
+ * Anexo guardado no aparelho (tabela `anexosOs`): os metadados e a miniatura, do momento da captura até depois do
+ * upload. M2P2-R16: os bytes completos e o snapshot ficam em `anexosOsBytes` (`BytesAnexoOs`, pela mesma id), para a
+ * galeria (`observarAnexos`) e as pendências não carregarem o arquivo inteiro a cada leitura. Depois do upload aceito
+ * ficam só a miniatura e os metadados (P4b-R26); no DOCUMENTO, os bytes da revisão atual. Na ASSINATURA, `tiradaEm` é
+ * o `assinadaEm` do upload. Um anexo só do servidor pode ter aqui uma linha `enviado` só com a miniatura (M2P2-R14).
  */
 export interface AnexoOsLocal {
   id: string;
@@ -204,14 +206,24 @@ export interface AnexoOsLocal {
   assinantePapel: string | null;
   revisaoOs: number | null;
   codigoExibido: string | null;
-  /** Bytes completos (JPEG, PNG ou PDF); null depois do upload aceito, ou quando só os metadados são conhecidos. */
-  bytes: ArrayBuffer | null;
-  /** JPEG de 320 px gerado na captura (FOTO); fica depois do upload. */
+  /**
+   * JPEG de 320 px gerado na captura (FOTO) ou o próprio PNG (ASSINATURA, até 512 KB); fica depois do upload. Fica
+   * nesta tabela: é pequena e é o que a galeria mostra.
+   */
   miniatura: ArrayBuffer | null;
   /** O upload já foi aceito. */
   enviado: boolean;
   /** Id do `arquivo` no servidor, depois do upload. */
   arquivoId: string | null;
+}
+
+/**
+ * Os bytes completos de um anexo da OS (tabela `anexosOsBytes`, pela id do anexo): JPEG, PNG ou PDF, do momento da
+ * captura até a poda depois do upload. Sem a linha, os bytes não estão no aparelho.
+ */
+export interface BytesAnexoOs {
+  id: string;
+  bytes: ArrayBuffer;
   /** DOCUMENTO: a entrada do PDF (objeto JSON, ≤ 512 KB), enviada nos metadados do upload. */
   snapshot?: Record<string, unknown> | null;
 }

@@ -3,7 +3,7 @@ import Dexie, { type Table, type Transaction } from 'dexie';
 import type { ClienteLocal } from '../../features/clientes/cliente-models';
 import type { ItemLocal } from '../../features/catalogo/item-models';
 import type { EmpresaLocal } from '../../features/empresa/empresa-models';
-import type { AnexoOsLocal, OsLocal } from '../../features/os/os-models';
+import type { AnexoOsLocal, BytesAnexoOs, OsLocal } from '../../features/os/os-models';
 import type { DocumentoLocal, PropostaLocal } from '../../features/propostas/proposta-models';
 import type { TemplateLocal } from '../../features/templates/template-models';
 import type { MutacaoLocal, Pendencia, UsuarioResumo } from '../sync/sync-models';
@@ -54,9 +54,8 @@ async function limparSincronizadasV6(tx: Transaction): Promise<void> {
     await tx.table('empresa').clear();
     await tx.table('usuarios').clear();
   }
-  for (const tabela of ['documentos', 'anexosOs']) {
-    await tx.table<{ enviado: boolean }>(tabela).filter((r) => r.enviado).delete();
-  }
+  // `anexosOs` e `anexosOsBytes` nascem nesta versão, vazias
+  await tx.table<{ enviado: boolean }>('documentos').filter((r) => r.enviado).delete();
 }
 
 @Injectable({ providedIn: 'root' })
@@ -74,6 +73,7 @@ export class RegeraDb extends Dexie {
   documentos!: Table<DocumentoLocal, string>;
   os!: Table<OsLocal, string>;
   anexosOs!: Table<AnexoOsLocal, string>;
+  anexosOsBytes!: Table<BytesAnexoOs, string>;
   private readonly aoLimparTudo = new Set<() => void>();
 
   constructor() {
@@ -150,9 +150,11 @@ export class RegeraDb extends Dexie {
         propostas: 'id, status, clienteId, responsavelId, tecnicoId, codigoProvisorio, numero',
         documentos: 'id, propostaId',
         os: 'id, status, tecnicoId, responsavelId, propostaId, clienteId, codigoProvisorio, numero, dataPrevista',
-        // os bytes de cada anexo até o upload, e a miniatura depois. Sem índice em `enviado`: boolean não é chave do
-        // IndexedDB (o registro sairia do índice); filtra-se em memória pelo `osId`, como em `documentos`
+        // os metadados e a miniatura de cada anexo. Sem índice em `enviado`: boolean não é chave do IndexedDB (o
+        // registro sairia do índice); filtra-se em memória pelo `osId`, como em `documentos`
         anexosOs: 'id, osId, tipo',
+        // M2P2-R16: os bytes completos (e o snapshot do PDF), pela id do anexo, até a poda depois do upload
+        anexosOsBytes: 'id',
       })
       .upgrade(async (tx) => {
         // fronts P4 pularam os como entidade desconhecida e avançaram o cursor: puxa tudo de novo (a fila e as

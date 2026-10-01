@@ -26,6 +26,7 @@ import { FotoPreparada, gerarMiniatura, prepararFoto } from './foto-os';
 import {
   AnexoOsLocal,
   AnexoOsServidor,
+  BytesAnexoOs,
   CampoEdicaoOs,
   codigoOsExibido,
   ComandosOs,
@@ -624,6 +625,8 @@ export class OsRepo {
     return observar(async () => {
       const doServidor = (await this.db.os.get(osId))?.anexos ?? [];
       const locais = await this.db.anexosOs.where('osId').equals(osId).toArray();
+      // M2P2-R16: só as chaves de `anexosOsBytes` (os bytes completos não são lidos a cada emissão)
+      const comBytes = new Set(await this.db.anexosOsBytes.where('id').anyOf(locais.map((a) => a.id)).primaryKeys());
       const porId = new Map<string, AnexoOsVisivel>();
       for (const a of doServidor) {
         porId.set(a.id, {
@@ -637,7 +640,7 @@ export class OsRepo {
         porId.set(a.id, {
           id: a.id, tipo: a.tipo, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm ?? s?.tiradaEm ?? null,
           assinanteNome: a.assinanteNome, assinantePapel: a.assinantePapel, revisaoOs: a.revisaoOs,
-          codigoExibido: a.codigoExibido, enviado: a.enviado || !!s, temBytes: a.bytes !== null,
+          codigoExibido: a.codigoExibido, enviado: a.enviado || !!s, temBytes: comBytes.has(a.id),
           arquivoId: a.arquivoId ?? s?.arquivoId ?? null,
           miniatura: a.miniatura ? new Blob([a.miniatura], { type: MIME[a.tipo] }) : null,
         });
@@ -650,7 +653,8 @@ export class OsRepo {
   /** Os bytes completos do anexo guardados no aparelho (JPEG, PNG ou PDF); null se só o servidor os tem. */
   async blobDoAnexo(anexoId: string): Promise<Blob | null> {
     const a = await this.db.anexosOs.get(anexoId);
-    return a?.bytes ? new Blob([a.bytes], { type: MIME[a.tipo] }) : null;
+    const b = a ? await this.db.anexosOsBytes.get(anexoId) : undefined;
+    return a && b ? new Blob([b.bytes], { type: MIME[a.tipo] }) : null;
   }
 
   /** Os selos de sync, como o de propostas: na outbox, com pendência e com CONFLITO (ids de agregado). */
@@ -909,11 +913,11 @@ export class OsRepo {
       throw new ErroOs('ASSINATURA_GRANDE', 'assinatura', 'A assinatura ficou grande demais. Limpe e assine de novo.');
     }
     await this.exigirLimite(atual, 'ASSINATURA');
-    const anexo = this.anexo(id, 'ASSINATURA', assinatura.png.bytes, assinatura.png.sha256, {
+    const anexo = this.anexo(id, 'ASSINATURA', assinatura.png.sha256, {
       assinanteNome: nome, assinantePapel: papel, miniatura: assinatura.png.bytes,
     });
     try {
-      await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.outbox], async () => {
+      await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.anexosOsBytes, this.db.outbox], async () => {
         const agora = await this.carregar(id);
         this.exigirAnexoDeCampo(agora, u);
         await this.exigirLimite(agora, 'ASSINATURA');
@@ -921,6 +925,7 @@ export class OsRepo {
           await this.db.os.put({ ...agora, assinaturaRecusada: false, motivoRecusa: null });
         }
         await this.db.anexosOs.add(anexo);
+        await this.db.anexosOsBytes.add({ id: anexo.id, bytes: assinatura.png.bytes });
         await this.sync.registrarUploadAnexoOs(id, anexo.id);
       });
     } catch (e) {
@@ -985,10 +990,10 @@ export class OsRepo {
       validacao(await this.validarCampos(atual, novo));
       exigirSemConflito(await this.pendenciasDa(id), 'concluir');
       await this.exigirLimite(atual, 'DOCUMENTO');
-      const { blob, documento } = await this.gerarDocumento(novo, locais, u, gerarPdf);
+      const { blob, documento, bytes } = await this.gerarDocumento(novo, locais, u, gerarPdf);
       let gravou: boolean;
       try {
-        gravou = await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.outbox, this.db.pendencias], async () => {
+        gravou = await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.anexosOsBytes, this.db.outbox, this.db.pendencias], async () => {
           exigirSemConflito(await this.pendenciasDa(id), 'concluir');
           // o PDF foi gerado fora da transação: se o conteúdo dele mudou (a OS ou um anexo novo), ele não a representa
           // mais. M2P2-R9: um upload aceito nesse meio-tempo só muda a versão e o `enviado`, e o PDF continua valendo
@@ -1002,6 +1007,7 @@ export class OsRepo {
           await this.db.os.put(concluida);
           await this.sync.registrar('os', id, 'UPSERT', paraEnvio(concluida), agora.version, { separada: true });
           await this.db.anexosOs.add(documento);
+          await this.db.anexosOsBytes.add(bytes);
           await this.sync.registrarUploadAnexoOs(id, documento.id);
           return true;
         });
@@ -1109,12 +1115,13 @@ export class OsRepo {
     this.exigirPosse(atual, u);
     if (atual.status !== 'ABERTA') throw new ErroOs('OS_NAO_EDITAVEL', 'os', 'Só uma OS aberta pode ser excluída.');
     if (atual.tecnicoId !== null) throw new ErroOs('OS_NAO_EDITAVEL', 'os', 'Cancele a OS em vez de excluir.');
-    await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.outbox, this.db.pendencias], async () => {
+    await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.anexosOsBytes, this.db.outbox, this.db.pendencias], async () => {
       const fila = await this.db.outbox.where('agregadoId').equals(id).toArray();
       if (fila.some((m) => m.enviando)) {
         throw new ErroOs('OS_SINCRONIZANDO', 'os', 'A OS está sendo sincronizada. Tente de novo em instantes.');
       }
       await this.db.outbox.bulkDelete(fila.filter(ehUpload).map((m) => m.seq!));
+      await this.db.anexosOsBytes.bulkDelete(await this.db.anexosOs.where('osId').equals(id).primaryKeys());
       await this.db.anexosOs.where('osId').equals(id).delete();
       await this.db.pendencias.where('agregadoId').equals(id).delete();
       await this.db.os.delete(id);
@@ -1222,16 +1229,11 @@ export class OsRepo {
     if (ids.size >= limite.max) throw new ErroOs(limite.codigo, tipo === 'DOCUMENTO' ? 'os' : tipo.toLowerCase(), limite.mensagem);
   }
 
-  private anexo(
-    osId: string,
-    tipo: TipoAnexoOs,
-    bytes: ArrayBuffer,
-    sha256: string,
-    extra: Partial<AnexoOsLocal> = {},
-  ): AnexoOsLocal {
+  /** Os metadados de um anexo novo (os bytes vão à parte, em `anexosOsBytes`, M2P2-R16). */
+  private anexo(osId: string, tipo: TipoAnexoOs, sha256: string, extra: Partial<AnexoOsLocal> = {}): AnexoOsLocal {
     return {
       id: uuidv7(), osId, tipo, sha256, legenda: null, momento: null, tiradaEm: new Date().toISOString(),
-      assinanteNome: null, assinantePapel: null, revisaoOs: null, codigoExibido: null, bytes, miniatura: null,
+      assinanteNome: null, assinantePapel: null, revisaoOs: null, codigoExibido: null, miniatura: null,
       enviado: false, arquivoId: null, ...extra,
     };
   }
@@ -1244,15 +1246,16 @@ export class OsRepo {
     if (tamanhoTextoOs(legenda) > MAX_LEGENDA) validacao({ legenda: `Máximo de ${MAX_LEGENDA} caracteres.` });
     await this.exigirLimite(atual, 'FOTO');
     const foto = await this.preparar(arquivo);
-    const anexo = this.anexo(id, 'FOTO', foto.bytes, foto.sha256, {
+    const anexo = this.anexo(id, 'FOTO', foto.sha256, {
       legenda, momento: opcoes.momento ?? null, miniatura: foto.miniatura,
     });
     try {
-      await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.outbox], async () => {
+      await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.anexosOsBytes, this.db.outbox], async () => {
         const agora = await this.carregar(id);
         this.exigirAnexoDeCampo(agora, u);
         await this.exigirLimite(agora, 'FOTO');
         await this.db.anexosOs.add(anexo);
+        await this.db.anexosOsBytes.add({ id: anexo.id, bytes: foto.bytes });
         await this.sync.registrarUploadAnexoOs(id, anexo.id);
       });
     } catch (e) {
@@ -1385,7 +1388,7 @@ export class OsRepo {
     locais: readonly AnexoOsLocal[],
     u: UsuarioSessao,
     gerarPdf: (entrada: EntradaPdfOs) => Promise<Blob>,
-  ): Promise<{ blob: Blob; documento: AnexoOsLocal }> {
+  ): Promise<{ blob: Blob; documento: AnexoOsLocal; bytes: BytesAnexoOs }> {
     const cliente = os.clienteId === null ? undefined : await this.db.clientes.get(os.clienteId);
     const empresa = (await this.db.empresa.get(ID_EMPRESA)) ?? null;
     const emitidaEm = new Date().toISOString();
@@ -1409,10 +1412,10 @@ export class OsRepo {
     if (bytes.byteLength > PDF_MAX_BYTES) {
       throw new ErroOs('PDF_GRANDE', 'os', 'O PDF passou de 10 MB.');
     }
-    const documento = this.anexo(os.id, 'DOCUMENTO', bytes, await sha256Hex(bytes), {
-      tiradaEm: emitidaEm, revisaoOs: os.revisao ?? 1, codigoExibido: entrada.os.codigoExibido, snapshot,
+    const documento = this.anexo(os.id, 'DOCUMENTO', await sha256Hex(bytes), {
+      tiradaEm: emitidaEm, revisaoOs: os.revisao ?? 1, codigoExibido: entrada.os.codigoExibido,
     });
-    return { blob, documento };
+    return { blob, documento, bytes: { id: documento.id, bytes, snapshot } };
   }
 
   /**
@@ -1432,7 +1435,7 @@ export class OsRepo {
       });
     }
     for (const a of doAparelho.values()) {
-      const bytes = a.miniatura ?? a.bytes;
+      const bytes = a.miniatura ?? (await this.db.anexosOsBytes.get(a.id))?.bytes;
       fotos.push({
         quando: instante(a.tiradaEm),
         foto: { id: a.id, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm, imagem: bytes ? paraDataUrl(bytes, MIME.FOTO) : null },
@@ -1461,8 +1464,9 @@ export class OsRepo {
    * aceita pelo servidor, com a imagem do aparelho ou do cache de arquivos. Sem nenhuma, null (vale a recusa).
    */
   private async assinaturaDoPdf(os: OsLocal, locais: readonly AnexoOsLocal[]): Promise<AssinaturaPdfOs | null> {
-    const imagem = (a: AnexoOsLocal | undefined) => {
-      const bytes = a?.bytes ?? a?.miniatura;
+    // a miniatura da assinatura é o próprio PNG (`assinar`)
+    const imagem = async (a: AnexoOsLocal | undefined) => {
+      const bytes = a ? a.miniatura ?? (await this.db.anexosOsBytes.get(a.id))?.bytes : undefined;
       return bytes ? paraDataUrl(bytes, MIME.ASSINATURA) : null;
     };
     const pendente = locais
@@ -1470,7 +1474,7 @@ export class OsRepo {
       .sort((a, b) => (a.tiradaEm ?? '').localeCompare(b.tiradaEm ?? ''))
       .at(-1);
     if (pendente) {
-      return { anexoId: pendente.id, imagem: imagem(pendente), nome: pendente.assinanteNome, papel: pendente.assinantePapel,
+      return { anexoId: pendente.id, imagem: await imagem(pendente), nome: pendente.assinanteNome, papel: pendente.assinantePapel,
         assinadaEm: pendente.tiradaEm };
     }
     if (os.assinaturaAnexoId === null) return null;
@@ -1478,7 +1482,7 @@ export class OsRepo {
     const doServidor: AnexoOsServidor | undefined = os.anexos.find((a) => a.id === os.assinaturaAnexoId);
     return {
       anexoId: os.assinaturaAnexoId,
-      imagem: imagem(local) ?? (doServidor ? await this.arquivos.obterDataUrl(doServidor.arquivoId) : null),
+      imagem: (await imagem(local)) ?? (doServidor ? await this.arquivos.obterDataUrl(doServidor.arquivoId) : null),
       nome: os.assinanteNome,
       papel: os.assinantePapel,
       assinadaEm: os.assinadaEm,

@@ -18,7 +18,9 @@ import {
   Entidade, EntidadeUpload, Mudanca, MutacaoLocal, Operacao, Pendencia, RespostaPull, RespostaPush, ResultadoMutacao,
   TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO,
 } from './sync-models';
-import { ehUpload, tabelasDeUpload, TipoUpload, tiposUpload, tipoUploadDe, TIPOS_UPLOAD } from './tipos-upload';
+import {
+  apagarUploadsDoAgregado, ehUpload, tabelasDeUpload, TipoUpload, tiposUpload, tipoUploadDe, TIPOS_UPLOAD,
+} from './tipos-upload';
 
 const CHAVE_CURSOR = 'cursor';
 const CHAVE_CURSOR_DONO = 'cursorDono';
@@ -326,11 +328,11 @@ export class SyncService {
     const tipo = tipoUploadDe(m.entidade)!;
     const id = tipo.idDe(m.dados);
     const registro = id ? await tipo.tabela(this.db).get(id) : undefined;
-    if (!registro?.bytes) {
+    const envio = registro ? await tipo.envio(this.db, registro) : null;
+    if (!registro || !envio) {
       await this.aplicarResultado(m, { mutationId: m.mutationId, status: 'REJEITADO', erro: tipo.ausente });
       return true;
     }
-    const envio = tipo.montar(registro);
     const corpo = new FormData();
     corpo.append('arquivo', envio.arquivo, envio.nomeArquivo);
     corpo.append('metadados', new Blob([JSON.stringify(envio.metadados)], { type: 'application/json' }));
@@ -366,7 +368,7 @@ export class SyncService {
     const devolvida = tipo.versao(resp);
     const tabela = tipo.tabela(this.db);
     const agregados = ADAPTADORES[tipo.agregado].tabela(this.db);
-    await this.db.transaction('rw', [this.db.outbox, tabela, agregados], async () => {
+    await this.db.transaction('rw', [this.db.outbox, ...tipo.tabelas(this.db), agregados], async () => {
       const local = await agregados.get(m.agregadoId);
       const base = m.baseVersion ?? (local as { version?: number | null } | undefined)?.version ?? null;
       const esperada = base === null ? null : base + 1;
@@ -376,7 +378,7 @@ export class SyncService {
       // put do registro inteiro: o `update` do Dexie clona o objeto e, no IndexedDB dos testes, perde os bytes
       const registro = await tabela.get(id);
       if (registro) await tabela.put(tipo.enviado(registro, resp));
-      await tipo.podar(tabela, m.agregadoId, resp);
+      await tipo.podar(this.db, id, m.agregadoId, resp);
       const proxima = await this.db.outbox.where('agregadoId').equals(m.agregadoId).first();
       if (proxima) await this.db.outbox.update(proxima.seq!, { baseVersion: versao });
       if (local) await agregados.update(m.agregadoId, tipo.noAgregado(local, resp, versao));
@@ -469,7 +471,7 @@ export class SyncService {
     if (this.auth.usuario?.()?.perfil !== 'TECNICO') return;
     const comValores = tiposUpload().filter((t) => t.temValores);
     const doTipo = (m: { entidade: string }) => comValores.some((t) => t.entidade === m.entidade);
-    const tabelas = comValores.map((t) => t.tabela(this.db));
+    const tabelas = comValores.flatMap((t) => t.tabelas(this.db));
     await this.db.transaction('rw', [...tabelas, this.db.outbox, this.db.pendencias], async () => {
       await Promise.all(tabelas.map((t) => t.clear()));
       await this.db.outbox.filter(doTipo).delete();
@@ -489,12 +491,11 @@ export class SyncService {
       // cursor de outra sessão/perfil (ou gravado no formato antigo, só o id): recomeça do zero
       cursor = 0;
       const tabelas = [...Object.values(ADAPTADORES).map((a) => a.tabela(this.db)), this.db.usuarios];
-      const uploads = tabelasDeUpload(this.db);
-      await this.db.transaction('rw', [...tabelas, ...uploads], async () => {
+      await this.db.transaction('rw', [...tabelas, ...tabelasDeUpload(this.db)], async () => {
         await Promise.all(tabelas.map((t) => t.clear()));
         // o PDF ou o anexo já enviado é cópia do servidor (e o novo perfil pode não poder vê-lo); o não enviado espera
         // o upload
-        for (const t of uploads) await t.filter((r) => r.enviado).delete();
+        for (const t of tiposUpload()) await t.apagar(this.db, await t.tabela(this.db).filter((r) => r.enviado).primaryKeys());
       });
       this.arquivos.limpar();
     }
@@ -562,9 +563,7 @@ export class SyncService {
         const tabela = adaptador.tabela(this.db);
         if (mu.deleted) {
           await tabela.delete(mu.id);
-          for (const t of tiposUpload(mu.entidade)) {
-            await t.tabela(this.db).where(t.campoAgregado).equals(mu.id).filter((r) => r.enviado).delete();
-          }
+          await apagarUploadsDoAgregado(this.db, mu.entidade, mu.id, (r) => r.enviado);
         } else {
           await tabela.put(adaptador.paraLocal(mu.id, mu.version, mu.dados));
         }

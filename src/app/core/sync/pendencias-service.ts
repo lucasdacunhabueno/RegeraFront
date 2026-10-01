@@ -14,7 +14,7 @@ import {
   DadosUploadAnexoOs, Mudanca, MutacaoLocal, Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO,
 } from './sync-models';
 import { SyncService } from './sync-service';
-import { ehUpload, tabelasDeUpload, tiposUpload, tipoUploadDe } from './tipos-upload';
+import { apagarUploadsDasMutacoes, apagarUploadsDoAgregado, ehUpload, tabelasDeUpload, tipoUploadDe } from './tipos-upload';
 
 /** Os ids das notas das mutações que o servidor ainda não tem (sem a data dele e fora das notas de `servidor`). */
 function notasNovas(mutacoes: readonly OsDados[], servidor: OsDados | null | undefined): string[] {
@@ -289,14 +289,13 @@ export class PendenciasService {
   private async descartarUpload(p: Pendencia): Promise<void> {
     const tipo = tipoUploadDe(p.entidade)!;
     const id = tipo.idDe(p.mutacao.dados);
-    const tabela = tipo.tabela(this.db);
-    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
+    await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, ...tipo.tabelas(this.db)], async () => {
       if (!(await this.gravada(p))) return;
       await this.db.pendencias.delete(p.mutationId);
       if (!id) return;
       await this.db.outbox.filter((m) => m.entidade === tipo.entidade && tipo.idDe(m.dados) === id).delete();
-      const registro = await tabela.get(id);
-      if (registro && !registro.enviado) await tabela.delete(id);
+      const registro = await tipo.tabela(this.db).get(id);
+      if (registro && !registro.enviado) await tipo.apagar(this.db, [id]);
     });
     void this.sync.sincronizar();
   }
@@ -320,7 +319,7 @@ export class PendenciasService {
    */
   private async apagarLocal(p: Pendencia, tabela: Table<RegistroLocal, string>, id: string): Promise<void> {
     await tabela.delete(id);
-    for (const t of tiposUpload(p.entidade)) await t.tabela(this.db).where(t.campoAgregado).equals(id).delete();
+    await apagarUploadsDoAgregado(this.db, p.entidade, id);
   }
 
   /**
@@ -335,13 +334,7 @@ export class PendenciasService {
     const mutacoes = [...naFila, ...pendentes.map((x) => x.mutacao)];
     await this.db.pendencias.where('agregadoId').equals(p.agregadoId).delete();
     await this.db.outbox.where('agregadoId').equals(p.agregadoId).delete();
-    for (const t of tiposUpload()) {
-      const ids = mutacoes
-        .filter((m) => m.entidade === t.entidade)
-        .map((m) => t.idDe(m.dados))
-        .filter((id): id is string => !!id);
-      if (ids.length > 0) await t.tabela(this.db).where('id').anyOf(ids).filter((r) => !r.enviado).delete();
-    }
+    await apagarUploadsDasMutacoes(this.db, mutacoes, (r) => !r.enviado);
   }
 
   /** Aplica o estado do servidor (null/deleted = apagar) e limpa o agregado, tudo numa transação. */

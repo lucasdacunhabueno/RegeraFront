@@ -414,9 +414,17 @@ describe('PendenciasService', () => {
         assinaturaRecusada: false, itens: [], notas: [] } as const;
       const anexo = (id: string, osId: string, enviado: boolean): AnexoOsLocal => ({
         id, osId, tipo: 'FOTO', sha256: 'b'.repeat(64), legenda: null, momento: null, tiradaEm: null, assinanteNome: null,
-        assinantePapel: null, revisaoOs: null, codigoExibido: null, bytes: enviado ? null : new ArrayBuffer(3),
+        assinantePapel: null, revisaoOs: null, codigoExibido: null,
         miniatura: new ArrayBuffer(2), enviado, arquivoId: enviado ? `a-${id}` : null,
       });
+      /** Os metadados em `anexosOs` e, no não enviado, os bytes em `anexosOsBytes` (M2P2-R16). */
+      const gravarAnexos = async (...xs: (AnexoOsLocal | AnexoOsLocal[])[]) => {
+        for (const a of xs.flat()) {
+          await db.anexosOs.put(a);
+          if (!a.enviado) await db.anexosOsBytes.put({ id: a.id, bytes: new ArrayBuffer(3) });
+        }
+      };
+      const comBytes = async () => ((await db.anexosOsBytes.toCollection().primaryKeys()) as string[]).sort();
       const uploadOs = (mutationId: string, anexoId: string): MutacaoLocal => ({
         mutationId, entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', op: 'UPLOAD', baseVersion: null,
         dados: { anexoId }, separada: true, criadaEm: '',
@@ -424,7 +432,7 @@ describe('PendenciasService', () => {
 
       it('descartar o upload recusado de um anexo apaga só esse anexo não enviado e libera a OS', async () => {
         await db.os.put(paraOsLocal('o1', 3, { ...osDados, itens: [], notas: [] }));
-        await db.anexosOs.bulkPut([anexo('f1', 'o1', false), anexo('f2', 'o1', false), anexo('f0', 'o1', true)]);
+        await gravarAnexos([anexo('f1', 'o1', false), anexo('f2', 'o1', false), anexo('f0', 'o1', true)]);
         await db.outbox.add(uploadOs('up2', 'f2'));
         const p: Pendencia = {
           mutationId: 'up1', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '',
@@ -436,6 +444,7 @@ describe('PendenciasService', () => {
 
         expect(await db.pendencias.count()).toBe(0);
         expect((await db.anexosOs.toArray()).map((a) => a.id).sort()).toEqual(['f0', 'f2']);
+        expect(await comBytes()).toEqual(['f2']);
         expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['up2']);
         expect(await db.os.get('o1')).toBeDefined();
         expect(TestBed.inject(SyncService).sincronizar).toHaveBeenCalled();
@@ -443,7 +452,7 @@ describe('PendenciasService', () => {
 
       it('descartar a criação recusada da OS apaga a local, os anexos dela e os uploads da fila', async () => {
         await db.os.put(paraOsLocal('o1', null, { ...osDados, itens: [], notas: [] }));
-        await db.anexosOs.bulkPut([anexo('f1', 'o1', false), anexo('f0', 'o1', true), anexo('f9', 'o9', true)]);
+        await gravarAnexos([anexo('f1', 'o1', false), anexo('f0', 'o1', true), anexo('f9', 'o9', true)]);
         await db.outbox.add(uploadOs('up1', 'f1'));
         const mutacao: MutacaoLocal = {
           mutationId: 'mo', entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: null, dados: osDados, criadaEm: '',
@@ -458,6 +467,7 @@ describe('PendenciasService', () => {
 
         expect(await db.os.get('o1')).toBeUndefined();
         expect((await db.anexosOs.toArray()).map((a) => a.id)).toEqual(['f9']);
+        expect(await comBytes()).toEqual([]);
         expect(await db.outbox.count()).toBe(0);
         expect(await db.pendencias.count()).toBe(0);
       });
@@ -503,7 +513,7 @@ describe('PendenciasService', () => {
             notas: [{ ...nota('n1', 'Cheguei'), autorLocalId: TEC, criadaLocalEm: '2026-10-01T09:10:00Z' },
               { ...nota('n2', 'Saí'), autorLocalId: TEC, criadaLocalEm: '2026-10-01T11:00:00Z' }],
           });
-          await db.anexosOs.put(anexo('f1', 'o1', false));
+          await gravarAnexos(anexo('f1', 'o1', false));
           await db.outbox.bulkAdd([uploadOs('up1', 'f1'), mutOs('c1', 7, c, { separada: true })].map((m, i) => ({ ...m, seq: 6 + i })));
           const p: Pendencia = {
             mutationId: 'n', entidade: 'os', agregadoId: 'o1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 7,
@@ -666,7 +676,7 @@ describe('PendenciasService', () => {
         };
         await db.pendencias.put(conflitoOs);
         // anexos já enviados (cópia do servidor) e de outra OS não contam
-        await db.anexosOs.bulkPut([anexo('f0', 'o1', true), anexo('f9', 'o9', false)]);
+        await gravarAnexos([anexo('f0', 'o1', true), anexo('f9', 'o9', false)]);
         expect(await svc.descartaEnvio(conflitoOs)).toBe(false);
 
         // o upload de um anexo na fila
@@ -685,13 +695,13 @@ describe('PendenciasService', () => {
 
         // uma foto, a assinatura ou o PDF gravados aqui e ainda não enviados
         for (const tipo of ['FOTO', 'ASSINATURA', 'DOCUMENTO'] as const) {
-          await db.anexosOs.put({ ...anexo('f3', 'o1', false), tipo });
+          await gravarAnexos({ ...anexo('f3', 'o1', false), tipo });
           expect(await svc.descartaEnvio(conflitoOs)).toBe(true);
           await db.anexosOs.delete('f3');
         }
         expect(await svc.descartaEnvio(conflitoOs)).toBe(false);
         // a recusa da criação da OS também (o Descartar apaga a OS e os anexos dela)
-        await db.anexosOs.put(anexo('f4', 'o1', false));
+        await gravarAnexos(anexo('f4', 'o1', false));
         expect(await svc.descartaEnvio({ ...conflitoOs, tipo: 'REJEITADO', mutacao: { ...conflitoOs.mutacao, baseVersion: null } })).toBe(true);
         // o próprio upload recusado descarta só o anexo dele: não pergunta
         expect(await svc.descartaEnvio({ ...recusado })).toBe(false);
@@ -699,7 +709,7 @@ describe('PendenciasService', () => {
 
       it('observarOsDasPendencias: as OS e o tipo dos anexos das pendências, sem ler os bytes de outras', async () => {
         await db.os.bulkPut([paraOsLocal('o1', 3, { ...osDados, numero: 123, itens: [], notas: [] }), paraOsLocal('o9', 1, { ...osDados, itens: [], notas: [] })]);
-        await db.anexosOs.bulkPut([{ ...anexo('s1', 'o1', false), tipo: 'ASSINATURA' }, anexo('f9', 'o9', false)]);
+        await gravarAnexos([{ ...anexo('s1', 'o1', false), tipo: 'ASSINATURA' }, anexo('f9', 'o9', false)]);
         await db.pendencias.put({
           mutationId: 'up1', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '',
           erro: { codigo: 'ACESSO_NEGADO', mensagem: 'x' }, mutacao: uploadOs('up1', 's1'),

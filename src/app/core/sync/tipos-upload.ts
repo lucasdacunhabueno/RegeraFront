@@ -1,6 +1,6 @@
 import type { HttpErrorResponse } from '@angular/common/http';
 import type { Table } from 'dexie';
-import { AnexoOsLocal, OsLocal, paraAnexoOsServidor } from '../../features/os/os-models';
+import { AnexoOsLocal, BytesAnexoOs, OsLocal, paraAnexoOsServidor } from '../../features/os/os-models';
 import type { DocumentoLocal, PropostaLocal } from '../../features/propostas/proposta-models';
 import type { RegeraDb } from '../db/regera-db';
 import type { RegistroLocal } from './adaptadores';
@@ -9,11 +9,12 @@ import {
   TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO,
 } from './sync-models';
 
-/** O que todo registro local com os bytes de um upload tem (`DocumentoLocal`, `AnexoOsLocal`). */
+/**
+ * O que todo registro local de um upload tem (`DocumentoLocal`, `AnexoOsLocal`). Os bytes ficam no próprio registro
+ * (`documentos`) ou numa tabela à parte (`anexosOsBytes`, M2P2-R16): só o tipo sabe (`envio`, `podar`, `apagar`).
+ */
 export interface RegistroUpload {
   id: string;
-  /** null depois que os bytes foram podados (ou quando nunca vieram para o aparelho). */
-  bytes: ArrayBuffer | null;
   enviado: boolean;
   arquivoId: string | null;
 }
@@ -38,15 +39,17 @@ export interface TipoUpload<R extends RegistroUpload = RegistroUpload, S = unkno
   readonly campoAgregado: string;
   /** Os bytes têm valores (§10): o perfil TECNICO não guarda nem envia (`purgarDocumentosDoTecnico`). */
   readonly temValores: boolean;
-  /** A tabela com os bytes e o estado do envio. */
+  /** A tabela do registro (o estado do envio e o id do agregado). */
   tabela(db: RegeraDb): Table<R, string>;
+  /** Todas as tabelas do tipo (a do registro e, se os bytes ficam à parte, a deles), para as transações. */
+  tabelas(db: RegeraDb): Table[];
   /** Os `dados` da mutação na outbox para o registro `id`. */
   dados(id: string): unknown;
   /** O id do registro a partir dos `dados` da mutação. */
   idDe(dados: unknown): string | undefined;
   url(agregadoId: string): string;
-  /** O que vai no multipart. Só é chamado com `bytes` presentes. */
-  montar(r: R): EnvioUpload;
+  /** O que vai no multipart; null se os bytes não estão mais no aparelho. */
+  envio(db: RegeraDb, r: R): Promise<EnvioUpload | null>;
   /** Os bytes não estão mais no aparelho: vira pendência sem chamar o servidor. */
   readonly ausente: ErroMutacao;
   /** Recusa definitiva (4xx) como erro da pendência, com mensagem em pt-BR. */
@@ -55,8 +58,13 @@ export interface TipoUpload<R extends RegistroUpload = RegistroUpload, S = unkno
   versao(resp: S): number;
   /** O registro depois do upload aceito. */
   enviado(r: R, resp: S): R;
-  /** Depois do aceite, tira os bytes que não precisam mais ficar (P4b-R26). Roda na transação de `aplicarUpload`. */
-  podar(tabela: Table<R, string>, agregadoId: string, resp: S): Promise<void>;
+  /**
+   * Depois do aceite (com o registro `id` já gravado como enviado), tira os bytes que não precisam mais ficar
+   * (P4b-R26). Roda na transação de `aplicarUpload`, que tem as `tabelas`.
+   */
+  podar(db: RegeraDb, id: string, agregadoId: string, resp: S): Promise<void>;
+  /** Apaga os registros e os bytes deles. Precisa das `tabelas` na transação de quem chama. */
+  apagar(db: RegeraDb, ids: readonly string[]): Promise<void>;
   /** As mudanças no registro local do agregado: a versão e o que o servidor passou a ter. */
   noAgregado(local: RegistroLocal, resp: S, versao: number): Record<string, unknown>;
 }
@@ -107,11 +115,12 @@ const DOCUMENTO_PROPOSTA: TipoUpload<DocumentoLocal, RespostaDocumento> = {
   campoAgregado: 'propostaId',
   temValores: true,
   tabela: (db) => db.documentos,
+  tabelas: (db) => [db.documentos],
   dados: (documentoId): DadosUpload => ({ documentoId }),
   idDe: (dados) => (dados as DadosUpload | null)?.documentoId,
   url: (propostaId) => `/api/propostas/${encodeURIComponent(propostaId)}/documentos`,
-  montar: (doc) => ({
-    arquivo: new Blob([doc.bytes!], { type: 'application/pdf' }),
+  envio: async (_db, doc) => (doc.bytes === null ? null : {
+    arquivo: new Blob([doc.bytes], { type: 'application/pdf' }),
     nomeArquivo: `${doc.codigoExibido}.pdf`,
     metadados: { id: doc.id, revisao: doc.revisao, codigoExibido: doc.codigoExibido, sha256: doc.sha256, snapshot: doc.snapshot ?? {} },
   }),
@@ -124,13 +133,14 @@ const DOCUMENTO_PROPOSTA: TipoUpload<DocumentoLocal, RespostaDocumento> = {
   enviado: (doc, resp) => ({ ...doc, enviado: true, arquivoId: resp.documento.arquivoId }),
   // P4b-R26: os PDFs já enviados das revisões anteriores perdem os bytes (abrem online pelo `arquivoId`); os da
   // revisão deste upload ficam
-  podar: async (tabela, propostaId, resp) => {
-    await tabela
+  podar: async (db, _id, propostaId, resp) => {
+    await db.documentos
       .where('propostaId')
       .equals(propostaId)
       .filter((d) => d.enviado && d.revisao < resp.documento.revisao && d.bytes !== null)
       .modify({ bytes: null });
   },
+  apagar: (db, ids) => db.documentos.bulkDelete([...ids]),
   noAgregado: (local, resp, versao) => {
     const documentos = [...(local as PropostaLocal).documentos.filter((d) => d.id !== resp.documento.id), resp.documento];
     return { version: versao, documentos };
@@ -200,27 +210,27 @@ function motivoDoAnexo(a: AnexoOsLocal, codigo: string | null, status: number, c
 }
 
 /** O tipo do arquivo, a extensão e os metadados de cada tipo de anexo (os campos de outro tipo não vão). */
-function envioDoAnexo(a: AnexoOsLocal): EnvioUpload {
+function envioDoAnexo(a: AnexoOsLocal, b: BytesAnexoOs): EnvioUpload {
   const base = { anexoId: a.id, tipo: a.tipo, sha256: a.sha256 };
   switch (a.tipo) {
     case 'FOTO':
       return {
-        arquivo: new Blob([a.bytes!], { type: 'image/jpeg' }),
+        arquivo: new Blob([b.bytes], { type: 'image/jpeg' }),
         nomeArquivo: `${a.id}.jpg`,
         metadados: { ...base, legenda: a.legenda, momento: a.momento, tiradaEm: a.tiradaEm },
       };
     case 'ASSINATURA':
       return {
-        arquivo: new Blob([a.bytes!], { type: 'image/png' }),
+        arquivo: new Blob([b.bytes], { type: 'image/png' }),
         nomeArquivo: `${a.id}.png`,
         // no anexo local, `tiradaEm` é o `assinadaEm` do upload
         metadados: { ...base, assinanteNome: a.assinanteNome, assinantePapel: a.assinantePapel, assinadaEm: a.tiradaEm },
       };
     case 'DOCUMENTO':
       return {
-        arquivo: new Blob([a.bytes!], { type: 'application/pdf' }),
+        arquivo: new Blob([b.bytes], { type: 'application/pdf' }),
         nomeArquivo: `${a.codigoExibido ?? a.id}.pdf`,
-        metadados: { ...base, revisaoOs: a.revisaoOs, codigoExibido: a.codigoExibido, snapshot: a.snapshot ?? {} },
+        metadados: { ...base, revisaoOs: a.revisaoOs, codigoExibido: a.codigoExibido, snapshot: b.snapshot ?? {} },
       };
   }
 }
@@ -232,10 +242,14 @@ const ANEXO_OS: TipoUpload<AnexoOsLocal, RespostaAnexoOs> = {
   campoAgregado: 'osId',
   temValores: false,
   tabela: (db) => db.anexosOs,
+  tabelas: (db) => [db.anexosOs, db.anexosOsBytes],
   dados: (anexoId): DadosUploadAnexoOs => ({ anexoId }),
   idDe: (dados) => (dados as DadosUploadAnexoOs | null)?.anexoId,
   url: (osId) => `/api/os/${encodeURIComponent(osId)}/anexos`,
-  montar: envioDoAnexo,
+  envio: async (db, a) => {
+    const b = await db.anexosOsBytes.get(a.id);
+    return b ? envioDoAnexo(a, b) : null;
+  },
   ausente: { codigo: 'ANEXO_AUSENTE', mensagem: `O arquivo deste anexo não está mais neste aparelho. ${DESCARTE_UPLOAD_OS}` },
   erro: (e, a) => comProblema(e, (codigo, campos) => {
     // M2-R3/R22: o técnico que perdeu a atribuição (o PDF dele, ou tudo depois de 7 dias, inclusive a repetição de
@@ -245,16 +259,26 @@ const ANEXO_OS: TipoUpload<AnexoOsLocal, RespostaAnexoOs> = {
     return `${motivoDoAnexo(a, codigo, e.status, campos)} ${DESCARTE_UPLOAD_OS}`;
   }),
   versao: (resp) => resp.versaoOs,
-  // P4b-R26: depois do aceite fica só a miniatura (e os metadados); o PDF guarda os bytes da revisão atual
-  enviado: (a, resp) => ({ ...a, enviado: true, arquivoId: resp.anexo.arquivoId, bytes: a.tipo === 'DOCUMENTO' ? a.bytes : null }),
-  podar: async (tabela, osId, resp) => {
+  enviado: (a, resp) => ({ ...a, enviado: true, arquivoId: resp.anexo.arquivoId }),
+  // P4b-R26: depois do aceite ficam só a miniatura e os metadados; o PDF guarda os bytes da revisão atual, e os já
+  // enviados das revisões anteriores perdem os deles
+  podar: async (db, id, osId, resp) => {
+    if (resp.anexo.tipo !== 'DOCUMENTO') {
+      await db.anexosOsBytes.delete(id);
+      return;
+    }
     const revisao = resp.anexo.revisaoOs;
-    if (resp.anexo.tipo !== 'DOCUMENTO' || revisao == null) return;
-    await tabela
+    if (revisao == null) return;
+    const antigos = await db.anexosOs
       .where('osId')
       .equals(osId)
-      .filter((a) => a.tipo === 'DOCUMENTO' && a.enviado && a.revisaoOs !== null && a.revisaoOs < revisao && a.bytes !== null)
-      .modify({ bytes: null });
+      .filter((a) => a.tipo === 'DOCUMENTO' && a.enviado && a.revisaoOs !== null && a.revisaoOs < revisao)
+      .primaryKeys();
+    await db.anexosOsBytes.bulkDelete(antigos);
+  },
+  apagar: async (db, ids) => {
+    await db.anexosOs.bulkDelete([...ids]);
+    await db.anexosOsBytes.bulkDelete([...ids]);
   },
   noAgregado: (local, resp, versao) => {
     const anexo = paraAnexoOsServidor(resp.anexo);
@@ -295,7 +319,40 @@ export function tiposUpload(entidade?: string): readonly TipoUpload[] {
   return entidade === undefined ? LISTA : LISTA.filter((t) => t.agregado === entidade);
 }
 
-/** As tabelas de bytes de todos os tipos (para as transações que mexem nelas). */
-export function tabelasDeUpload(db: RegeraDb): Table<RegistroUpload, string>[] {
-  return LISTA.map((t) => t.tabela(db));
+/** As tabelas de todos os tipos, com as dos bytes (para as transações que mexem nelas). */
+export function tabelasDeUpload(db: RegeraDb): Table[] {
+  return LISTA.flatMap((t) => t.tabelas(db));
+}
+
+/**
+ * Apaga os registros de upload do agregado `entidade`/`agregadoId` (e os bytes deles) que passam no `filtro`; sem
+ * filtro, todos. Precisa de `tabelasDeUpload` na transação de quem chama.
+ */
+export async function apagarUploadsDoAgregado(
+  db: RegeraDb,
+  entidade: string,
+  agregadoId: string,
+  filtro: (r: RegistroUpload) => boolean = () => true,
+): Promise<void> {
+  for (const t of tiposUpload(entidade)) {
+    const ids = await t.tabela(db).where(t.campoAgregado).equals(agregadoId).filter(filtro).primaryKeys();
+    if (ids.length > 0) await t.apagar(db, ids);
+  }
+}
+
+/**
+ * Apaga, de todos os tipos, os registros de upload (e os bytes deles) com as ids de `mutacoes` (as de upload) que
+ * passam no `filtro`. Precisa de `tabelasDeUpload` na transação de quem chama.
+ */
+export async function apagarUploadsDasMutacoes(
+  db: RegeraDb,
+  mutacoes: readonly { entidade: string; dados: unknown }[],
+  filtro: (r: RegistroUpload) => boolean = () => true,
+): Promise<void> {
+  for (const t of LISTA) {
+    const ids = mutacoes.filter((m) => m.entidade === t.entidade).map((m) => t.idDe(m.dados)).filter((id): id is string => !!id);
+    if (ids.length === 0) continue;
+    const apagar = (await t.tabela(db).bulkGet(ids)).filter((r): r is RegistroUpload => !!r && filtro(r)).map((r) => r.id);
+    if (apagar.length > 0) await t.apagar(db, apagar);
+  }
 }

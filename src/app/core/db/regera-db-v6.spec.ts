@@ -18,8 +18,7 @@ function anexo(id: string, osId: string, enviado: boolean): AnexoOsLocal {
   return {
     id, osId, tipo: 'FOTO', sha256: 'ab'.repeat(32), legenda: null, momento: 'ANTES', tiradaEm: '2026-10-01T10:00:00Z',
     assinanteNome: null, assinantePapel: null, revisaoOs: null, codigoExibido: null,
-    bytes: new Uint8Array([0xff, 0xd8, 0xff]).buffer, miniatura: new Uint8Array([0xff, 0xd8]).buffer,
-    enviado, arquivoId: enviado ? 'a1' : null,
+    miniatura: new Uint8Array([0xff, 0xd8]).buffer, enviado, arquivoId: enviado ? 'a1' : null,
   };
 }
 
@@ -65,6 +64,10 @@ describe('RegeraDb v6', () => {
     expect(db.anexosOs.schema.primKey.name).toBe('id');
     // `enviado` (boolean) não é chave válida do IndexedDB: filtrado em memória, como em `documentos`
     expect(db.anexosOs.schema.indexes.map((i) => i.name).sort()).toEqual(['osId', 'tipo']);
+    // M2P2-R16: os bytes completos à parte, pela id do anexo
+    expect(await db.anexosOsBytes.count()).toBe(0);
+    expect(db.anexosOsBytes.schema.primKey.name).toBe('id');
+    expect(db.anexosOsBytes.schema.indexes).toEqual([]);
     db.close();
   });
 
@@ -145,7 +148,8 @@ describe('RegeraDb v6', () => {
     v5.close();
 
     const db = new RegeraDb();
-    for (const t of [db.clientes, db.propostas, db.templates, db.itens, db.empresa, db.usuarios, db.documentos, db.os, db.anexosOs]) {
+    for (const t of [db.clientes, db.propostas, db.templates, db.itens, db.empresa, db.usuarios, db.documentos, db.os, db.anexosOs,
+      db.anexosOsBytes]) {
       expect(await t.count(), t.name).toBe(0);
     }
     expect(await db.lerMeta('sessao')).toEqual({ id: 't1' });
@@ -175,14 +179,16 @@ describe('RegeraDb v6', () => {
     db.close();
   });
 
-  it('anexosOs guardam bytes e miniatura e são achados pela OS', async () => {
+  it('anexosOs guardam metadados e miniatura e são achados pela OS; os bytes ficam em anexosOsBytes (M2P2-R16)', async () => {
     const db = new RegeraDb();
     await db.anexosOs.bulkPut([anexo('f1', 'o1', true), anexo('f2', 'o1', false), anexo('f3', 'o2', false)]);
+    await db.anexosOsBytes.put({ id: 'f2', bytes: new Uint8Array([0xff, 0xd8, 0xff]).buffer });
     const doO1 = await db.anexosOs.where('osId').equals('o1').toArray();
     expect(doO1.map((x) => x.id).sort()).toEqual(['f1', 'f2']);
     expect(doO1.filter((x) => !x.enviado).map((x) => x.id)).toEqual(['f2']);
     const f2 = doO1.find((x) => x.id === 'f2')!;
-    expect(new Uint8Array(f2.bytes!)).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
+    expect(f2).not.toHaveProperty('bytes');
+    expect(new Uint8Array((await db.anexosOsBytes.get('f2'))!.bytes)).toEqual(new Uint8Array([0xff, 0xd8, 0xff]));
     expect(new Uint8Array(f2.miniatura!)).toEqual(new Uint8Array([0xff, 0xd8]));
     expect(await db.anexosOs.where('tipo').equals('FOTO').count()).toBe(3);
     db.close();
@@ -192,9 +198,11 @@ describe('RegeraDb v6', () => {
     const db = new RegeraDb();
     await db.os.put(ADAPTADORES.os.paraLocal('o1', 1, osDados()) as OsLocal);
     await db.anexosOs.put(anexo('f1', 'o1', false));
+    await db.anexosOsBytes.put({ id: 'f1', bytes: new Uint8Array([1]).buffer });
     await db.limparTudo();
     expect(await db.os.count()).toBe(0);
     expect(await db.anexosOs.count()).toBe(0);
+    expect(await db.anexosOsBytes.count()).toBe(0);
     db.close();
   });
 });

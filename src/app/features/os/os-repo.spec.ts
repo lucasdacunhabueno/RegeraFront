@@ -246,6 +246,24 @@ describe('OsRepo', () => {
   }
 
   const fila = () => db.outbox.orderBy('seq').toArray();
+  /** O anexo como os testes o descrevem: os metadados e, à parte (M2P2-R16), os bytes e o snapshot. */
+  type AnexoTeste = AnexoOsLocal & { bytes?: ArrayBuffer | null; snapshot?: Record<string, unknown> | null };
+  /** Grava os metadados em `anexosOs`; os bytes (com o snapshot) em `anexosOsBytes`, e `bytes: null` apaga os de lá. */
+  const gravarAnexos = async (...xs: (AnexoTeste | AnexoTeste[])[]) => {
+    for (const { bytes, snapshot, ...meta } of xs.flat()) {
+      await db.anexosOs.put(meta);
+      if (bytes) await db.anexosOsBytes.put({ id: meta.id, bytes, ...(snapshot !== undefined ? { snapshot } : {}) });
+      else if (bytes === null) await db.anexosOsBytes.delete(meta.id);
+    }
+  };
+  /** O anexo do aparelho com os bytes e o snapshot (`bytes` null sem a linha em `anexosOsBytes`). */
+  const lerAnexo = async (id: string) => {
+    const a = await db.anexosOs.get(id);
+    if (!a) return undefined;
+    const b = await db.anexosOsBytes.get(id);
+    return { ...a, bytes: b?.bytes ?? null, snapshot: b?.snapshot ?? null };
+  };
+  const lerAnexos = async () => Promise.all((await db.anexosOs.toArray()).map(async (a) => (await lerAnexo(a.id))!));
   const dadosDe = (m: MutacaoLocal) => m.dados as OsDados;
   const conflito = (agregadoId = 'o1'): Pendencia => ({
     mutationId: 'mc', entidade: 'os', agregadoId, tipo: 'CONFLITO', criadaEm: '',
@@ -286,18 +304,22 @@ describe('OsRepo', () => {
 
     it('observarAnexos junta os do servidor e os do aparelho, com miniatura, enviado e temBytes; blobDoAnexo', async () => {
       await noAparelho('EM_ANDAMENTO', { anexos: [anexoServidor(), anexoServidor({ id: 'f2', arquivoId: 'a-f2', tiradaEm: '2026-10-01T12:00:00Z' })] });
-      const local = (extra: Partial<AnexoOsLocal>): AnexoOsLocal => ({
+      const local = (extra: Partial<AnexoTeste>): AnexoTeste => ({
         id: 'f2', osId: 'o1', tipo: 'FOTO', sha256: 'c'.repeat(64), legenda: 'Quadro', momento: 'ANTES',
         tiradaEm: '2026-10-01T12:00:00Z', assinanteNome: null, assinantePapel: null, revisaoOs: null, codigoExibido: null,
         bytes: null, miniatura: new Uint8Array([9]).buffer as ArrayBuffer, enviado: true, arquivoId: 'a-f2', ...extra,
       });
-      await db.anexosOs.bulkPut([
+      await gravarAnexos([
         local({}),
         local({ id: 's1', tipo: 'ASSINATURA', legenda: null, momento: null, tiradaEm: '2026-10-01T13:00:00Z', assinanteNome: 'Maria',
           bytes: PNG, miniatura: PNG, enviado: false, arquivoId: null }),
         local({ id: 'x', osId: 'outra' }),
       ]);
+      // M2P2-R16: a galeria não lê os bytes completos (só as chaves de `anexosOsBytes`)
+      const leituras = [vi.spyOn(db.anexosOsBytes, 'get'), vi.spyOn(db.anexosOsBytes, 'bulkGet'), vi.spyOn(db.anexosOsBytes, 'toArray')];
       const vistos = await firstValueFrom(repo.observarAnexos('o1'));
+      for (const l of leituras) expect(l).not.toHaveBeenCalled();
+      expect(vistos.some((a) => 'bytes' in a)).toBe(false);
       expect(vistos.map((a) => [a.id, a.tipo, a.enviado, a.temBytes, a.arquivoId])).toEqual([
         ['fs1', 'FOTO', true, false, 'a-fs1'], ['f2', 'FOTO', true, false, 'a-f2'], ['s1', 'ASSINATURA', false, true, null],
       ]);
@@ -617,7 +639,7 @@ describe('OsRepo', () => {
       await noAparelho('ABERTA');
       await repo.iniciar('o1');
       const id = await repo.adicionarFoto('o1', arquivo(), { legenda: ' Quadro antigo ', momento: 'ANTES' });
-      const a = (await db.anexosOs.get(id))!;
+      const a = (await lerAnexo(id))!;
       expect(a).toMatchObject({
         osId: 'o1', tipo: 'FOTO', sha256: '1'.padStart(64, '0'), legenda: 'Quadro antigo', momento: 'ANTES',
         tiradaEm: AGORA.toISOString(), enviado: false, arquivoId: null, revisaoOs: null, codigoExibido: null,
@@ -691,7 +713,7 @@ describe('OsRepo', () => {
     it('assinar grava a ASSINATURA (com o PNG como miniatura) e o upload, e zera a recusa local sem espelhar a aceita', async () => {
       await noAparelho('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' });
       const id = await repo.assinar('o1', { png: { bytes: PNG, sha256: SHA_PNG }, nome: ' Maria ', papel: 'Síndica' });
-      const a = (await db.anexosOs.get(id))!;
+      const a = (await lerAnexo(id))!;
       expect(a).toMatchObject({ tipo: 'ASSINATURA', assinanteNome: 'Maria', assinantePapel: 'Síndica', tiradaEm: AGORA.toISOString(), sha256: SHA_PNG });
       expect(new Uint8Array(a.miniatura!)).toEqual(new Uint8Array(PNG));
       expect((await fila()).map((m) => m.entidade)).toEqual([TIPO_UPLOAD_ANEXO_OS]);
@@ -765,7 +787,7 @@ describe('OsRepo', () => {
       expect(m.map((x) => [x.entidade, x.op, !!x.separada])).toEqual([['os', 'UPSERT', true], [TIPO_UPLOAD_ANEXO_OS, 'UPLOAD', true]]);
       expect(m[0]).toMatchObject({ baseVersion: 5 });
       expect(dadosDe(m[0])).toMatchObject({ status: 'CONCLUIDA', resumoExecucao: 'Serviço feito', concluiProposta: true, responsavelId: null });
-      const doc = (await db.anexosOs.get((m[1].dados as { anexoId: string }).anexoId))!;
+      const doc = (await lerAnexo((m[1].dados as { anexoId: string }).anexoId))!;
       expect(doc).toMatchObject({ tipo: 'DOCUMENTO', revisaoOs: 2, codigoExibido: 'OS-000123-R2', enviado: false });
       expect(new TextDecoder().decode(doc.bytes!)).toBe(PDF);
       expect(doc.sha256).toMatch(/^[0-9a-f]{64}$/);
@@ -811,7 +833,7 @@ describe('OsRepo', () => {
       expect(arquivos.obterDataUrl).not.toHaveBeenCalled();
       expect(e.assinatura).toMatchObject({ nome: 'Maria', papel: 'Síndica', assinadaEm: AGORA.toISOString(), imagem: 'data:image/png;base64,iVBORwECAw==' });
       expect(e.recusaAssinatura).toBeNull();
-      const doc = (await db.anexosOs.toArray()).find((a) => a.tipo === 'DOCUMENTO')!;
+      const doc = (await lerAnexos()).find((a) => a.tipo === 'DOCUMENTO')!;
       expect(JSON.stringify(doc.snapshot)).not.toContain('base64');
       // fila: foto, assinatura, concluir, PDF
       expect((await fila()).map((m) => m.op)).toEqual(['UPLOAD', 'UPLOAD', 'UPSERT', 'UPLOAD']);
@@ -828,7 +850,7 @@ describe('OsRepo', () => {
       expect(gerarPdf.mock.calls[0][0].os.codigoExibido).toBe('OSP-0Z9XY7');
       expect(codigoExibido).toBe('OS-000124');
       expect((await fila())[0]).toMatchObject({ baseVersion: 3 });
-      expect((await db.anexosOs.toArray()).filter((a) => a.tipo === 'DOCUMENTO')).toHaveLength(1);
+      expect((await lerAnexos()).filter((a) => a.tipo === 'DOCUMENTO')).toHaveLength(1);
 
       await db.outbox.clear();
       await db.anexosOs.clear();
@@ -848,8 +870,8 @@ describe('OsRepo', () => {
       const f1 = await repo.adicionarFoto('o1', arquivo(), { legenda: 'Quadro' });
       gerarPdf.mockImplementationOnce(async () => {
         // o que o aplicarUpload do SyncService faz com a foto aceita
-        const a = (await db.anexosOs.get(f1))!;
-        await db.anexosOs.put({ ...a, enviado: true, arquivoId: `a-${f1}`, bytes: null });
+        const a = (await lerAnexo(f1))!;
+        await gravarAnexos({ ...a, enviado: true, arquivoId: `a-${f1}`, bytes: null });
         await db.os.update('o1', { version: 4, anexos: [...os.anexos, paraAnexoOsServidor(anexoServidor({ id: f1, arquivoId: `a-${f1}`, legenda: 'Quadro' }))] });
         return new Blob([PDF]);
       });
@@ -865,8 +887,8 @@ describe('OsRepo', () => {
       const s1 = await repo.assinar('o1', { png: { bytes: PNG, sha256: SHA_PNG }, nome: 'Maria', papel: 'Síndica' });
       gerarPdf.mockImplementationOnce(async () => {
         // o que o aplicarUpload do SyncService faz com a assinatura aceita: o anexo enviado e o espelho na OS (`noAgregado`)
-        const a = (await db.anexosOs.get(s1))!;
-        await db.anexosOs.put({ ...a, enviado: true, arquivoId: `a-${s1}`, bytes: null });
+        const a = (await lerAnexo(s1))!;
+        await gravarAnexos({ ...a, enviado: true, arquivoId: `a-${s1}`, bytes: null });
         const resp: RespostaAnexoOs = {
           anexo: {
             id: s1, tipo: 'ASSINATURA', arquivoId: `a-${s1}`, sha256: SHA_PNG, assinanteNome: 'Maria', assinantePapel: 'Síndica',
@@ -889,7 +911,7 @@ describe('OsRepo', () => {
     it('uma foto gravada durante a geração faz gerar de novo, já com ela', async () => {
       await noAparelho('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' });
       gerarPdf.mockImplementationOnce(async () => {
-        await db.anexosOs.put({
+        await gravarAnexos({
           id: 'f9', osId: 'o1', tipo: 'FOTO', sha256: 'c'.repeat(64), legenda: 'Tarde', momento: null, tiradaEm: AGORA.toISOString(),
           assinanteNome: null, assinantePapel: null, revisaoOs: null, codigoExibido: null, bytes: new ArrayBuffer(1),
           miniatura: new ArrayBuffer(1), enviado: false, arquivoId: null,
@@ -923,7 +945,7 @@ describe('OsRepo', () => {
       expect(e.cliente).toMatchObject({ nome: 'Cliente Ltda', documento: null });
       expect(JSON.stringify(e)).not.toContain('11444777000161');
       expect(e.empresa.cnpj).toBe('11222333000181');
-      const doc = (await db.anexosOs.toArray()).find((a) => a.tipo === 'DOCUMENTO')!;
+      const doc = (await lerAnexos()).find((a) => a.tipo === 'DOCUMENTO')!;
       expect(JSON.stringify(doc.snapshot)).not.toContain('11444777000161');
       expect(JSON.stringify(doc.snapshot)).toContain('11222333000181');
     });
@@ -1057,7 +1079,7 @@ describe('OsRepo', () => {
       usuario.set(OUTRO_COMERCIAL);
       expect((await erroDe(repo.excluir('o1'))).codigo).toBe('ACESSO_NEGADO');
       usuario.set(COMERCIAL);
-      await db.anexosOs.put({
+      await gravarAnexos({
         id: 'd1', osId: 'o1', tipo: 'DOCUMENTO', sha256: 'f'.repeat(64), legenda: null, momento: null, tiradaEm: null,
         assinanteNome: null, assinantePapel: null, revisaoOs: 1, codigoExibido: 'OS-000123', bytes: new ArrayBuffer(1),
         miniatura: null, enviado: true, arquivoId: 'a-d1',
@@ -1239,7 +1261,7 @@ describe('OsRepo', () => {
       expect(await db.outbox.count()).toBe(0);
       expect(await db.pendencias.count()).toBe(0);
       expect((await db.os.get('o1'))!).toMatchObject({ version: 10, status: 'CONCLUIDA' });
-      const anexos = await db.anexosOs.toArray();
+      const anexos = await lerAnexos();
       expect(anexos.every((a) => a.enviado)).toBe(true);
       expect(anexos.filter((a) => a.tipo !== 'DOCUMENTO').every((a) => a.bytes === null && a.miniatura !== null)).toBe(true);
       expect(anexos.find((a) => a.tipo === 'DOCUMENTO')!.bytes).not.toBeNull();
@@ -1258,7 +1280,7 @@ describe('OsRepo', () => {
       await pull(0, [{ entidade: 'os', id: 'o1', version: 5, deleted: true, dados: null }], 10);
       await p;
       expect(await db.os.get('o1')).toBeDefined();
-      const guardado = (await db.anexosOs.get(f1))!;
+      const guardado = (await lerAnexo(f1))!;
       expect(guardado.enviado).toBe(false);
       expect(guardado.bytes).not.toBeNull();
       expect((await fila()).map((m) => m.op)).toEqual(['UPLOAD']);
