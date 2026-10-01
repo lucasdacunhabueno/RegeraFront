@@ -541,6 +541,55 @@ describe('TemplateEditorPage', () => {
       expect(pdf.gerarBlob.mock.calls[0][0].blocos.map((b: Bloco) => b.tipo)).toEqual(['CABECALHO', 'ITENS', 'TOTAIS']);
     });
   });
+  describe('desempenho por tecla', () => {
+    afterEach(() => vi.useRealTimers());
+    const comItensInvalido = () => {
+      const blocos = blocosExistentes();
+      blocos[1] = { id: 'i1', tipo: 'ITENS', config: { colunas: [], agruparPorNatureza: false } };
+      return existente(blocos);
+    };
+    const erroGeral = (el: HTMLElement) => el.querySelector('[data-testid=erro-geral]');
+
+    it('validação dos blocos e aviso de saída da aba esperam 300 ms sem edição; o guard de rota não espera', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const { fixture, el, repo } = montar({ id: 't1', dados: comItensInvalido() });
+      await carregado(fixture);
+      enviar(el);
+      await estavel(fixture);
+      expect(repo.salvar).not.toHaveBeenCalled();
+      expect(erroGeral(el)?.textContent).toContain('Corrija os campos destacados.');
+
+      vi.useFakeTimers();
+      const ouvir = vi.spyOn(window, 'addEventListener');
+      botaoDe(cartoes(el)[1], 'Remover bloco').click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.temAlteracoes()).toBe(true);
+      expect(erroGeral(el)).not.toBeNull();
+      expect(ouvir).not.toHaveBeenCalledWith('beforeunload', expect.anything());
+
+      vi.advanceTimersByTime(299);
+      fixture.detectChanges();
+      expect(erroGeral(el)).not.toBeNull();
+      vi.advanceTimersByTime(1);
+      fixture.detectChanges();
+      expect(erroGeral(el)).toBeNull();
+      expect(ouvir).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+    });
+
+    it('Salvar logo depois de editar valida o estado atual, sem esperar o debounce', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const { fixture, el, repo } = montar({ id: 't1', dados: comItensInvalido() });
+      await carregado(fixture);
+      vi.useFakeTimers();
+      botaoDe(cartoes(el)[1], 'Remover bloco').click();
+      fixture.detectChanges();
+      enviar(el);
+      fixture.detectChanges();
+      expect(repo.salvar).toHaveBeenCalledTimes(1);
+      expect(repo.salvar.mock.calls[0][0].blocos.map((b: Bloco) => b.id)).toEqual(['c1']);
+    });
+  });
+
   describe('alterações não salvas (P4a-R12)', () => {
     it('novo: limpo ao abrir, sujo ao editar, limpo depois de salvar', async () => {
       const { fixture, el, navegar } = montar();

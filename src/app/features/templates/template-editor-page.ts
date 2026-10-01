@@ -10,6 +10,7 @@ import {
   Injector,
   input,
   signal,
+  untracked,
   viewChild,
 } from '@angular/core';
 import { DomSanitizer, SafeResourceUrl } from '@angular/platform-browser';
@@ -42,6 +43,8 @@ const CORRIJA = 'Corrija os campos destacados.';
 const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
 /** Uma prévia aberta em outra aba ainda pode estar lendo o blob: a revogação espera. */
 const ESPERA_REVOGAR_MS = 60_000;
+/** Validação dos blocos e "sujo" (JSON do template inteiro) só depois de uma pausa na edição: templates grandes. */
+const ESPERA_EDICAO_MS = 300;
 
 type AcaoMover = 'subir' | 'descer';
 
@@ -278,10 +281,17 @@ export class TemplateEditorPage implements ComAlteracoes {
   private versaoCarregada: number | null | undefined;
   protected readonly indisponivel = computed(() => this.naoEncontrado() || this.falhaCarga());
 
+  // ---- edição com debounce ----
+  /** O que está na tela (barato: só referências). */
+  private readonly editado = computed(() => ({
+    nome: this.nome(), tipo: this.tipo(), ativo: this.ativo(), padrao: this.padrao(), blocos: this.blocos(),
+  }));
+  /** `editado` depois de ESPERA_EDICAO_MS sem mudança; o que é caro (validar, serializar) parte daqui. */
+  private readonly editadoEstavel = signal(this.editado());
+  private timerEdicao: ReturnType<typeof setTimeout> | undefined;
+
   // ---- alterações não salvas (P4a-R12) ----
-  private readonly estadoAtual = computed(() =>
-    instantaneo({ nome: this.nome(), tipo: this.tipo(), ativo: this.ativo(), padrao: this.padrao(), blocos: this.blocos() }),
-  );
+  private readonly estadoAtual = computed(() => instantaneo(this.editadoEstavel()));
   /** Estado ao abrir, depois de carregar ou depois de salvar. */
   private readonly estadoSalvo = signal('');
   /** Depois de excluir, sair não pergunta nada. */
@@ -296,10 +306,10 @@ export class TemplateEditorPage implements ComAlteracoes {
     if (n === '') return 'Informe o nome.';
     return n.length > MAX_NOME ? `Máximo de ${MAX_NOME} caracteres.` : null;
   });
-  private readonly errosBlocos = computed(() => (this.tentouSalvar() ? validarBlocos(this.blocos()) : {}));
+  private readonly errosBlocos = computed(() => (this.tentouSalvar() ? validarBlocos(this.editadoEstavel().blocos) : {}));
   /** Id do bloco → primeira mensagem dele (as chaves de `validarBlocos` são `blocos[i]...`, com o índice da tela). */
   protected readonly errosPorBloco = computed(() => {
-    const blocos = this.blocos();
+    const blocos = this.editadoEstavel().blocos;
     const mapa = new Map<string, string>();
     for (const [caminho, mensagem] of Object.entries(this.errosBlocos())) {
       const m = CAMINHO_BLOCO.exec(caminho);
@@ -341,18 +351,38 @@ export class TemplateEditorPage implements ComAlteracoes {
   constructor() {
     this.estadoSalvo.set(this.estadoAtual());
     effect(() => {
+      const editado = this.editado();
+      untracked(() => {
+        clearTimeout(this.timerEdicao);
+        if (editado !== this.editadoEstavel()) {
+          this.timerEdicao = setTimeout(() => this.editadoEstavel.set(editado), ESPERA_EDICAO_MS);
+        }
+      });
+    });
+    effect(() => {
       const id = this.id();
       if (id) void this.carregar(id);
     });
+    // o aviso do navegador (fechar a aba) segue o estado com debounce
     avisarAoSairDaPagina(this.alterado);
     inject(DestroyRef).onDestroy(() => {
       this.destruido = true;
+      clearTimeout(this.timerEdicao);
       this.descartarPrevia();
     });
   }
 
+  /** Guard de rota: compara o estado de agora, sem esperar o debounce (é uma chamada só, na navegação). */
   temAlteracoes(): boolean {
-    return this.alterado();
+    if (this.liberado() || this.carregando() || this.indisponivel()) return false;
+    return instantaneo(this.editado()) !== this.estadoSalvo();
+  }
+
+  /** Aplica já o que está pendente no debounce (Salvar, depois de carregar). */
+  private estabilizar(): void {
+    clearTimeout(this.timerEdicao);
+    this.timerEdicao = undefined;
+    this.editadoEstavel.set(this.editado());
   }
 
   /** Toque fora do "+ Bloco" e do menu fecha o menu. */
@@ -448,6 +478,8 @@ export class TemplateEditorPage implements ComAlteracoes {
 
   protected async salvar(): Promise<void> {
     if (this.salvando() || this.carregando() || this.naoEncontrado() || this.falhaCarga()) return;
+    // validação final síncrona, sobre o que está na tela
+    this.estabilizar();
     this.tentouSalvar.set(true);
     this.erroRepo.set(null);
     this.erroPadrao.set(null);
@@ -611,6 +643,7 @@ export class TemplateEditorPage implements ComAlteracoes {
       // blocos de tipo desconhecido (vindos do pull) ficam como estão
       this.blocos.set(t.blocos);
       this.aberto.set(null);
+      this.estabilizar();
       this.estadoSalvo.set(this.estadoAtual());
     } catch {
       // editor vazio salvaria por cima do template existente: bloqueia
