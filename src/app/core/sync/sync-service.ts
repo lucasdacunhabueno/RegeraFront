@@ -292,21 +292,26 @@ export class SyncService {
     await Promise.all([trabalhador(), trabalhador()]);
   }
 
+  /** Uma transação por página do pull; registro com mutação na outbox ou pendência local não é sobrescrito. */
   private async aplicarMudancas(mudancas: Mudanca[]): Promise<void> {
-    for (const mu of mudancas) {
-      const adaptador = ADAPTADORES[mu.entidade];
-      if (!adaptador) continue;
-      const tabela = adaptador.tabela(this.db);
-      await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, tabela], async () => {
-        const naFila = await this.db.outbox.where('agregadoId').equals(mu.id).count();
-        const pendente = await this.db.pendencias.where('agregadoId').equals(mu.id).count();
-        if (naFila > 0 || pendente > 0) return;
+    const conhecidas = mudancas.filter((mu) => !!ADAPTADORES[mu.entidade]);
+    if (conhecidas.length === 0) return;
+    const tabelas = [...new Set(conhecidas.map((mu) => ADAPTADORES[mu.entidade].tabela(this.db)))];
+    await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, ...tabelas], async () => {
+      const ids = [...new Set(conhecidas.map((mu) => mu.id))];
+      const naFila = await this.db.outbox.where('agregadoId').anyOf(ids).toArray();
+      const pendentes = await this.db.pendencias.where('agregadoId').anyOf(ids).toArray();
+      const protegidos = new Set([...naFila, ...pendentes].map((m) => m.agregadoId));
+      for (const mu of conhecidas) {
+        if (protegidos.has(mu.id)) continue;
+        const adaptador = ADAPTADORES[mu.entidade];
+        const tabela = adaptador.tabela(this.db);
         if (mu.deleted) {
           await tabela.delete(mu.id);
         } else {
           await tabela.put(adaptador.paraLocal(mu.id, mu.version, mu.dados));
         }
-      });
-    }
+      }
+    });
   }
 }

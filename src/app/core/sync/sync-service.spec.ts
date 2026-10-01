@@ -166,6 +166,32 @@ describe('SyncService', () => {
     expect((await db.clientes.get('c3'))?.nome).toBe('Novo');
   });
 
+  it('aplica a página do pull numa transação só, sem sobrescrever o que tem pendência local', async () => {
+    await db.clientes.put(paraClienteLocal('c0', 0, dados('Minha edição')));
+    await db.pendencias.put({
+      mutationId: 'm0', entidade: 'cliente', agregadoId: 'c0', tipo: 'REJEITADO',
+      mutacao: { mutationId: 'm0', entidade: 'cliente', agregadoId: 'c0', op: 'UPSERT', baseVersion: 0, dados: null, criadaEm: '' },
+      criadaEm: '',
+    });
+    await db.clientes.put(paraClienteLocal('c1', 0, dados('Vai sumir')));
+    const mudancas = Array.from({ length: 300 }, (_, i) => ({
+      entidade: 'cliente', id: `c${i}`, version: 1, deleted: i === 1, dados: i === 1 ? null : dados(`S${i}`),
+    }));
+    const transacao = vi.spyOn(db, 'transaction');
+
+    const p = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull')))
+      .flush({ cursor: 300, temMais: false, usuarios: [], mudancas });
+    await p;
+
+    const comClientes = transacao.mock.calls.filter((args) => args.some((a) => Array.isArray(a) && a.includes(db.clientes)));
+    expect(comClientes).toHaveLength(1);
+    expect((await db.clientes.get('c0'))?.nome).toBe('Minha edição');
+    expect(await db.clientes.get('c1')).toBeUndefined();
+    expect((await db.clientes.get('c299'))?.nome).toBe('S299');
+    expect(await db.clientes.count()).toBe(299);
+  });
+
   it('pull pagina enquanto temMais', async () => {
     const p = sync.sincronizar();
     (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull' && r.params.get('cursor') === '0')))
