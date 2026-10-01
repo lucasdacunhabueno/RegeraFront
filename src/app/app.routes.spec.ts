@@ -109,4 +109,25 @@ describe('app.routes', () => {
     expect(passa('TECNICO')).toBeInstanceOf(UrlTree);
     expect(passa(null)).toBeInstanceOf(UrlTree);
   });
+
+  it('a raiz: o técnico cai em /propostas; ADMIN e COMERCIAL, no kanban', () => {
+    const raiz = filhas.find((r) => r.path === '' && r.redirectTo)!;
+    const destino = (perfil: Perfil) => {
+      TestBed.resetTestingModule();
+      TestBed.configureTestingModule({ providers: [{ provide: AuthService, useValue: { usuario: signal({ id: 'u', perfil }) } }] });
+      return TestBed.runInInjectionContext(() => (raiz.redirectTo as () => string)());
+    };
+    expect(destino('TECNICO')).toBe('propostas');
+    expect(destino('ADMIN')).toBe('kanban');
+    expect(destino('COMERCIAL')).toBe('kanban');
+  });
+
+  it('clientes/:id (e a seção "Propostas do cliente") não abre para o técnico', () => {
+    const guard = rota('clientes/:id')!.canMatch![0] as CanMatchFn;
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({
+      providers: [provideRouter([]), { provide: AuthService, useValue: { usuario: signal({ id: 'u', perfil: 'TECNICO' }) } }],
+    });
+    expect(TestBed.runInInjectionContext(() => guard({} as Route, [], {} as never))).toBeInstanceOf(UrlTree);
+  });
 });

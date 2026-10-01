@@ -17,6 +17,7 @@ import { Toasts } from '../../shared/ui/toasts';
 import { ClienteDados, EnderecoDados, ROTULO_TIPO_ENDERECO, TipoEndereco, TipoPessoa } from './cliente-models';
 import { ClientesRepo, ErroCampo } from './clientes-repo';
 import { ConsultasExternas } from './consultas-externas';
+import { PropostasDoCliente } from './propostas-do-cliente';
 
 function criarGrupoEndereco(fb: NonNullableFormBuilder, e?: Partial<EnderecoDados>) {
   return fb.group({
@@ -37,7 +38,7 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
 
 @Component({
   selector: 'app-cliente-form-page',
-  imports: [ReactiveFormsModule, RouterLink],
+  imports: [ReactiveFormsModule, RouterLink, PropostasDoCliente],
   template: `
     @if (voltarPara(); as destino) {
       <a [routerLink]="destino" class="text-sm text-blue-700">← Voltar à proposta</a>
@@ -220,6 +221,12 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
         }
       }
     </form>
+
+    @if (id(); as clienteId) {
+      @if (!naoEncontrado() && !falhaCarga()) {
+        <app-propostas-do-cliente [clienteId]="clienteId" [clienteNome]="nomeSalvo()" />
+      }
+    }
   `,
 })
 export class ClienteFormPage implements ComAlteracoes {
@@ -247,6 +254,8 @@ export class ClienteFormPage implements ComAlteracoes {
   protected readonly temPendencia = signal(false);
   protected readonly naoEncontrado = signal(false);
   protected readonly falhaCarga = signal(false);
+  /** O nome gravado (não o que está sendo digitado): é o que os cards das propostas mostram. */
+  protected readonly nomeSalvo = signal('');
   /** Versão lida ao abrir o formulário (undefined = cliente novo). */
   private versaoCarregada: number | null | undefined;
 
@@ -472,6 +481,7 @@ export class ClienteFormPage implements ComAlteracoes {
       return;
     }
     this.versaoCarregada = c.version;
+    this.nomeSalvo.set(c.nome);
     this.form.patchValue({
       tipo: c.tipo,
       documento: formatarDocumento(c.documento),

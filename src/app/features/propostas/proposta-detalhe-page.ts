@@ -20,6 +20,7 @@ import {
 } from './formatos-proposta';
 import { hojeReativo } from './hoje-reativo';
 import { PdfPronto } from './pdf-pronto';
+import { regerarPdf } from './regerar-pdf';
 import { ESTILO_SELO } from './proposta-card';
 import {
   ItemPropostaLocal, podeAlterarTecnico, podeEditar, PropostaLocal, STATUS_PROPOSTA, StatusProposta, transicoesPermitidas,
@@ -851,8 +852,7 @@ export class PropostaDetalhePage {
     this.anuncio.set('Gerando o PDF da proposta…');
     try {
       // o nome leva o código impresso no PDF (o número pode chegar logo depois, num ack)
-      const { blob, codigoExibido } = await this.repo.regerarDocumento(id, (entrada) => this.pdf.gerarBlob(entrada));
-      const arquivo = arquivoPdf(blob, `Proposta-${codigoExibido}.pdf`);
+      const { arquivo, blob } = await regerarPdf(this.repo, this.pdf, id);
       this.avisar('PDF gerado de novo. Ele vai para o servidor na próxima sincronização.');
       await this.compartilhar(arquivo, blob);
     } catch (e) {
