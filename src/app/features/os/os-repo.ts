@@ -7,7 +7,9 @@ import { observar } from '../../core/db/observar';
 import { RegeraDb } from '../../core/db/regera-db';
 import type { ClientePdf, EmpresaPdf } from '../../core/pdf/pdf-models';
 import { PdfService } from '../../core/pdf/pdf-service';
-import type { ErroMutacao, MutacaoLocal, Pendencia, UsuarioResumo } from '../../core/sync/sync-models';
+import {
+  type DadosUploadAnexoOs, type ErroMutacao, type MutacaoLocal, type Pendencia, TIPO_UPLOAD_ANEXO_OS, type UsuarioResumo,
+} from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { ehUpload } from '../../core/sync/tipos-upload';
 import { formatarCep } from '../../core/util/formatos';
@@ -147,6 +149,12 @@ export interface OpcoesGerarOs {
   tipo?: TipoOs;
   /** Q17: "Esta OS conclui a proposta?" (padrão sim). */
   concluiProposta?: boolean;
+  /**
+   * M2P2-R17: a descrição que o técnico lê, revisada na tela do "Gerar OS" (que a pré-preenche com as observações e o
+   * prazo da proposta, onde o comercial pode ter escrito valores). Dada, vale ela (null ou só espaços: sem descrição);
+   * ausente, a cópia da proposta.
+   */
+  descricao?: string | null;
 }
 
 export interface NovaOsAvulsa {
@@ -529,6 +537,7 @@ const ANTES_DE = {
   reabrir: 'reabri-la',
   atribuir: 'mudar a atribuição',
   aceitarTrabalho: 'aceitar o trabalho',
+  regerarPdf: 'gerar o PDF de novo',
 } as const;
 type AcaoTravada = keyof typeof ANTES_DE;
 
@@ -544,6 +553,24 @@ function exigirSemConflito(pendencias: readonly Pendencia[], acao: AcaoTravada):
 }
 
 const encerrada = (s: StatusOs) => s === 'CONCLUIDA' || s === 'CANCELADA';
+
+/** Quem vê a OS (o `AcessoOs.visivel` do servidor): o ADMIN todas, o COMERCIAL as dele, o TECNICO as atribuídas. */
+function visivelPara(o: OsLocal, u: UsuarioSessao): boolean {
+  return u.perfil === 'ADMIN' || (u.perfil === 'COMERCIAL' ? o.responsavelId : o.tecnicoId) === u.id;
+}
+
+/**
+ * O `concluidaPorOutro` do `AnexoOsService` sobre o histórico do servidor: a última transição para CONCLUIDA (por data;
+ * no empate, a que vem depois na ordem do pull) foi de outro usuário. Os registros sem transição não contam.
+ */
+function concluidaPorOutro(os: OsLocal, usuarioId: string): boolean {
+  let ultima: OsLocal['historico'][number] | undefined;
+  for (const h of os.historico) {
+    if (h.statusPara !== 'CONCLUIDA' || h.statusDe === 'CONCLUIDA') continue;
+    if (!ultima || h.em >= ultima.em) ultima = h;
+  }
+  return !!ultima && ultima.usuarioId !== usuarioId;
+}
 
 /**
  * Há assinatura para concluir: a aceita pelo servidor ou uma colhida neste aparelho ainda não enviada (sai na fila
@@ -584,10 +611,20 @@ export class OsRepo {
     return observar(async () => {
       const u = this.auth.usuario();
       if (!u) return [];
-      const todas = await this.db.os.toArray();
-      const visiveis = u.perfil === 'ADMIN' ? todas
-        : todas.filter((o) => (u.perfil === 'COMERCIAL' ? o.responsavelId : o.tecnicoId) === u.id);
-      return ordenarPorAtualizacao(visiveis);
+      return ordenarPorAtualizacao((await this.db.os.toArray()).filter((o) => visivelPara(o, u)));
+    });
+  }
+
+  /**
+   * M2P2-R18: as OS do cliente que o perfil vê (a mesma regra do `observarTodas`), por `atualizadoEm` desc: a lista
+   * "Ordens de serviço" do cliente.
+   */
+  observarDoCliente(clienteId: string): Observable<OsLocal[]> {
+    return observar(async () => {
+      const u = this.auth.usuario();
+      if (!u) return [];
+      const doCliente = await this.db.os.where('clienteId').equals(clienteId).toArray();
+      return ordenarPorAtualizacao(doCliente.filter((o) => visivelPara(o, u)));
     });
   }
 
@@ -678,7 +715,8 @@ export class OsRepo {
    *   não está neste aparelho vai sem o vínculo (`itemCatalogoId` null): a linha nova com item inativo ou inexistente
    *   seria recusada. A natureza ausente vem do catálogo (ou PRODUTO);
    * - o endereço principal do cliente (ou o primeiro), como *snapshot*;
-   * - a descrição: as observações e o prazo de execução da proposta (cortada em 4.000);
+   * - a descrição: as observações e o prazo de execução da proposta (cortada em 4.000), ou a `opcoes.descricao`
+   *   revisada na tela (M2P2-R17; acima de 4.000, `VALIDACAO` em `descricao`);
    * - o tipo derivado (VENDA → ENTREGA, SERVICO → SERVICO, MANUTENCAO → MANUTENCAO, LOCACAO → ENTREGA), que
    *   `opcoes.tipo` troca.
    * O responsável é o da proposta (no aparelho; vai null na rede, M2P1-R18). Devolve o id.
@@ -704,7 +742,7 @@ export class OsRepo {
       });
     }
     const prazo = texto(proposta.prazoExecucao);
-    const descricao = texto(cortar(
+    const descricao = opcoes.descricao !== undefined ? texto(opcoes.descricao) : texto(cortar(
       [texto(proposta.observacoes), prazo && `Prazo de execução: ${prazo}`].filter((x) => !!x).join('\n\n'), MAX_DESCRICAO,
     ));
     const os = this.nova({
@@ -1025,6 +1063,71 @@ export class OsRepo {
     }
   }
 
+  /**
+   * M2P2-R18: "Gerar PDF novamente" de uma OS CONCLUIDA no aparelho, depois de `ANEXO_AUSENTE`, de
+   * `CODIGO_EXIBIDO_INVALIDO` (o OSP- trocado, a numeração que chegou) ou do PDF que se perdeu. Pela mesma montagem e
+   * pelo mesmo padrão do `concluir`:
+   * - exige a posse; a OS CONCLUIDA no aparelho; nenhum CONFLITO dela (`RESOLVA_A_PENDENCIA`); do TECNICO, que o
+   *   servidor não diga que outro usuário concluiu (`OS_CONCLUIDA_POR_OUTRO`: a pendência do PDF recusado com esse
+   *   código, ou o histórico do servidor, se a conclusão dele não está mais na fila);
+   * - gera o PDF da revisão atual (`montarEntradaOs`), com o snapshot e os limites do `concluir`;
+   * - numa transação: tira o DOCUMENTO desta revisão ainda não enviado ou recusado (o anexo, os bytes, o upload na
+   *   fila e a pendência) e grava o novo com o upload, que sai atrás do que já está na fila. Sem UPSERT: a OS não muda.
+   *   O upload trocado em voo dá `OS_SINCRONIZANDO`. O DOCUMENTO de outra revisão fica, com a pendência dele;
+   * - P4b-R21: se o que o PDF mostra mudou durante a geração, gera de novo (até 3 vezes, `OS_ALTERADA`).
+   * Devolve o Blob e o código impresso nele.
+   */
+  async regerarPdf(id: string, gerarPdf: (entrada: EntradaPdfOs) => Promise<Blob>): Promise<{ blob: Blob; codigoExibido: string }> {
+    const u = this.usuario();
+    for (let tentativa = 1; ; tentativa++) {
+      const atual = await this.carregar(id);
+      this.exigirPosse(atual, u);
+      if (atual.status !== 'CONCLUIDA') {
+        throw new ErroOs('STATUS_INVALIDO', 'os', 'Só uma OS concluída tem o PDF para gerar de novo.');
+      }
+      await this.exigirPdfPossivel(atual, u);
+      const locais = await this.anexosLocais(id);
+      const trocados = new Set(this.pdfsATrocar(atual, locais).map((a) => a.id));
+      await this.exigirLimite(atual, 'DOCUMENTO', trocados);
+      const { blob, documento, bytes } = await this.gerarDocumento(atual, locais, u, gerarPdf);
+      let gravou: boolean;
+      try {
+        gravou = await this.db.transaction('rw', [this.db.os, this.db.anexosOs, this.db.anexosOsBytes, this.db.outbox, this.db.pendencias], async () => {
+          const agora = await this.db.os.get(id);
+          if (!agora || agora.status !== 'CONCLUIDA') return false;
+          await this.exigirPdfPossivel(agora, u);
+          const deAgora = await this.anexosLocais(id);
+          if (chaveDoPdf(agora, deAgora) !== chaveDoPdf(atual, locais)) return false;
+          const sair = this.pdfsATrocar(agora, deAgora).map((a) => a.id);
+          const doUpload = (m: MutacaoLocal) =>
+            m.entidade === TIPO_UPLOAD_ANEXO_OS && sair.includes((m.dados as DadosUploadAnexoOs | null)?.anexoId ?? '');
+          const naFila = (await this.db.outbox.where('agregadoId').equals(id).toArray()).filter(doUpload);
+          if (naFila.some((m) => m.enviando)) {
+            throw new ErroOs('OS_SINCRONIZANDO', 'os', 'O PDF anterior está sendo enviado. Tente de novo em instantes.');
+          }
+          await this.db.outbox.bulkDelete(naFila.map((m) => m.seq!));
+          await this.db.pendencias.bulkDelete((await this.pendenciasDa(id)).filter((x) => doUpload(x.mutacao)).map((x) => x.mutationId));
+          await this.db.anexosOs.bulkDelete(sair);
+          await this.db.anexosOsBytes.bulkDelete(sair);
+          await this.db.anexosOs.add(documento);
+          await this.db.anexosOsBytes.add(bytes);
+          await this.sync.registrarUploadAnexoOs(id, documento.id);
+          return true;
+        });
+      } catch (e) {
+        if (semEspaco(e)) throw new ErroOs('SEM_ESPACO', 'os', 'Pouco espaço no aparelho para gravar o PDF.');
+        throw e;
+      }
+      if (gravou) {
+        void this.sync.sincronizar();
+        return { blob, codigoExibido: documento.codigoExibido! };
+      }
+      if (tentativa >= TENTATIVAS_CONCLUIR) {
+        throw new ErroOs('OS_ALTERADA', 'os', 'A OS mudou enquanto o PDF era gerado. Gere de novo.');
+      }
+    }
+  }
+
   // ------------------------------------------------------------------ encerramento e exceções
 
   /** → CANCELADA (separada), com o motivo (3 a 500): ADMIN e COMERCIAL responsável em ABERTA; só o ADMIN em andamento. */
@@ -1152,6 +1255,29 @@ export class OsRepo {
     return this.db.pendencias.where('agregadoId').equals(id).toArray();
   }
 
+  /** Os DOCUMENTO da revisão atual ainda não enviados (na fila ou recusados): o `regerarPdf` os troca. */
+  private pdfsATrocar(os: OsLocal, locais: readonly AnexoOsLocal[]): AnexoOsLocal[] {
+    const revisao = os.revisao ?? 1;
+    return locais.filter((a) => a.tipo === 'DOCUMENTO' && !a.enviado && (a.revisaoOs ?? 1) === revisao);
+  }
+
+  /**
+   * O `regerarPdf` pode gerar: sem CONFLITO da OS e, para o TECNICO, sem o servidor dizer que outro usuário a concluiu
+   * (o PDF dele voltaria 403 `OS_CONCLUIDA_POR_OUTRO`, M2P1-R28/R29). O histórico só vale se a conclusão deste aparelho
+   * não está mais na fila (com ela na fila, a última conclusão no servidor vai ser a dele).
+   */
+  private async exigirPdfPossivel(os: OsLocal, u: UsuarioSessao): Promise<void> {
+    const pendencias = await this.pendenciasDa(os.id);
+    exigirSemConflito(pendencias, 'regerarPdf');
+    if (u.perfil !== 'TECNICO') return;
+    const recusado = pendencias.some((x) => x.erro?.codigo === 'OS_CONCLUIDA_POR_OUTRO');
+    const concluirNaFila = [...(await this.db.outbox.where('agregadoId').equals(os.id).toArray()), ...pendencias.map((x) => x.mutacao)]
+      .some((m) => m.entidade === 'os' && (m.dados as OsDados | null)?.status === 'CONCLUIDA');
+    if (recusado || (!concluirNaFila && concluidaPorOutro(os, u.id))) {
+      throw new ErroOs('OS_CONCLUIDA_POR_OUTRO', 'os', 'Esta OS foi concluída pelo escritório.');
+    }
+  }
+
   private async temAssinatura(os: OsLocal): Promise<boolean> {
     return temAssinatura(os, await this.anexosLocais(os.id));
   }
@@ -1219,12 +1345,15 @@ export class OsRepo {
     }
   }
 
-  /** O limite do tipo (20 fotos, 10 assinaturas, 20 PDFs), contando os do servidor e os do aparelho. */
-  private async exigirLimite(os: OsLocal, tipo: TipoAnexoOs): Promise<void> {
+  /**
+   * O limite do tipo (20 fotos, 10 assinaturas, 20 PDFs), contando os do servidor e os do aparelho, menos os `ignorar`
+   * (os que o `regerarPdf` troca).
+   */
+  private async exigirLimite(os: OsLocal, tipo: TipoAnexoOs, ignorar: ReadonlySet<string> = new Set()): Promise<void> {
     const ids = new Set([
       ...os.anexos.filter((a) => a.tipo === tipo).map((a) => a.id),
       ...(await this.anexosLocais(os.id)).filter((a) => a.tipo === tipo).map((a) => a.id),
-    ]);
+    ].filter((x) => !ignorar.has(x)));
     const limite = LIMITE[tipo];
     if (ids.size >= limite.max) throw new ErroOs(limite.codigo, tipo === 'DOCUMENTO' ? 'os' : tipo.toLowerCase(), limite.mensagem);
   }

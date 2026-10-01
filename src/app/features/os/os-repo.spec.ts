@@ -303,6 +303,20 @@ describe('OsRepo', () => {
       expect(await repo.buscar('x')).toBeUndefined();
     });
 
+    it('M2P2-R18: observarDoCliente: as OS do cliente que o perfil vê, por atualizadoEm desc', async () => {
+      await db.os.put(paraOsLocal('d', 1, osDados('CONCLUIDA', { codigoProvisorio: 'OSP-DDDDDD', clienteId: 'c2', atualizadoEm: '2026-10-01T12:00:00Z' })));
+      usuario.set(ADMIN);
+      expect((await firstValueFrom(repo.observarDoCliente('c1'))).map((o) => o.id)).toEqual(['c', 'a', 'b']);
+      expect((await firstValueFrom(repo.observarDoCliente('c2'))).map((o) => o.id)).toEqual(['d']);
+      usuario.set(COMERCIAL);
+      expect((await firstValueFrom(repo.observarDoCliente('c1'))).map((o) => o.id)).toEqual(['a', 'b']);
+      usuario.set(OUTRO_TECNICO);
+      expect((await firstValueFrom(repo.observarDoCliente('c1'))).map((o) => o.id)).toEqual(['c']);
+      usuario.set(null);
+      expect(await firstValueFrom(repo.observarDoCliente('c1'))).toEqual([]);
+      expect(await firstValueFrom(repo.observarDoCliente('sem-os'))).toEqual([]);
+    });
+
     it('observarAnexos junta os do servidor e os do aparelho, com miniatura, enviado e temBytes; blobDoAnexo', async () => {
       await noAparelho('EM_ANDAMENTO', { anexos: [anexoServidor(), anexoServidor({ id: 'f2', arquivoId: 'a-f2', tiradaEm: '2026-10-01T12:00:00Z' })] });
       const local = (extra: Partial<AnexoTeste>): AnexoTeste => ({
@@ -381,6 +395,20 @@ describe('OsRepo', () => {
       expect(d.itens.map((i) => i.quantidadePrevista)).toEqual([2.5, 1]);
       expect(chaves(os).filter((k) => VALOR.test(k))).toEqual([]);
       expect(chaves(d).filter((k) => VALOR.test(k))).toEqual([]);
+    });
+
+    it('M2P2-R17: a descrição revisada na tela (opcoes.descricao) substitui a copiada da proposta; sem ela, a cópia', async () => {
+      usuario.set(COMERCIAL);
+      await proposta('APROVADA', { observacoes: '50% R$ 2.000 na entrada.' });
+      const revisada = (await db.os.get(await repo.gerarDaProposta('p1', { descricao: '  Instalar o quadro novo.  ' })))!;
+      expect(revisada.descricao).toBe('Instalar o quadro novo.');
+      expect(dadosDe((await fila()).at(-1)!).descricao).toBe('Instalar o quadro novo.');
+      expect((await db.os.get(await repo.gerarDaProposta('p1', { descricao: null })))!.descricao).toBeNull();
+      expect((await db.os.get(await repo.gerarDaProposta('p1', { descricao: '   ' })))!.descricao).toBeNull();
+      expect((await db.os.get(await repo.gerarDaProposta('p1')))!.descricao).toBe('50% R$ 2.000 na entrada.\n\nPrazo de execução: 10 dias úteis');
+      const longa = await erroDe(repo.gerarDaProposta('p1', { descricao: 'x'.repeat(4001) }));
+      expect([longa.codigo, longa.campo]).toEqual(['VALIDACAO', 'descricao']);
+      expect(await db.os.count()).toBe(4);
     });
 
     it('linha com item fora do catálogo do aparelho ou inativo vai sem vínculo; a natureza ausente vem do catálogo', async () => {
@@ -1033,6 +1061,142 @@ describe('OsRepo', () => {
   });
 
   // ------------------------------------------------------------------ encerramento
+
+  describe('regerarPdf (M2P2-R18)', () => {
+    const recusada = { assinaturaRecusada: true, motivoRecusa: 'Ausente', resumoExecucao: 'Feito' };
+    /** O DOCUMENTO gravado aqui e o upload dele, que ficou na fila (`naFila`) ou foi recusado (`recusa`). */
+    async function pdfLocal(id: string, revisaoOs: number, codigoExibido: string, onde: { recusa?: string; naFila?: boolean } = {}) {
+      await gravarAnexos({
+        id, osId: 'o1', tipo: 'DOCUMENTO', sha256: 'f'.repeat(64), legenda: null, momento: null, tiradaEm: '2026-10-01T14:00:00Z',
+        assinanteNome: null, assinantePapel: null, revisaoOs, codigoExibido, miniatura: null, enviado: false, arquivoId: null,
+        bytes: new TextEncoder().encode('%PDF velho').buffer as ArrayBuffer, snapshot: { velho: true },
+      });
+      const mutacao: MutacaoLocal = {
+        mutationId: `up-${id}`, entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', op: 'UPLOAD', baseVersion: null,
+        dados: { anexoId: id }, separada: true, criadaEm: '',
+      };
+      if (onde.naFila) await db.outbox.add(mutacao);
+      if (onde.recusa) {
+        await db.pendencias.put({ mutationId: mutacao.mutationId, entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO',
+          criadaEm: '', mutacao, erro: { codigo: onde.recusa, mensagem: 'x' } });
+      }
+    }
+
+    it('gera o PDF da revisão atual (mesmo montarEntradaOs) e troca o recusado dela, com a pendência; só o upload na fila', async () => {
+      // o PDF saiu offline com o OSP-; a numeração chegou depois, e o servidor recusou o código (CODIGO_EXIBIDO_INVALIDO)
+      await noAparelho('CONCLUIDA', { ...recusada, revisao: 2, concluidaEm: '2026-10-01T13:00:00Z' }, 6);
+      await pdfLocal('d-velho', 2, 'OSP-0Z9XY7-R2', { recusa: 'CODIGO_EXIBIDO_INVALIDO' });
+      await pdfLocal('d-r1', 1, 'OSP-0Z9XY7', { recusa: 'REVISAO_INVALIDA' });
+      const { blob, codigoExibido } = await repo.regerarPdf('o1', gerarPdf);
+
+      expect(codigoExibido).toBe('OS-000123-R2');
+      expect(await blob.text()).toBe(PDF);
+      const e = gerarPdf.mock.calls[0][0];
+      expect(e).toEqual(montarEntradaOs({
+        os: (await db.os.get('o1'))!, cliente: (await db.clientes.get('c1'))!, empresa: (await db.empresa.get(ID_EMPRESA))!,
+        logoDataUrl: 'data:image/png;base64,TE9HTw==', usuarios: await db.usuarios.toArray(), fotos: [],
+        assinatura: null, emitidaEm: AGORA.toISOString(), usuarioAtual: TECNICO,
+      }));
+      expect(e.os).toMatchObject({ codigoExibido: 'OS-000123-R2', revisao: 2, concluidaEm: '2026-10-01T13:00:00Z' });
+      // o recusado da revisão atual sai, com os bytes e a pendência; o de outra revisão fica (a pendência dele é outra)
+      expect(await lerAnexo('d-velho')).toBeUndefined();
+      expect(await db.anexosOsBytes.get('d-velho')).toBeUndefined();
+      expect((await db.pendencias.toArray()).map((x) => x.mutationId)).toEqual(['up-d-r1']);
+      expect(await lerAnexo('d-r1')).toBeDefined();
+      const docs = (await lerAnexos()).filter((a) => a.tipo === 'DOCUMENTO' && a.id !== 'd-r1');
+      expect(docs).toHaveLength(1);
+      expect(docs[0]).toMatchObject({ revisaoOs: 2, codigoExibido: 'OS-000123-R2', enviado: false });
+      expect(new TextDecoder().decode(docs[0].bytes!)).toBe(PDF);
+      expect(docs[0].snapshot).toMatchObject({ os: { codigoExibido: 'OS-000123-R2' }, logoArquivoId: 'logo-1' });
+      // sem UPSERT: só o upload do DOCUMENTO novo; a OS local não muda
+      expect((await fila()).map((m) => [m.entidade, m.op, (m.dados as { anexoId?: string }).anexoId])).toEqual([
+        [TIPO_UPLOAD_ANEXO_OS, 'UPLOAD', docs[0].id],
+      ]);
+      expect(await db.os.get('o1')).toMatchObject({ status: 'CONCLUIDA', version: 6, atualizadoEm: '2026-10-01T10:00:00Z' });
+    });
+
+    it('troca o DOCUMENTO não enviado da fila (a conclusão offline ainda na fila): o novo sai atrás dela', async () => {
+      await noAparelho('EM_ANDAMENTO', recusada, 3);
+      await repo.concluir('o1', 'Feito', gerarPdf);
+      const velho = (await fila()).find((m) => m.entidade === TIPO_UPLOAD_ANEXO_OS)!;
+      gerarPdf.mockClear();
+      const { codigoExibido } = await repo.regerarPdf('o1', gerarPdf);
+      expect(codigoExibido).toBe('OS-000123');
+      expect(gerarPdf).toHaveBeenCalledTimes(1);
+      const f = await fila();
+      expect(f.map((m) => [m.entidade, m.op])).toEqual([['os', 'UPSERT'], [TIPO_UPLOAD_ANEXO_OS, 'UPLOAD']]);
+      expect(f[1].mutationId).not.toBe(velho.mutationId);
+      expect((await lerAnexos()).filter((a) => a.tipo === 'DOCUMENTO')).toHaveLength(1);
+    });
+
+    it('recusa: OS que não está concluída, sem posse, com CONFLITO, e o upload do PDF trocado em voo', async () => {
+      await noAparelho('EM_ANDAMENTO', recusada);
+      expect((await erroDe(repo.regerarPdf('o1', gerarPdf))).codigo).toBe('STATUS_INVALIDO');
+      await noAparelho('CONCLUIDA', recusada);
+      usuario.set(OUTRO_TECNICO);
+      expect((await erroDe(repo.regerarPdf('o1', gerarPdf))).codigo).toBe('ACESSO_NEGADO');
+      usuario.set(TECNICO);
+      await db.pendencias.put(conflito());
+      expect((await erroDe(repo.regerarPdf('o1', gerarPdf))).codigo).toBe('RESOLVA_A_PENDENCIA');
+      await db.pendencias.clear();
+      await pdfLocal('d1', 1, 'OS-000123', { naFila: true });
+      await db.outbox.toCollection().modify({ enviando: true });
+      expect((await erroDe(repo.regerarPdf('o1', gerarPdf))).codigo).toBe('OS_SINCRONIZANDO');
+      expect(await lerAnexo('d1')).toBeDefined();
+      expect(await fila()).toHaveLength(1);
+      expect(await erroDe(repo.regerarPdf('nao-existe', gerarPdf))).toMatchObject({ codigo: 'NAO_ENCONTRADA' });
+    });
+
+    it('TECNICO: recusa quando o servidor diz que outro usuário concluiu (histórico ou a pendência OS_CONCLUIDA_POR_OUTRO); o ADMIN gera', async () => {
+      const historico = [
+        { statusDe: 'ABERTA', statusPara: 'EM_ANDAMENTO', usuarioId: TECNICO.id, em: '2026-10-01T09:00:00Z' },
+        { statusDe: 'EM_ANDAMENTO', statusPara: 'CONCLUIDA', usuarioId: ADMIN.id, em: '2026-10-01T12:00:00Z' },
+        // registro sem transição (o trabalho recebido depois, M2P1-R26): não conta
+        { statusDe: 'CONCLUIDA', statusPara: 'CONCLUIDA', usuarioId: TECNICO.id, em: '2026-10-01T12:30:00Z' },
+      ] as OsDados['historico'];
+      await noAparelho('CONCLUIDA', { ...recusada, historico });
+      const e = await erroDe(repo.regerarPdf('o1', gerarPdf));
+      expect([e.codigo, e.message]).toEqual(['OS_CONCLUIDA_POR_OUTRO', 'Esta OS foi concluída pelo escritório.']);
+      // concluída pelo próprio técnico: gera
+      await noAparelho('CONCLUIDA', { ...recusada, historico: [...historico!, { statusDe: 'CONCLUIDA', statusPara: 'EM_ANDAMENTO',
+        usuarioId: ADMIN.id, em: '2026-10-01T13:00:00Z' }, { statusDe: 'EM_ANDAMENTO', statusPara: 'CONCLUIDA', usuarioId: TECNICO.id,
+        em: '2026-10-01T14:00:00Z' }] });
+      await repo.regerarPdf('o1', gerarPdf);
+      await db.outbox.clear();
+      await db.anexosOs.clear();
+      // a pendência do PDF dele recusado com OS_CONCLUIDA_POR_OUTRO
+      await noAparelho('CONCLUIDA', recusada);
+      await pdfLocal('d1', 1, 'OS-000123', { recusa: 'OS_CONCLUIDA_POR_OUTRO' });
+      expect((await erroDe(repo.regerarPdf('o1', gerarPdf))).codigo).toBe('OS_CONCLUIDA_POR_OUTRO');
+      await db.pendencias.clear();
+      // o ADMIN gera mesmo com a conclusão de outro
+      usuario.set(ADMIN);
+      await noAparelho('CONCLUIDA', { ...recusada, historico });
+      expect((await repo.regerarPdf('o1', gerarPdf)).codigoExibido).toBe('OS-000123');
+    });
+
+    it('a conclusão do técnico ainda na fila vale mais que a do escritório no histórico antigo (a OS reaberta e concluída aqui)', async () => {
+      const historico = [
+        { statusDe: 'EM_ANDAMENTO', statusPara: 'CONCLUIDA', usuarioId: ADMIN.id, em: '2026-10-01T12:00:00Z' },
+        { statusDe: 'CONCLUIDA', statusPara: 'EM_ANDAMENTO', usuarioId: ADMIN.id, em: '2026-10-01T13:00:00Z' },
+      ] as OsDados['historico'];
+      await noAparelho('EM_ANDAMENTO', { ...recusada, revisao: 2, historico }, 5);
+      await repo.concluir('o1', 'Feito', gerarPdf);
+      expect((await repo.regerarPdf('o1', gerarPdf)).codigoExibido).toBe('OS-000123-R2');
+    });
+
+    it('P4b-R21: a OS mudou durante a geração: gera de novo; um anexo do servidor baixado na geração não conta', async () => {
+      await noAparelho('CONCLUIDA', recusada);
+      gerarPdf.mockImplementationOnce(async () => {
+        await db.os.update('o1', { urgente: true });
+        return new Blob(['velho']);
+      });
+      await repo.regerarPdf('o1', gerarPdf);
+      expect(gerarPdf).toHaveBeenCalledTimes(2);
+      expect(gerarPdf.mock.calls[1][0].os.urgente).toBe(true);
+      expect((await lerAnexos()).filter((a) => a.tipo === 'DOCUMENTO')).toHaveLength(1);
+    });
+  });
 
   describe('cancelar, reabrir, aceitarTrabalho e excluir', () => {
     it('cancelar: COMERCIAL responsável em ABERTA, ADMIN em andamento; o motivo vai na mutação separada', async () => {
