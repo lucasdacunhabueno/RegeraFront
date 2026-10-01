@@ -3,6 +3,7 @@ import Dexie, { type Table } from 'dexie';
 import type { ClienteLocal } from '../../features/clientes/cliente-models';
 import type { ItemLocal } from '../../features/catalogo/item-models';
 import type { EmpresaLocal } from '../../features/empresa/empresa-models';
+import type { DocumentoLocal, PropostaLocal } from '../../features/propostas/proposta-models';
 import type { TemplateLocal } from '../../features/templates/template-models';
 import type { MutacaoLocal, Pendencia, UsuarioResumo } from '../sync/sync-models';
 
@@ -28,6 +29,8 @@ export class RegeraDb extends Dexie {
   empresa!: Table<EmpresaLocal, string>;
   arquivos!: Table<ArquivoLocal, string>;
   templates!: Table<TemplateLocal, string>;
+  propostas!: Table<PropostaLocal, string>;
+  documentos!: Table<DocumentoLocal, string>;
   private readonly aoLimparTudo = new Set<() => void>();
 
   constructor() {
@@ -69,6 +72,25 @@ export class RegeraDb extends Dexie {
       })
       .upgrade(async (tx) => {
         // fronts P3 pularam template_proposta como entidade desconhecida e avançaram o cursor: puxa tudo de novo
+        await tx.table('meta').bulkDelete(['cursor', 'cursorDono']);
+      });
+    this.version(5)
+      .stores({
+        meta: 'chave',
+        clientes: 'id, documento, nomeBusca',
+        outbox: '++seq, agregadoId',
+        pendencias: 'mutationId, agregadoId',
+        usuarios: 'id',
+        itens: 'id, codigo, nomeBusca',
+        empresa: 'id',
+        arquivos: 'id',
+        templates: 'id, tipoProposta, nomeBusca',
+        propostas: 'id, status, clienteId, responsavelId, tecnicoId, codigoProvisorio, numero',
+        // o PDF (bytes) de cada envio; `enviado`/`arquivoId` dizem se o upload já foi aceito
+        documentos: 'id, propostaId',
+      })
+      .upgrade(async (tx) => {
+        // fronts P4a pularam proposta como entidade desconhecida e avançaram o cursor: puxa tudo de novo
         await tx.table('meta').bulkDelete(['cursor', 'cursorDono']);
       });
   }

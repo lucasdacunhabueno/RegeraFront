@@ -113,6 +113,10 @@ export class PendenciasPage {
         const rotulo = exclusao ? 'Exclusão de template' : 'Template de proposta';
         return nome ? `${rotulo}: ${nome}` : rotulo;
       }
+      case 'proposta': {
+        const d = (p.mutacao.dados ?? p.dadosServidor) as { codigoProvisorio?: string } | null | undefined;
+        return d?.codigoProvisorio ? `Proposta ${d.codigoProvisorio}` : 'Proposta';
+      }
     }
   }
 

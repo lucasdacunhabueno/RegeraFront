@@ -247,8 +247,10 @@ export class SyncService {
       // cursor de outra sessão/perfil (ou gravado no formato antigo, só o id): recomeça do zero
       cursor = 0;
       const tabelas = [...Object.values(ADAPTADORES).map((a) => a.tabela(this.db)), this.db.usuarios];
-      await this.db.transaction('rw', tabelas, async () => {
+      await this.db.transaction('rw', [...tabelas, this.db.documentos], async () => {
         await Promise.all(tabelas.map((t) => t.clear()));
+        // o PDF já enviado é cópia do servidor (e o novo perfil pode não poder vê-lo); o não enviado espera o upload
+        await this.db.documentos.filter((d) => d.enviado).delete();
       });
       this.arquivos.limpar();
     }

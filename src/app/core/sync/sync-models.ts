@@ -1,6 +1,6 @@
 import { Perfil } from '../auth/auth-models';
 
-export type Entidade = 'cliente' | 'item_catalogo' | 'empresa' | 'template_proposta';
+export type Entidade = 'cliente' | 'item_catalogo' | 'empresa' | 'template_proposta' | 'proposta';
 export type Operacao = 'UPSERT' | 'DELETE';
 
 export interface MutacaoLocal {

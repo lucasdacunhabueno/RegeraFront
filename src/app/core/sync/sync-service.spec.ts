@@ -6,6 +6,7 @@ import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { ID_EMPRESA, paraEmpresaLocal } from '../../features/empresa/empresa-models';
+import { paraPropostaLocal } from '../../features/propostas/proposta-models';
 import { Toasts } from '../../shared/ui/toasts';
 import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
@@ -330,6 +331,28 @@ describe('SyncService', () => {
     pull.flush({ cursor: 8, temMais: false, mudancas: [], usuarios: [] });
     await promessa;
     expect(await db.lerMeta('cursorDono')).toBe('u1:COMERCIAL');
+  });
+
+  it('outro perfil também limpa propostas e os documentos já enviados (os não enviados esperam o upload)', async () => {
+    await db.gravarMeta('cursor', 50);
+    await db.gravarMeta('cursorDono', 'u1:ADMIN');
+    await db.propostas.put(paraPropostaLocal('p1', 1, {
+      codigoProvisorio: 'PROV-0Z9XY7', tipo: 'VENDA', status: 'ENVIADA', responsavelId: 'u1', dataEmissao: '2026-10-01',
+      descontoGeralPercentual: 0, itens: [],
+    }));
+    const doc = { propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-0Z9XY7', sha256: 'ab', geradoEm: '', geradoPor: 'u1', bytes: null };
+    await db.documentos.bulkPut([
+      { ...doc, id: 'd1', enviado: true, arquivoId: 'a1' },
+      { ...doc, id: 'd2', enviado: false, arquivoId: null },
+    ]);
+    perfil = 'TECNICO';
+
+    const promessa = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull' && r.params.get('cursor') === '0'));
+    expect(await db.propostas.count()).toBe(0);
+    expect((await db.documentos.toArray()).map((d) => d.id)).toEqual(['d2']);
+    pull.flush({ cursor: 8, temMais: false, mudancas: [], usuarios: [] });
+    await promessa;
   });
 
   it('cursorDono no formato antigo (só o id) força um pull completo', async () => {
