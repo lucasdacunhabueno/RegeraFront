@@ -95,7 +95,9 @@ describe('TemplateEditorPage', () => {
   let urls: number;
   const criar = vi.fn(() => `blob:http://localhost/previa-${++urls}`);
   const revogar = vi.fn();
-  const originais = { criar: URL.createObjectURL, revogar: URL.revokeObjectURL, largura: window.innerWidth };
+  const originais = {
+    criar: URL.createObjectURL, revogar: URL.revokeObjectURL, largura: window.innerWidth, matchMedia: window.matchMedia,
+  };
 
   beforeAll(() => {
     Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
@@ -113,8 +115,16 @@ describe('TemplateEditorPage', () => {
     URL.createObjectURL = originais.criar;
     URL.revokeObjectURL = originais.revogar;
     Object.defineProperty(window, 'innerWidth', { configurable: true, value: originais.largura });
+    Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: originais.matchMedia });
   });
   const largura = (px: number) => Object.defineProperty(window, 'innerWidth', { configurable: true, value: px });
+  /** Simula um aparelho de ponteiro grosso (toque) para `matchMedia('(pointer: coarse)')`. */
+  const ponteiroGrosso = () =>
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: (q: string) => ({ matches: q === '(pointer: coarse)', media: q, addEventListener: () => undefined, removeEventListener: () => undefined }),
+    });
 
   describe('template novo', () => {
     it('começa com os 5 blocos iniciais', () => {
@@ -439,6 +449,60 @@ describe('TemplateEditorPage', () => {
       await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Não foi possível gerar a prévia.'));
       expect(janela.close).toHaveBeenCalled();
       expect(criar).not.toHaveBeenCalled();
+    });
+
+    it('tablet de 1280 px com ponteiro grosso abre em aba, não no iframe', async () => {
+      largura(1280);
+      ponteiroGrosso();
+      const janela = janelaFalsa();
+      const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+      const { fixture, el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      expect(abrir).toHaveBeenCalledWith('', '_blank');
+      await vi.waitFor(() => expect(janela.location.href).toBe('blob:http://localhost/previa-1'));
+      await estavel(fixture);
+      expect(el.querySelector('iframe')).toBeNull();
+    });
+
+    it('iOS (iPad de 1366 px) abre em aba mesmo sem matchMedia de ponteiro grosso', async () => {
+      largura(1366);
+      vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15');
+      const janela = janelaFalsa();
+      const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+      const { fixture, el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      expect(abrir).toHaveBeenCalledWith('', '_blank');
+      await vi.waitFor(() => expect(janela.location.href).toBe('blob:http://localhost/previa-1'));
+      await estavel(fixture);
+      expect(el.querySelector('iframe')).toBeNull();
+    });
+
+    const linkBaixar = (el: HTMLElement) => [...el.querySelectorAll('a')].find((a) => a.textContent?.trim() === 'Baixar PDF');
+
+    it('em aba ou bloqueada mostra também "Baixar PDF" com o nome do template; no iframe, não', async () => {
+      largura(390);
+      const abrir = vi.spyOn(window, 'open').mockReturnValue(janelaFalsa() as unknown as Window);
+      const { fixture, el } = montar({ id: 't1' });
+      await carregado(fixture);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(1));
+      await estavel(fixture);
+      expect(linkBaixar(el)?.getAttribute('href')).toBe('blob:http://localhost/previa-1');
+      expect(linkBaixar(el)?.getAttribute('download')).toBe('previa-Venda padrão.pdf');
+
+      abrir.mockReturnValue(null);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(2));
+      await estavel(fixture);
+      expect(el.textContent).toContain('O navegador bloqueou a nova aba.');
+      expect(linkBaixar(el)?.getAttribute('href')).toBe('blob:http://localhost/previa-2');
+
+      largura(1280);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(3));
+      await estavel(fixture);
+      expect(el.querySelector('iframe')).toBeTruthy();
+      expect(linkBaixar(el)).toBeUndefined();
     });
 
     it('em 1280 px não abre janela nenhuma', async () => {

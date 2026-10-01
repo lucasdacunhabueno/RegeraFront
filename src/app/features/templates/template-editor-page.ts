@@ -36,7 +36,7 @@ import {
 import { TemplatesRepo } from './templates-repo';
 
 const MAX_NOME = 120;
-/** Mesmo ponto do `lg:` do Tailwind: daqui para cima a prévia fica num iframe ao lado do editor. */
+/** Mesmo ponto do `lg:` do Tailwind: daqui para cima, em aparelho de mouse, a prévia fica num iframe ao lado do editor. */
 const LARGURA_DESKTOP = 1024;
 const CORRIJA = 'Corrija os campos destacados.';
 const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
@@ -44,6 +44,18 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
 const ESPERA_REVOGAR_MS = 60_000;
 
 type AcaoMover = 'subir' | 'descer';
+
+/**
+ * Iframe só em tela larga com mouse: tablet (ponteiro grosso) e iOS — inclusive o iPad, que se apresenta como Mac —
+ * costumam não mostrar PDF dentro de iframe, então vão para a aba, mesmo com 1024 px ou mais.
+ */
+function previaNoIframe(): boolean {
+  if (window.innerWidth < LARGURA_DESKTOP) return false;
+  const toque = typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches;
+  const ua = navigator.userAgent;
+  const ios = /iPad|iPhone|iPod/.test(ua) || (/Macintosh/.test(ua) && navigator.maxTouchPoints > 1);
+  return !toque && !ios;
+}
 
 @Component({
   selector: 'app-template-editor-page',
@@ -210,6 +222,11 @@ type AcaoMover = 'subir' | 'descer';
         } @else if (abertaEmAba()) {
           <p class="text-sm text-slate-600">A prévia foi aberta em uma nova aba.</p>
         }
+        @if (urlBaixar(); as url) {
+          <!-- o celular pode não mostrar o PDF na aba: baixar sempre funciona -->
+          <a [href]="url" [attr.download]="nomeArquivoPrevia()"
+             class="inline-flex min-h-12 items-center text-sm font-semibold text-blue-700 underline">Baixar PDF</a>
+        }
       </section>
       }
     </div>
@@ -311,6 +328,13 @@ export class TemplateEditorPage implements ComAlteracoes {
   });
   protected readonly linkPrevia = computed(() => (this.modoPrevia() === 'bloqueada' ? this.urlPrevia() : null));
   protected readonly abertaEmAba = computed(() => this.modoPrevia() === 'aba');
+  protected readonly urlBaixar = computed(() => {
+    const modo = this.modoPrevia();
+    return modo === 'aba' || modo === 'bloqueada' ? this.urlPrevia() : null;
+  });
+  protected readonly nomeArquivoPrevia = computed(
+    () => `previa-${this.nome().trim().replace(/[\\/:*?"<>|]+/g, '-') || 'template'}.pdf`,
+  );
 
   private destruido = false;
 
@@ -477,7 +501,7 @@ export class TemplateEditorPage implements ComAlteracoes {
   protected async gerarPrevia(): Promise<void> {
     if (this.gerando()) return;
     this.gerando.set(true);
-    const desktop = window.innerWidth >= LARGURA_DESKTOP;
+    const desktop = previaNoIframe();
     const janela = desktop ? null : this.abrirJanelaDePrevia();
     try {
       const empresa = (await this.db.empresa.get(ID_EMPRESA)) ?? null;
