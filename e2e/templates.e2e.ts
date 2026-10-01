@@ -147,16 +147,19 @@ test('admin monta template sem internet, gera a prévia offline e o comercial re
   // a aba só fecha depois de voltar a internet: fechar um popup com o contexto offline devolve o
   // navigator.onLine=true à página (efeito do Chromium/Playwright), e o app sincronizaria sem rede
 
-  // prévia offline no desktop: iframe com um blob que é um PDF de verdade
+  // aparelho de toque com tela larga (tablet): continua na aba, e "Baixar PDF" aponta para um PDF de verdade
   await page.setViewportSize({ width: 1280, height: 800 });
+  const aba2 = page.waitForEvent('popup');
   await page.getByRole('button', { name: 'Gerar prévia' }).click();
-  const iframe = page.locator('iframe[title="Prévia do PDF"]');
-  await expect(iframe).toHaveAttribute('src', /^blob:/, { timeout: 30_000 });
-  const inicio = await page.evaluate(async () => {
-    const src = document.querySelector<HTMLIFrameElement>('iframe[title="Prévia do PDF"]')!.src;
-    const bytes = new Uint8Array(await (await fetch(src)).arrayBuffer());
+  const popup2 = await aba2;
+  const baixar = page.getByRole('link', { name: 'Baixar PDF' });
+  await expect(baixar).toHaveAttribute('href', /^blob:/, { timeout: 30_000 });
+  await expect(baixar).toHaveAttribute('download', `previa-${nome}.pdf`);
+  await expect(page.locator('iframe[title="Prévia do PDF"]')).toHaveCount(0);
+  const inicio = await page.evaluate(async (href) => {
+    const bytes = new Uint8Array(await (await fetch(href)).arrayBuffer());
     return new TextDecoder().decode(bytes.slice(0, 5));
-  });
+  }, (await baixar.getAttribute('href'))!);
   expect(inicio).toBe('%PDF-');
 
   // volta a internet: o selo some
@@ -165,6 +168,7 @@ test('admin monta template sem internet, gera a prévia offline e o comercial re
   expect(await page.evaluate(() => navigator.onLine)).toBe(false);
   await context.setOffline(false);
   await popup.close();
+  await popup2.close();
   await expect(card).not.toContainText('Não sincronizado', { timeout: 30_000 });
   await expect(card).toBeVisible();
 
@@ -190,4 +194,31 @@ test('admin monta template sem internet, gera a prévia offline e o comercial re
   }
   // inclui a aba da prévia, já fechada: o vigia é do contexto e recebe as violações dela pelo binding
   await csp.verificar();
+});
+
+test('no desktop (mouse) a prévia fica num iframe com um PDF de verdade', async ({ browser, baseURL }) => {
+  const desktop = await browser.newContext({ ...devices['Desktop Chrome'], baseURL, ignoreHTTPSErrors: true });
+  const csp = await semViolacaoCsp(desktop);
+  try {
+    const page = await desktop.newPage();
+    await entrar(page);
+    await page.goto('/templates/novo');
+    await expect(page.getByRole('heading', { name: 'Novo template' })).toBeVisible();
+    const abas: Page[] = [];
+    desktop.on('page', (p) => abas.push(p));
+    await page.getByRole('button', { name: 'Gerar prévia' }).click();
+    const iframe = page.locator('iframe[title="Prévia do PDF"]');
+    await expect(iframe).toHaveAttribute('src', /^blob:/, { timeout: 30_000 });
+    await expect(page.getByRole('link', { name: 'Baixar PDF' })).toHaveCount(0);
+    expect(abas).toEqual([]);
+    const inicio = await page.evaluate(async () => {
+      const src = document.querySelector<HTMLIFrameElement>('iframe[title="Prévia do PDF"]')!.src;
+      const bytes = new Uint8Array(await (await fetch(src)).arrayBuffer());
+      return new TextDecoder().decode(bytes.slice(0, 5));
+    });
+    expect(inicio).toBe('%PDF-');
+    await csp.verificar();
+  } finally {
+    await desktop.close();
+  }
 });
