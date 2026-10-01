@@ -35,7 +35,10 @@ type Acao = 'editar' | 'enviar' | 'aprovar' | 'iniciar' | 'finalizar' | 'recusar
 interface BotaoAcao {
   acao: Acao;
   rotulo: string;
-  /** Muda o status (ou a atribuição): com CONFLITO, fica desabilitada. */
+  /**
+   * Fica desabilitada com CONFLITO: muda o status (ou a atribuição), ou leva a um envio (Editar e Enviar, P4c-R15: o
+   * envio atrás do conflito some no "Usar a do servidor").
+   */
   transicao: boolean;
   /** Destaque: a ação principal do status. */
   principal?: boolean;
@@ -81,7 +84,8 @@ interface LinhaItem {
  * - Itens (cards no celular, tabela a partir do lg), totais, condições, histórico e documentos (`observarDocumentos`;
  *   "Abrir" pelo PDF do aparelho ou baixado na hora sem cache, P4b-R6; "Compartilhar").
  * - Ações: só as de `transicoesPermitidas` (e Editar, Enviar, Ver prévia, Duplicar, Excluir rascunho); RECUSADA e
- *   CANCELADA pedem o motivo (`DialogoMotivo`); com CONFLITO, as transições ficam desabilitadas.
+ *   CANCELADA pedem o motivo (`DialogoMotivo`); com CONFLITO, as transições, Editar, Enviar e "Gerar PDF novamente"
+ *   ficam desabilitados (P4c-R15).
  * - Pendências (§11.5): faixa com o link para Pendências; "Corrigir e reenviar" na recusa corrigível (P4c-R4) e
  *   "Gerar PDF novamente" no `CODIGO_EXIBIDO_INVALIDO` ou sem o PDF da revisão (P4b-R13).
  * O técnico (§10) vê só código, cliente (nome, endereço, telefone), tipo, status, técnico, validade, prazo e os itens
@@ -160,7 +164,11 @@ interface LinhaItem {
                 ? 'O PDF desta revisão não está no aparelho nem no servidor. Se ele foi gerado em outro aparelho, sincronize esse aparelho antes.'
                 : 'Gere o PDF de novo com o código atual: ele substitui o que foi recusado e vai na próxima sincronização.' }}
             </p>
-            <button type="button" (click)="regerar()" [disabled]="ocupado()"
+            @if (conflito()) {
+              <p id="dica-pendencia-regerar" class="font-semibold">Resolva a pendência primeiro.</p>
+            }
+            <button type="button" (click)="regerar()" [disabled]="ocupado() || conflito()"
+                    [attr.aria-describedby]="conflito() ? 'dica-pendencia-regerar' : null"
                     class="h-12 w-full rounded-lg bg-amber-700 px-4 font-semibold text-white disabled:opacity-60 sm:w-auto">
               {{ regerando() ? 'Gerando PDF…' : 'Gerar PDF novamente' }}
             </button>
@@ -605,7 +613,7 @@ export class PropostaDetalhePage {
     const lista: BotaoAcao[] = [];
     const enviar = p.status === 'RASCUNHO' && destinos.includes('ENVIADA');
     if (enviar) lista.push({ acao: 'enviar', rotulo: 'Enviar', transicao: true, principal: true });
-    if (pode && podeEditar(p.status)) lista.push({ acao: 'editar', rotulo: 'Editar', transicao: false, principal: !enviar });
+    if (pode && podeEditar(p.status)) lista.push({ acao: 'editar', rotulo: 'Editar', transicao: true, principal: !enviar });
     if (destinos.includes('APROVADA')) lista.push({ acao: 'aprovar', rotulo: 'Aprovar', transicao: true, principal: true });
     if (destinos.includes('EM_EXECUCAO')) lista.push({ acao: 'iniciar', rotulo: 'Iniciar execução', transicao: true, principal: true });
     if (destinos.includes('FINALIZADA')) lista.push({ acao: 'finalizar', rotulo: 'Finalizar', transicao: true, principal: true });

@@ -10,6 +10,7 @@ import { ConectividadeService } from '../../core/conectividade/conectividade-ser
 import { RegeraDb } from '../../core/db/regera-db';
 import type { EntradaPdf } from '../../core/pdf/pdf-models';
 import { PdfService } from '../../core/pdf/pdf-service';
+import { PendenciasService } from '../../core/sync/pendencias-service';
 import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
 import { ErroCampo } from '../../core/util/erro-campo';
@@ -1075,6 +1076,127 @@ describe('PropostasRepo', () => {
       expect(motivoParaRegerar({ ...base, status: 'RASCUNHO' }, [], [recusa])).toBeNull();
       // cancelada direto do rascunho: nunca houve envio, não falta documento
       expect(motivoParaRegerar({ ...base, status: 'CANCELADA', revisao: 1 }, [], [])).toBeNull();
+    });
+  });
+
+  describe('com CONFLITO na proposta (P4c-R15)', () => {
+    const gerar = () => vi.fn<(e: EntradaPdf) => Promise<Blob>>(async () => new Blob([ABC], { type: 'application/pdf' }));
+
+    /** O CONFLITO de uma edição desta proposta (o servidor tem a versão 5); a mutação fica guardada na pendência. */
+    async function conflito(p: PropostaLocal, mutationId = 'm-conflito'): Promise<Pendencia> {
+      const x: Pendencia = {
+        mutationId, entidade: 'proposta', agregadoId: p.id, tipo: 'CONFLITO', criadaEm: '2026-10-01T10:00:00Z',
+        mutacao: { mutationId, entidade: 'proposta', agregadoId: p.id, op: 'UPSERT', baseVersion: p.version, dados: dadosDaProposta(p), criadaEm: '' },
+        dadosServidor: dadosDaProposta({ ...p, prazoExecucao: 'Prazo do outro aparelho' }), versionServidor: 5,
+      };
+      await db.pendencias.put(x);
+      return x;
+    }
+
+    const nadaMudou = async (antes: { proposta: PropostaLocal | undefined }) => {
+      expect(await db.propostas.get('p1')).toEqual(antes.proposta);
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.documentos.count()).toBe(0);
+    };
+
+    it('enviar: RESOLVA_A_PENDENCIA antes de gerar o PDF, sem gravar nada', async () => {
+      const p = await existente('RASCUNHO');
+      await conflito(p);
+      const g = gerar();
+      const e = await erroDe(repo.enviar('p1', g));
+      expect(e.codigo).toBe('RESOLVA_A_PENDENCIA');
+      expect(e.message).toBe('Resolva a pendência desta proposta antes de enviá-la.');
+      expect(g).not.toHaveBeenCalled();
+      await nadaMudou({ proposta: p });
+    });
+
+    it('enviar: o CONFLITO que chega durante a geração do PDF é visto na transação, e nada é gravado', async () => {
+      const p = await existente('RASCUNHO');
+      const g = vi.fn(async () => {
+        await conflito(p);
+        return new Blob([ABC], { type: 'application/pdf' });
+      });
+      expect((await erroDe(repo.enviar('p1', g))).codigo).toBe('RESOLVA_A_PENDENCIA');
+      expect(g).toHaveBeenCalledTimes(1);
+      await nadaMudou({ proposta: p });
+    });
+
+    it('transicionar: RESOLVA_A_PENDENCIA em qualquer mudança de status, sem enfileirar', async () => {
+      const p = await existente('ENVIADA');
+      await conflito(p);
+      for (const [para, motivo] of [['APROVADA', undefined], ['RASCUNHO', undefined], ['RECUSADA', 'Preço alto']] as const) {
+        const e = await erroDe(repo.transicionar('p1', para, motivo));
+        expect(e.codigo).toBe('RESOLVA_A_PENDENCIA');
+        expect(e.message).toBe('Resolva a pendência desta proposta antes de mudar o status.');
+      }
+      await nadaMudou({ proposta: p });
+      // a regra do perfil vem antes: o técnico continua recebendo ACESSO_NEGADO
+      usuario.set(TECNICO);
+      expect((await erroDe(repo.transicionar('p1', 'APROVADA'))).codigo).toBe('ACESSO_NEGADO');
+    });
+
+    it('atribuir e conferirAtribuicao: RESOLVA_A_PENDENCIA, sem gravar; sem mudança nenhuma, nada a recusar', async () => {
+      const p = await existente('APROVADA');
+      await conflito(p);
+      const e = await erroDe(repo.atribuir('p1', { tecnicoId: TECNICO.id }));
+      expect(e.codigo).toBe('RESOLVA_A_PENDENCIA');
+      expect(e.message).toBe('Resolva a pendência desta proposta antes de mudar a atribuição.');
+      usuario.set(ADMIN);
+      expect((await erroDe(repo.atribuir('p1', { responsavelId: OUTRO_COMERCIAL.id }, 4))).codigo).toBe('RESOLVA_A_PENDENCIA');
+      expect((await erroDe(repo.conferirAtribuicao('p1', { responsavelId: OUTRO_COMERCIAL.id }))).codigo).toBe('RESOLVA_A_PENDENCIA');
+      await repo.atribuir('p1', { tecnicoId: null });
+      await nadaMudou({ proposta: p });
+    });
+
+    it('regerarDocumento: RESOLVA_A_PENDENCIA antes de gerar, e também se o CONFLITO chega durante a geração', async () => {
+      const p = await existente('APROVADA', {
+        historico: [{ statusDe: 'RASCUNHO', statusPara: 'ENVIADA', usuarioId: COMERCIAL.id, em: '', observacao: null }],
+      });
+      const x = await conflito(p);
+      const g = gerar();
+      const e = await erroDe(repo.regerarDocumento('p1', g));
+      expect(e.codigo).toBe('RESOLVA_A_PENDENCIA');
+      expect(e.message).toBe('Resolva a pendência desta proposta antes de gerar o PDF novamente.');
+      expect(g).not.toHaveBeenCalled();
+
+      await db.pendencias.delete(x.mutationId);
+      const comConflitoNoMeio = vi.fn(async () => {
+        await conflito(p);
+        return new Blob([ABC], { type: 'application/pdf' });
+      });
+      expect((await erroDe(repo.regerarDocumento('p1', comConflitoNoMeio))).codigo).toBe('RESOLVA_A_PENDENCIA');
+      expect(comConflitoNoMeio).toHaveBeenCalledTimes(1);
+      await nadaMudou({ proposta: p });
+    });
+
+    it('salvarRascunho continua valendo (P4b-R27 sem mudança), e uma rejeição (não CONFLITO) não trava o envio', async () => {
+      const p = await existente('RASCUNHO');
+      await conflito(p);
+      await repo.salvarRascunho('p1', { prazoExecucao: '20 dias' });
+      expect((await db.propostas.get('p1'))!.prazoExecucao).toBe('20 dias');
+      expect(await db.pendencias.count()).toBe(1);
+
+      await db.pendencias.clear();
+      await db.outbox.clear();
+      await db.pendencias.put({ ...pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1', 'u-velho'), erro: { codigo: 'SHA_DIVERGENTE', mensagem: '' } });
+      await repo.enviar('p1', gerar());
+      expect((await db.propostas.get('p1'))!.status).toBe('ENVIADA');
+    });
+
+    it('P4b-R17: depois do "Manter a minha" em Pendências, a proposta volta a enviar e a mudar de status', async () => {
+      const p = await existente('RASCUNHO');
+      const x = await conflito(p);
+      expect((await erroDe(repo.enviar('p1', gerar()))).codigo).toBe('RESOLVA_A_PENDENCIA');
+
+      await TestBed.inject(PendenciasService).manterMinha(x);
+      expect(await db.pendencias.count()).toBe(0);
+      // a mutação guardada voltou à fila sobre a versão do servidor
+      expect((await fila()).map((m) => [m.op, m.baseVersion])).toEqual([['UPSERT', 5]]);
+
+      await repo.enviar('p1', gerar());
+      expect((await db.propostas.get('p1'))!.status).toBe('ENVIADA');
+      await repo.transicionar('p1', 'APROVADA');
+      expect((await db.propostas.get('p1'))!.status).toBe('APROVADA');
     });
   });
 

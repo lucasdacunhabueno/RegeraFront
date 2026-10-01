@@ -7,7 +7,7 @@ import { RegeraDb } from '../db/regera-db';
 import type { PropostaDados } from '../../features/propostas/proposta-models';
 import { EdicaoRascunho, PropostasRepo } from '../../features/propostas/propostas-repo';
 import { Adaptador, adaptadorDe, RegistroLocal } from './adaptadores';
-import { DadosUpload, Mudanca, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
+import { DadosUpload, Mudanca, MutacaoLocal, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
 
 /**
@@ -63,6 +63,27 @@ export class PendenciasService {
       atual = p.dadosServidor == null ? null : { dados: p.dadosServidor, version: p.versionServidor ?? null, deleted: false } as unknown as Mudanca;
     }
     await this.aplicarEClear(p, p.agregadoId, atual);
+  }
+
+  /**
+   * P4c-R15: "Usar a do servidor" (e o "Descartar" do excluído lá) numa proposta tira da fila tudo do agregado
+   * (`limparAgregado`), inclusive o envio feito neste aparelho. true quando isso levaria um envio (a transição para
+   * ENVIADA ou um UPLOAD, na fila ou numa pendência da proposta) ou um PDF gerado aqui e ainda não enviado: a tela pede
+   * confirmação antes. Não escreve nada.
+   */
+  async descartaEnvio(p: Pendencia): Promise<boolean> {
+    if (p.entidade !== 'proposta') return false;
+    const id = p.agregadoId;
+    const mutacoes = [
+      p.mutacao,
+      ...(await this.db.outbox.where('agregadoId').equals(id).toArray()),
+      ...(await this.db.pendencias.where('agregadoId').equals(id).toArray()).map((x) => x.mutacao),
+    ];
+    const envio = (m: MutacaoLocal) =>
+      m.entidade === TIPO_UPLOAD_DOCUMENTO
+      || (m.entidade === 'proposta' && !!m.separada && (m.dados as PropostaDados | null)?.status === 'ENVIADA');
+    if (mutacoes.some(envio)) return true;
+    return (await this.db.documentos.where('propostaId').equals(id).filter((d) => !d.enviado).count()) > 0;
   }
 
   async descartar(daTela: Pendencia): Promise<void> {

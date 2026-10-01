@@ -524,6 +524,29 @@ describe('PropostaDetalhePage', () => {
       for (const rotulo of ['Ver prévia', 'Duplicar']) expect(botao(el, rotulo)!.disabled).toBe(false);
     });
 
+    it('CONFLITO num rascunho: "Editar" e "Enviar" também ficam desabilitados com a dica (P4c-R15)', async () => {
+      const { el, navegar } = await montar({
+        proposta: proposta({ status: 'RASCUNHO', numero: null, historico: [] }), documentos: [], pendencias: [conflito()],
+      });
+      for (const rotulo of ['Enviar', 'Editar', 'Cancelar proposta']) {
+        const b = botao(el, rotulo)!;
+        expect(b.disabled).toBe(true);
+        expect(document.getElementById(b.getAttribute('aria-describedby')!)?.textContent?.trim()).toBe('Resolva a pendência primeiro.');
+        b.click();
+      }
+      expect(navegar).not.toHaveBeenCalled();
+      for (const rotulo of ['Ver prévia', 'Duplicar', 'Excluir rascunho']) expect(botao(el, rotulo)!.disabled).toBe(false);
+    });
+
+    it('CONFLITO com o PDF da revisão faltando: "Gerar PDF novamente" fica desabilitado com a dica (P4c-R15)', async () => {
+      const { el, repo } = await montar({ documentos: [], pendencias: [conflito()] });
+      const b = botao(el, 'Gerar PDF novamente')!;
+      expect(b.disabled).toBe(true);
+      expect(document.getElementById(b.getAttribute('aria-describedby')!)?.textContent?.trim()).toBe('Resolva a pendência primeiro.');
+      b.click();
+      expect(repo.regerarDocumento).not.toHaveBeenCalled();
+    });
+
     it('REJEITADO corrigível: "O servidor recusou: <mensagem>" e "Corrigir e reenviar" abre a correção', async () => {
       const { el, navegar } = await montar({ pendencias: [recusaDeDados()] });
       const faixa = texto(el.querySelector('[data-testid=pendencia]')!);

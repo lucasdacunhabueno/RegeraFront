@@ -432,6 +432,42 @@ describe('PendenciasService', () => {
       expect(await db.pendencias.count()).toBe(0);
     });
 
+    it('P4c-R15: descartaEnvio diz se "Usar a do servidor" levaria um envio ou um PDF feito neste aparelho', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
+      const conflito: Pendencia = {
+        mutationId: 'e1', entidade: 'proposta', agregadoId: 'p1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 5,
+        dadosServidor: prop('c2'), mutacao: { ...mutProposta('e1', 'p1', 'c1'), baseVersion: 3 },
+      };
+      await db.pendencias.put(conflito);
+      // só a edição em conflito (e uma atribuição atrás dela, que não é envio): nada a perder além dela
+      await db.outbox.add({ ...mutProposta('a1', 'p1', 'c1'), baseVersion: 3, dados: { ...prop('c1'), status: 'ENVIADA' } });
+      await db.documentos.put(doc('d0', true));
+      expect(await svc.descartaEnvio(conflito)).toBe(false);
+
+      // a transição para ENVIADA retida atrás do conflito
+      const t1 = await db.outbox.add({ ...mutProposta('t1', 'p1', 'c1'), baseVersion: 3, dados: { ...prop('c1'), status: 'ENVIADA' }, separada: true });
+      expect(await svc.descartaEnvio(conflito)).toBe(true);
+      await db.outbox.delete(t1);
+
+      // o UPLOAD de um PDF na fila
+      const u = await db.outbox.add(upload('up1', 'd1'));
+      expect(await svc.descartaEnvio(conflito)).toBe(true);
+      await db.outbox.delete(u);
+
+      // um PDF gerado aqui que ainda não foi enviado
+      await db.documentos.put(doc('d1', false));
+      expect(await svc.descartaEnvio(conflito)).toBe(true);
+      await db.documentos.delete('d1');
+
+      // o próprio envio em conflito
+      const envioEmConflito: Pendencia = {
+        ...conflito, mutacao: { ...conflito.mutacao, dados: { ...prop('c1'), status: 'ENVIADA' }, separada: true },
+      };
+      expect(await svc.descartaEnvio(envioEmConflito)).toBe(true);
+      // outra entidade: nunca
+      expect(await svc.descartaEnvio(pendencia({ tipo: 'CONFLITO' }))).toBe(false);
+    });
+
     it('manter a minha duas vezes ao mesmo tempo (toque duplo) devolve E1 uma vez só, a partir da pendência gravada', async () => {
       await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
       const e1 = { ...mutProposta('e1', 'p1', 'c1'), seq: 5, baseVersion: 3 };

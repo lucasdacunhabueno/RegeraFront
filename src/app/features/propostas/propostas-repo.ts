@@ -84,7 +84,8 @@ export function somarDias(data: string, dias: number): string {
 /**
  * Recusa local, com o mesmo `codigo` que o servidor daria (`ACESSO_NEGADO`, `PROPOSTA_NAO_EDITAVEL`,
  * `TRANSICAO_INVALIDA`, `VALIDACAO`, `PROPOSTA_NUMERADA`...) ou um só do aparelho (`NAO_ENCONTRADA`, `USE_ENVIAR`,
- * `PROPOSTA_ALTERADA`, `PROPOSTA_JA_ENVIADA`, `SNAPSHOT_GRANDE`, `PDF_GRANDE`, `PROPOSTA_SINCRONIZANDO`). `campo` é o
+ * `PROPOSTA_ALTERADA`, `PROPOSTA_JA_ENVIADA`, `SNAPSHOT_GRANDE`, `PDF_GRANDE`, `PROPOSTA_SINCRONIZANDO`,
+ * `RESOLVA_A_PENDENCIA`). `campo` é o
  * primeiro campo com erro (nomes do servidor, ex.: `itens[0].quantidade`) ou `proposta` quando o erro não é de um
  * campo; `campos` traz todos, na validação.
  */
@@ -332,6 +333,25 @@ export function motivoParaRegerar(
 const sincronizando = (): ErroProposta =>
   new ErroProposta('PROPOSTA_SINCRONIZANDO', 'proposta', 'A proposta está sendo sincronizada. Tente de novo em instantes.');
 
+/** P4c-R15: o que fica travado com um CONFLITO da proposta, e o texto da recusa de cada um. */
+const ANTES_DE = {
+  enviar: 'enviá-la',
+  transicionar: 'mudar o status',
+  atribuir: 'mudar a atribuição',
+  regerar: 'gerar o PDF novamente',
+} as const;
+
+/**
+ * P4c-R15: com um CONFLITO da proposta, enviar, mudar o status, a atribuição ou gerar o PDF de novo poria na fila, atrás
+ * da mutação em conflito, o que "Usar a do servidor" apagaria (o envio e o PDF que o cliente já recebeu). A edição do
+ * rascunho continua (P4b-R27): ela não gera nada fora do aparelho.
+ */
+function exigirSemConflito(pendencias: readonly Pendencia[], acao: keyof typeof ANTES_DE): void {
+  if (pendencias.some((x) => x.tipo === 'CONFLITO')) {
+    throw new ErroProposta('RESOLVA_A_PENDENCIA', 'proposta', `Resolva a pendência desta proposta antes de ${ANTES_DE[acao]}.`);
+  }
+}
+
 /** Status que só existem depois de um envio (CANCELADA pode vir direto do rascunho: aí vale o documento). */
 const DEPOIS_DO_ENVIO: readonly StatusProposta[] = ['ENVIADA', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA', 'RECUSADA'];
 
@@ -577,7 +597,8 @@ export class PropostasRepo {
    * Muda o status (§8), como mutação separada (nunca coalesce). Confere a tabela de transições para o perfil
    * (`transicoesPermitidas`) e os requisitos (`validarTransicao`, ex.: motivo de 3 a 500 caracteres em RECUSADA e
    * CANCELADA). RASCUNHO → ENVIADA só por `enviar`, que gera o PDF oficial. ENVIADA → RASCUNHO abre a revisão seguinte
-   * já no aparelho (o PDF de um novo envio offline sai com a revisão certa); o servidor confirma.
+   * já no aparelho (o PDF de um novo envio offline sai com a revisão certa); o servidor confirma. Com um CONFLITO da
+   * proposta, recusa (`RESOLVA_A_PENDENCIA`, P4c-R15).
    */
   async transicionar(id: string, para: StatusProposta, motivo?: string | null): Promise<void> {
     const u = this.usuario();
@@ -593,13 +614,14 @@ export class PropostasRepo {
       motivoEncerramento: exigeMotivo(para) ? motivoLimpo : atual.motivoEncerramento,
       revisao: atual.status === 'ENVIADA' && para === 'RASCUNHO' ? (atual.revisao ?? 1) + 1 : atual.revisao,
     };
-    await this.gravar(novo, atual.version, true);
+    await this.gravar(novo, atual.version, { separada: true, semConflito: 'transicionar' });
   }
 
   /**
    * Atribuição (P4b-R3), em qualquer status não terminal: o responsável só o ADMIN troca (por um ADMIN ou COMERCIAL);
    * o técnico, o ADMIN ou o responsável (por um TECNICO, ou nenhum). versaoCarregada: como em `salvarRascunho`, a
    * versão que a tela carregou (P4c-R9: o "Manter as minhas" do wizard grava com ela, e o servidor dá CONFLITO).
+   * Com um CONFLITO da proposta já em Pendências, recusa (`RESOLVA_A_PENDENCIA`, P4c-R15).
    */
   async atribuir(
     id: string,
@@ -610,7 +632,7 @@ export class PropostasRepo {
     if (!conferida) return;
     const { atual, responsavelId, tecnicoId } = conferida;
     const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
-    await this.gravar({ ...atual, responsavelId, tecnicoId, version }, version);
+    await this.gravar({ ...atual, responsavelId, tecnicoId, version }, version, { semConflito: 'atribuir' });
   }
 
   /**
@@ -691,6 +713,8 @@ export class PropostasRepo {
    * O PDF acima de 10 MB (limite do upload no servidor) é recusado com `PDF_GRANDE`, sem gravar nada.
    * Código exibido: o número (`000277`, com `-R<n>` na revisão > 1), se já existe; senão, o PROV (com o mesmo sufixo).
    * Com número e um documento PROV anterior, o PDF leva `(ref. PROV-xxxxxx)`.
+   * P4c-R15: com um CONFLITO da proposta, `RESOLVA_A_PENDENCIA` antes de gerar o PDF, e de novo na transação (o
+   * conflito que chega durante a geração também trava).
    */
   async enviar(id: string, gerarPdf: (entrada: EntradaPdf) => Promise<Blob>): Promise<Blob> {
     const u = this.usuario();
@@ -720,12 +744,16 @@ export class PropostasRepo {
   ): Promise<Blob | null> {
     const id = p.id;
     this.exigirTransicao(p, 'ENVIADA', u, contexto(p));
+    exigirSemConflito(await this.pendenciasDa(id), 'enviar');
     const { blob, documento } = await this.gerarDocumento(p, u, gerarPdf);
     const enviada: PropostaLocal = { ...p, status: 'ENVIADA', atualizadoEm: new Date().toISOString() };
-    const gravou = await this.db.transaction('rw', [this.db.propostas, this.db.documentos, this.db.outbox], async () => {
+    const tabelas = [this.db.propostas, this.db.documentos, this.db.outbox, this.db.pendencias];
+    const gravou = await this.db.transaction('rw', tabelas, async () => {
       // o PDF foi gerado fora da transação: se a proposta mudou nesse meio-tempo, ele não a representa mais
       const agora = await this.db.propostas.get(id);
       if (agora && agora.status !== 'RASCUNHO') throw jaEnviada();
+      // P4c-R15: e um CONFLITO que chegou nesse meio-tempo trava o envio
+      exigirSemConflito(await this.pendenciasDa(id), 'enviar');
       if (!agora || JSON.stringify(comTotais(agora)) !== JSON.stringify(p)) return false;
       await this.db.documentos.add(documento);
       await this.db.propostas.put(enviada);
@@ -745,7 +773,8 @@ export class PropostasRepo {
    * 2. grava o documento novo e enfileira o UPLOAD dele, atrás do que já está na fila da proposta.
    * A proposta não muda. Se ela mudou durante a geração (o ack traz o número), gera de novo, até 3 vezes, como o
    * `enviar` (P4b-R21). Com o upload antigo em voo, recusa (`PROPOSTA_SINCRONIZANDO`). Devolve o Blob para compartilhar
-   * e o código impresso nele (o nome do arquivo; o número pode chegar logo depois, num ack).
+   * e o código impresso nele (o nome do arquivo; o número pode chegar logo depois, num ack). Com um CONFLITO da
+   * proposta, recusa (`RESOLVA_A_PENDENCIA`, P4c-R15), antes de gerar e na transação.
    */
   async regerarDocumento(
     id: string,
@@ -1014,12 +1043,18 @@ export class PropostasRepo {
       }
     }
     if (tecnicoId !== atual.tecnicoId) await this.conferirTecnico(atual, u, tecnicoId);
+    // P4c-R15 (o `gravar` do atribuir confere de novo, na transação)
+    exigirSemConflito(await this.pendenciasDa(id), 'atribuir');
     return { atual, responsavelId, tecnicoId };
   }
 
-  /** Recusa (`DOCUMENTO_EM_DIA`) quando `motivoParaRegerar` não vale para `p`; devolve as pendências dela. */
+  /**
+   * Recusa com um CONFLITO da proposta (`RESOLVA_A_PENDENCIA`, P4c-R15) e quando `motivoParaRegerar` não vale para `p`
+   * (`DOCUMENTO_EM_DIA`); devolve as pendências dela.
+   */
   private async exigirMotivoParaRegerar(p: PropostaLocal): Promise<Pendencia[]> {
-    const pendencias = await this.db.pendencias.where('agregadoId').equals(p.id).toArray();
+    const pendencias = await this.pendenciasDa(p.id);
+    exigirSemConflito(pendencias, 'regerar');
     const locais = await this.db.documentos.where('propostaId').equals(p.id).toArray();
     if (!motivoParaRegerar(p, locais, pendencias)) {
       throw new ErroProposta('DOCUMENTO_EM_DIA', 'proposta', 'O PDF desta revisão já está no aparelho ou no servidor.');
@@ -1176,15 +1211,27 @@ export class PropostasRepo {
     return comTotais({ ...novo, atualizadoEm: new Date().toISOString() });
   }
 
-  /** Grava o local e enfileira o UPSERT, na mesma transação. */
-  private async gravar(p: PropostaLocal, baseVersion: number | null, separada = false): Promise<void> {
+  /**
+   * Grava o local e enfileira o UPSERT, na mesma transação. `separada`: mutação que não coalesce (transição);
+   * `semConflito`: recusa, dentro da transação, se a proposta tem um CONFLITO (P4c-R15).
+   */
+  private async gravar(
+    p: PropostaLocal,
+    baseVersion: number | null,
+    opcoes: { separada?: boolean; semConflito?: keyof typeof ANTES_DE } = {},
+  ): Promise<void> {
     // P4b-R19: atualizadoEm otimista (o kanban reordena na hora); o servidor sobrescreve no retorno
     p = { ...p, atualizadoEm: new Date().toISOString() };
-    await this.db.transaction('rw', [this.db.propostas, this.db.outbox], async () => {
+    await this.db.transaction('rw', [this.db.propostas, this.db.outbox, this.db.pendencias], async () => {
+      if (opcoes.semConflito) exigirSemConflito(await this.pendenciasDa(p.id), opcoes.semConflito);
       await this.db.propostas.put(p);
-      await this.sync.registrar('proposta', p.id, 'UPSERT', dadosDaProposta(p), baseVersion, separada ? { separada: true } : {});
+      await this.sync.registrar('proposta', p.id, 'UPSERT', dadosDaProposta(p), baseVersion, opcoes.separada ? { separada: true } : {});
     });
     void this.sync.sincronizar();
+  }
+
+  private pendenciasDa(id: string): Promise<Pendencia[]> {
+    return this.db.pendencias.where('agregadoId').equals(id).toArray();
   }
 
   /**

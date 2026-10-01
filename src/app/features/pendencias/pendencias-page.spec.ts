@@ -71,6 +71,8 @@ function propostaLocal(id: string, p: Partial<PropostaLocal> = {}): PropostaLoca
 interface OpcoesMontar {
   propostas?: PropostaLocal[];
   regerar?: ReturnType<typeof vi.fn>;
+  /** P4c-R15: "Usar a do servidor" levaria um envio ou PDF feito no aparelho. */
+  descartaEnvio?: boolean;
 }
 
 function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMIN', o: OpcoesMontar = {}) {
@@ -85,6 +87,7 @@ function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMI
     usarServidor: vi.fn().mockResolvedValue(undefined),
     descartar: vi.fn().mockResolvedValue(undefined),
     usarExistente: vi.fn().mockResolvedValue('c9'),
+    descartaEnvio: vi.fn().mockResolvedValue(o.descartaEnvio ?? false),
   };
   const sincronizar = vi.fn().mockResolvedValue(undefined);
   TestBed.configureTestingModule({
@@ -349,6 +352,87 @@ describe('PendenciasPage', () => {
       const { el } = montar([c], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
       expect(botao(el, 'Manter a minha')).toBeDefined();
       expect(abrir(el)!.getAttribute('href')).toBe('/propostas/p1');
+    });
+
+    describe('"Usar a do servidor" com envio feito aqui (P4c-R15)', () => {
+      const AVISO = 'Isto descarta o envio e o PDF gerado neste aparelho.';
+      const c = () => rejeitada({ tipo: 'CONFLITO', erro: undefined, dadosServidor: { codigoProvisorio: 'PROV-ABC123' } });
+      const dialogo = (el: HTMLElement) => el.querySelector<HTMLElement>('[role=alertdialog]');
+      const noDialogo = (el: HTMLElement, texto: string) =>
+        [...dialogo(el)!.querySelectorAll('button')].find((b) => b.textContent?.trim() === texto)!;
+
+      it('pede confirmação acessível antes; "Voltar" não muda nada; confirmar usa a do servidor e devolve o foco', async () => {
+        const conflitoProposta = c();
+        const { el, svc, fixture } = montar([conflitoProposta], 0, 'ADMIN', { propostas: [propostaLocal('p1')], descartaEnvio: true });
+        const gatilho = botao(el, 'Usar a do servidor');
+        gatilho.focus();
+        gatilho.click();
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(dialogo(el)).not.toBeNull();
+        });
+        const d = dialogo(el)!;
+        expect(d.getAttribute('aria-modal')).toBe('true');
+        expect(document.getElementById(d.getAttribute('aria-labelledby')!)?.textContent?.trim()).toBe('Usar a do servidor?');
+        expect(document.getElementById(d.getAttribute('aria-describedby')!)?.textContent?.trim()).toBe(AVISO);
+        expect(svc.descartaEnvio).toHaveBeenCalledWith(conflitoProposta);
+        expect(svc.usarServidor).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(document.activeElement).toBe(noDialogo(el, 'Voltar')));
+
+        noDialogo(el, 'Voltar').click();
+        fixture.detectChanges();
+        expect(dialogo(el)).toBeNull();
+        expect(svc.usarServidor).not.toHaveBeenCalled();
+        await vi.waitFor(() => expect(document.activeElement).toBe(gatilho));
+
+        botao(el, 'Usar a do servidor').click();
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(dialogo(el)).not.toBeNull();
+        });
+        noDialogo(el, 'Usar a do servidor').click();
+        await vi.waitFor(() => expect(svc.usarServidor).toHaveBeenCalledWith(conflitoProposta));
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(dialogo(el)).toBeNull();
+        });
+      });
+
+      it('sem envio nem PDF daqui: usa a do servidor direto, sem perguntar', async () => {
+        const conflitoProposta = c();
+        const { el, svc, fixture } = montar([conflitoProposta], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+        botao(el, 'Usar a do servidor').click();
+        await vi.waitFor(() => expect(svc.usarServidor).toHaveBeenCalledWith(conflitoProposta));
+        fixture.detectChanges();
+        expect(dialogo(el)).toBeNull();
+      });
+
+      it('o "Descartar" de uma proposta excluída no servidor também pergunta', async () => {
+        const excluida = rejeitada({ tipo: 'CONFLITO', erro: undefined, dadosServidor: undefined });
+        const { el, svc, fixture } = montar([excluida], 0, 'ADMIN', { propostas: [propostaLocal('p1')], descartaEnvio: true });
+        botao(el, 'Descartar').click();
+        await vi.waitFor(() => {
+          fixture.detectChanges();
+          expect(dialogo(el)?.textContent).toContain(AVISO);
+        });
+        expect(svc.usarServidor).not.toHaveBeenCalled();
+      });
+    });
+
+    it('M4: erro técnico numa ação de proposta vira a mensagem genérica; a recusa do repositório, a mensagem dela', async () => {
+      const conflitoProposta = rejeitada({ tipo: 'CONFLITO', erro: undefined, dadosServidor: { codigoProvisorio: 'PROV-ABC123' } });
+      const { el, svc, fixture } = montar([conflitoProposta], 0, 'ADMIN', { propostas: [propostaLocal('p1')] });
+      const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+      svc.manterMinha.mockRejectedValueOnce(new Error('DatabaseClosedError: Database has been closed'));
+      botao(el, 'Manter a minha').click();
+      await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('Não foi possível concluir. Tente de novo.'));
+      await vi.waitFor(async () => {
+        await fixture.whenStable();
+        expect(botao(el, 'Manter a minha').disabled).toBe(false);
+      });
+      svc.manterMinha.mockRejectedValueOnce(new ErroProposta('PROPOSTA_SINCRONIZANDO', 'proposta', 'A proposta está sendo sincronizada. Tente de novo em instantes.'));
+      botao(el, 'Manter a minha').click();
+      await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('A proposta está sendo sincronizada. Tente de novo em instantes.'));
     });
 
     it('upload CODIGO_EXIBIDO_INVALIDO de proposta enviada: "Gerar PDF novamente" regera pelo repositório e compartilha (sem share: baixa)', async () => {
