@@ -1,4 +1,4 @@
-import { dataBr, moedaCentavos, percentualBr, quantidadeBr } from './formatos-pdf';
+import { dataBr, linhasDeTotais, moedaCentavos, percentualBr, quantidadeBr } from './formatos-pdf';
 
 describe('formatos-pdf', () => {
   it('moedaCentavos formata centavos inteiros em pt-BR com espaço comum', () => {
@@ -41,5 +41,24 @@ describe('formatos-pdf', () => {
     expect(percentualBr(10)).toBe('10%');
     expect(percentualBr(12.5)).toBe('12,5%');
     expect(percentualBr(0)).toBe('0%');
+  });
+});
+
+describe('linhasDeTotais (P4a-R6)', () => {
+  it('com descontos: Subtotal = total + descontos (bruto), Descontos negativos e Total', () => {
+    expect(linhasDeTotais(1846, 264, true)).toEqual([
+      { rotulo: 'Subtotal', centavos: 2110, total: false },
+      { rotulo: 'Descontos', centavos: -264, total: false },
+      { rotulo: 'Total', centavos: 1846, total: true },
+    ]);
+  });
+
+  it('sem desconto nenhum: Subtotal e Total; sem mostrarDescontos: só o Total', () => {
+    expect(linhasDeTotais(500, 0, true).map((l) => l.rotulo)).toEqual(['Subtotal', 'Total']);
+    expect(linhasDeTotais(500, 30, false)).toEqual([{ rotulo: 'Total', centavos: 500, total: true }]);
+  });
+
+  it('descontos negativos (dado estranho) contam como zero', () => {
+    expect(linhasDeTotais(500, -10, true)[0]).toEqual({ rotulo: 'Subtotal', centavos: 500, total: false });
   });
 });

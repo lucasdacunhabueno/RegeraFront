@@ -2,6 +2,7 @@ import { Route } from '@angular/router';
 import { routes } from './app.routes';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 import { PropostasPage } from './features/propostas/propostas-page';
+import { WizardPropostaPage } from './features/propostas/wizard-proposta-page';
 
 const filhas = (routes.find((r) => r.path === '' && r.children)?.children ?? []) as Route[];
 const rota = (path: string) => filhas.find((r) => r.path === path);
@@ -27,6 +28,20 @@ describe('app.routes', () => {
     expect(r.component).toBeUndefined();
     const componente = await (r.loadComponent as () => Promise<unknown>)();
     expect(componente).toBe(PropostasPage);
+  });
+
+  it.each(['propostas/nova', 'propostas/:id/editar'])('%s: wizard lazy em modo rascunho, ADMIN e COMERCIAL, com aviso ao sair', async (path) => {
+    const r = rota(path)!;
+    expect(r.canMatch?.length).toBe(1);
+    expect(r.canDeactivate).toContain(alteracoesGuard);
+    expect(r.data?.['modo']).toBe('rascunho');
+    expect(await (r.loadComponent as () => Promise<unknown>)()).toBe(WizardPropostaPage);
+  });
+
+  it('propostas/nova antes de propostas/:id/editar (a ordem do P4c)', () => {
+    const ordem = filhas.map((r) => r.path);
+    expect(ordem.indexOf('propostas/nova')).toBeGreaterThan(-1);
+    expect(ordem.indexOf('propostas/nova')).toBeLessThan(ordem.indexOf('propostas/:id/editar'));
   });
 
   it('kanban continua só para ADMIN e COMERCIAL', () => {

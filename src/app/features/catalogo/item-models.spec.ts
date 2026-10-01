@@ -1,5 +1,5 @@
 import { calcularDimensoes } from '../../core/arquivos/imagem-service';
-import { filtrarItens, ItemCatalogoDados, paraItemLocal } from './item-models';
+import { filtrarItens, ItemCatalogoDados, margemPercentual, paraItemLocal } from './item-models';
 
 const base: ItemCatalogoDados = {
   natureza: 'PRODUTO', codigo: 'PNL-550', nome: 'Painel Solar', descricao: null, unidade: 'un',
@@ -34,5 +34,21 @@ describe('calcularDimensoes', () => {
     expect(calcularDimensoes(4000, 3000, 800)).toEqual({ largura: 800, altura: 600 });
     expect(calcularDimensoes(600, 1200, 800)).toEqual({ largura: 400, altura: 800 });
     expect(calcularDimensoes(300, 200, 800)).toEqual({ largura: 300, altura: 200 });
+  });
+});
+
+describe('margemPercentual', () => {
+  it('(venda − custo) / venda com uma casa, em pt-BR', () => {
+    expect(margemPercentual(64, 100)).toBe('36,0');
+    expect(margemPercentual(6400, 10000)).toBe('36,0');
+    expect(margemPercentual(150, 100)).toBe('-50,0');
+    expect(margemPercentual(1, 3)).toBe('66,7');
+  });
+
+  it('sem custo ou sem venda positivos (ou NaN), não há margem', () => {
+    expect(margemPercentual(0, 100)).toBeNull();
+    expect(margemPercentual(10, 0)).toBeNull();
+    expect(margemPercentual(Number.NaN, 100)).toBeNull();
+    expect(margemPercentual(null, 100)).toBeNull();
   });
 });

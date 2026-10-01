@@ -12,7 +12,7 @@ import {
   tokenTitulo,
 } from '../../features/templates/template-models';
 import { formatarDocumento, formatarTelefone } from '../util/formatos';
-import { dataBr, moedaCentavos, percentualBr, quantidadeBr } from './formatos-pdf';
+import { dataBr, linhasDeTotais, moedaCentavos, percentualBr, quantidadeBr } from './formatos-pdf';
 import { EntradaPdf, ItemPdf } from './pdf-models';
 import { tiptapParaPdf } from './tiptap-para-pdf';
 
@@ -262,14 +262,12 @@ function itens(e: EntradaPdf, config: ConfigItens): Content | null {
 
 function totais(e: EntradaPdf, config: ConfigTotais): Content {
   const p = e.proposta;
-  const body: TableCell[][] = [];
-  if (config.mostrarDescontos === true) {
-    // P4a-R6: Subtotal = bruto (total + descontos), para que Subtotal − Descontos = Total feche na tela
-    const descontos = p.totalDescontosCentavos > 0 ? p.totalDescontosCentavos : 0;
-    body.push([{ text: 'Subtotal' }, { text: moedaCentavos(p.totalCentavos + descontos), alignment: 'right' }]);
-    if (descontos > 0) body.push([{ text: 'Descontos' }, { text: moedaCentavos(-descontos), alignment: 'right' }]);
-  }
-  body.push([{ text: 'Total', bold: true }, { text: moedaCentavos(p.totalCentavos), alignment: 'right', bold: true }]);
+  // P4a-R6: as mesmas linhas que o wizard mostra (Subtotal = bruto, Descontos, Total)
+  const body: TableCell[][] = linhasDeTotais(p.totalCentavos, p.totalDescontosCentavos, config.mostrarDescontos === true).map((l) =>
+    l.total
+      ? [{ text: l.rotulo, bold: true }, { text: moedaCentavos(l.centavos), alignment: 'right', bold: true }]
+      : [{ text: l.rotulo }, { text: moedaCentavos(l.centavos), alignment: 'right' }],
+  );
   return {
     columns: [{ width: '*', text: '' }, { width: 'auto', table: { body }, layout: 'noBorders' }],
     unbreakable: true,

@@ -5,6 +5,7 @@ import { AuthService } from './core/auth/auth-service';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 
 const emBreve = () => import('./features/em-breve/em-breve-page').then((m) => m.EmBrevePage);
+const wizardProposta = () => import('./features/propostas/wizard-proposta-page').then((m) => m.WizardPropostaPage);
 
 export const routes: Routes = [
   { path: 'login', loadComponent: () => import('./features/login/login-page').then((m) => m.LoginPage) },
@@ -20,6 +21,21 @@ export const routes: Routes = [
       },
       { path: 'kanban', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Kanban' } },
       { path: 'propostas', loadComponent: () => import('./features/propostas/propostas-page').then((m) => m.PropostasPage) },
+      // ordem do P4c: propostas/nova, propostas/:id/editar, propostas/:id/corrigir, propostas/:id
+      {
+        path: 'propostas/nova',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
+        data: { modo: 'rascunho' },
+        loadComponent: wizardProposta,
+      },
+      {
+        path: 'propostas/:id/editar',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
+        data: { modo: 'rascunho' },
+        loadComponent: wizardProposta,
+      },
       {
         path: 'clientes/novo',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
