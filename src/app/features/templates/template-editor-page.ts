@@ -571,6 +571,9 @@ export class TemplateEditorPage implements ComAlteracoes {
     try {
       const t = await this.repo.buscar(id);
       const pendencia = await this.repo.temPendencia(id);
+      // marcado no registro mas não é o padrão efetivo (outro do tipo foi marcado depois, ainda não sincronizado):
+      // o checkbox mostra o que vale
+      const padraoEfetivo = t?.padrao ? await this.repo.padraoPorTipo(t.tipoProposta) : undefined;
       // o id mudou durante a leitura: a carga do id novo é que preenche a tela
       if (this.id() !== id) return;
       this.temPendencia.set(pendencia);
@@ -580,7 +583,7 @@ export class TemplateEditorPage implements ComAlteracoes {
       this.nome.set(t.nome);
       this.tipo.set(t.tipoProposta);
       this.ativo.set(t.ativo);
-      this.padrao.set(t.padrao);
+      this.padrao.set(t.padrao && padraoEfetivo?.id === t.id);
       // blocos de tipo desconhecido (vindos do pull) ficam como estão
       this.blocos.set(t.blocos);
       this.aberto.set(null);

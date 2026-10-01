@@ -28,13 +28,17 @@ function montar(
     salvar?: ReturnType<typeof vi.fn>;
     buscar?: ReturnType<typeof vi.fn>;
     pendencia?: boolean;
+    /** Id do padrão efetivo do tipo (o template carregado, por padrão). */
+    padraoEfetivo?: string | null;
   } = {},
 ) {
+  const padraoEfetivo = opcoes.padraoEfetivo === undefined ? 't1' : opcoes.padraoEfetivo;
   const repo = {
     buscar: opcoes.buscar ?? vi.fn().mockResolvedValue(paraTemplateLocal('t1', 3, opcoes.dados ?? existente())),
     temPendencia: vi.fn().mockResolvedValue(opcoes.pendencia ?? false),
     salvar: opcoes.salvar ?? vi.fn().mockResolvedValue('novo'),
     excluir: vi.fn().mockResolvedValue(undefined),
+    padraoPorTipo: vi.fn().mockResolvedValue(padraoEfetivo ? paraTemplateLocal(padraoEfetivo, 1, existente()) : undefined),
   };
   const blob = new Blob(['%PDF'], { type: 'application/pdf' });
   const pdf = { gerarBlob: vi.fn().mockResolvedValue(blob), logoDataUrl: vi.fn().mockResolvedValue('data:image/png;base64,AAAA') };
@@ -279,6 +283,15 @@ describe('TemplateEditorPage', () => {
       await estavel(fixture);
       expect(cartoes(el)[1].querySelector('app-bloco-config')).toBeNull();
       expect(cartoes(el)[1].querySelector('[data-testid=erro-bloco]')?.textContent).toContain('Escolha pelo menos uma opção.');
+    });
+
+    it('Padrão começa desmarcado quando outro template é o padrão efetivo do tipo', async () => {
+      const { fixture, el, repo } = montar({ id: 't1', padraoEfetivo: 't9' });
+      await carregado(fixture);
+      expect(repo.padraoPorTipo).toHaveBeenCalledWith('SERVICO');
+      expect(el.querySelector<HTMLInputElement>('#padrao')!.checked).toBe(false);
+      // o que a tela mostra é o estado salvo: nada a perguntar ao sair
+      expect(fixture.componentInstance.temAlteracoes()).toBe(false);
     });
 
     it('desmarcar Ativo desmarca e desabilita Padrão', async () => {
