@@ -354,20 +354,34 @@ export class SyncService {
 
   /**
    * Upload aceito (P4b-R9): a mutação sai da fila; o documento local fica `enviado`, com o `arquivoId`; a proposta
-   * local recebe o documento e a `versaoProposta` (o upload "toca" a proposta no servidor); e a próxima mutação dela
+   * local recebe o documento e a versão depois do upload (ele "toca" a proposta no servidor); e a próxima mutação dela
    * na fila passa a ter essa versão como base, senão voltaria CONFLITO.
+   * P4b-R24: o toque sobe a versão em exatamente 1. Se `versaoProposta` não é `baseVersion + 1`, alguém escreveu na
+   * proposta entre a mutação anterior e o upload: a base fica `baseVersion + 1` (o que este aparelho conhece), e a
+   * próxima mutação recebe CONFLITO em vez de desfazer em silêncio a escrita alheia. Sem `baseVersion`, adota a devolvida.
+   * P4b-R26: os PDFs já enviados das revisões anteriores perdem os bytes (ficam os metadados; abrem online pelo
+   * `arquivoId`); os da revisão deste upload ficam.
    */
   private async aplicarUpload(m: MutacaoLocal, documentoId: string, resp: RespostaDocumento): Promise<void> {
+    const esperada = m.baseVersion === null ? null : m.baseVersion + 1;
+    const versao = esperada !== null && resp.versaoProposta !== esperada ? esperada : resp.versaoProposta;
     await this.db.transaction('rw', [this.db.outbox, this.db.documentos, this.db.propostas], async () => {
       const atual = await this.db.outbox.get(m.seq!);
       if (atual?.mutationId === m.mutationId) await this.db.outbox.delete(m.seq!);
-      await this.db.documentos.update(documentoId, { enviado: true, arquivoId: resp.documento.arquivoId });
+      // put do registro inteiro: o `update` do Dexie clona o objeto e, no IndexedDB dos testes, perde os bytes
+      const doc = await this.db.documentos.get(documentoId);
+      if (doc) await this.db.documentos.put({ ...doc, enviado: true, arquivoId: resp.documento.arquivoId });
+      await this.db.documentos
+        .where('propostaId')
+        .equals(m.agregadoId)
+        .filter((d) => d.enviado && d.revisao < resp.documento.revisao && d.bytes !== null)
+        .modify({ bytes: null });
       const proxima = await this.db.outbox.where('agregadoId').equals(m.agregadoId).first();
-      if (proxima) await this.db.outbox.update(proxima.seq!, { baseVersion: resp.versaoProposta });
+      if (proxima) await this.db.outbox.update(proxima.seq!, { baseVersion: versao });
       const local = await this.db.propostas.get(m.agregadoId);
       if (local) {
         const documentos = [...local.documentos.filter((d) => d.id !== resp.documento.id), resp.documento];
-        await this.db.propostas.update(m.agregadoId, { version: resp.versaoProposta, documentos });
+        await this.db.propostas.update(m.agregadoId, { version: versao, documentos });
       }
     });
   }
@@ -496,7 +510,12 @@ export class SyncService {
     await Promise.all([trabalhador(), trabalhador()]);
   }
 
-  /** Uma transação por página do pull; registro com mutação na outbox ou pendência local não é sobrescrito. */
+  /**
+   * Uma transação por página do pull; registro com mutação na outbox ou pendência local não é sobrescrito.
+   * P4b-R26: o tombstone de uma proposta (excluída, ou que deixou de ser visível: troca de responsável, técnico
+   * desatribuído) apaga também os PDFs já enviados dela (têm valores; o servidor não os serve mais a este usuário). Um
+   * PDF não enviado tem o UPLOAD na fila ou numa pendência, então a proposta está protegida e o tombstone nem é aplicado.
+   */
   private async aplicarMudancas(mudancas: Mudanca[]): Promise<void> {
     const conhecidas = mudancas.flatMap((mu) => {
       const adaptador = adaptadorDe(mu.entidade);
@@ -504,7 +523,7 @@ export class SyncService {
     });
     if (conhecidas.length === 0) return;
     const tabelas = [...new Set(conhecidas.map(({ adaptador }) => adaptador.tabela(this.db)))];
-    await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, ...tabelas], async () => {
+    await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, this.db.documentos, ...tabelas], async () => {
       const ids = [...new Set(conhecidas.map(({ mu }) => mu.id))];
       const naFila = await this.db.outbox.where('agregadoId').anyOf(ids).toArray();
       const pendentes = await this.db.pendencias.where('agregadoId').anyOf(ids).toArray();
@@ -514,6 +533,9 @@ export class SyncService {
         const tabela = adaptador.tabela(this.db);
         if (mu.deleted) {
           await tabela.delete(mu.id);
+          if (mu.entidade === 'proposta') {
+            await this.db.documentos.where('propostaId').equals(mu.id).filter((d) => d.enviado).delete();
+          }
         } else {
           await tabela.put(adaptador.paraLocal(mu.id, mu.version, mu.dados));
         }

@@ -10,6 +10,8 @@ import { codigoProvisorioValido } from '../../features/propostas/codigo-provisor
 import {
   DocumentoLocal, paraPropostaLocal, PropostaDados, StatusProposta,
 } from '../../features/propostas/proposta-models';
+import { ErroProposta, PropostasRepo } from '../../features/propostas/propostas-repo';
+import { paraTemplateLocal } from '../../features/templates/template-models';
 import { Toasts } from '../../shared/ui/toasts';
 import { PendenciasService } from './pendencias-service';
 import { ArquivosService } from '../arquivos/arquivos-service';
@@ -841,6 +843,191 @@ describe('SyncService', () => {
       expect(await db.propostas.get('P')).toMatchObject({ clienteId: 'C9', version: 1, status: 'ENVIADA' });
     });
 
+
+    it('P4b-R24: escrita alheia entre T e o UPLOAD — a próxima mutação vai sobre base + 1 e recebe CONFLITO', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 4, numerada('ENVIADA')));
+      await db.documentos.put(docLocal({ codigoExibido: '000277' }));
+      await sync.registrar('proposta', 'p1', 'UPSERT', numerada('ENVIADA'), 4, { separada: true });
+      await sync.registrarUpload('p1', 'd1');
+      // A: "Cancelar" decidido offline sobre a ENVIADA
+      await sync.registrar('proposta', 'p1', 'UPSERT', numerada('CANCELADA', { motivoEncerramento: 'Desistiu' }), 4, { separada: true });
+
+      const p = sync.sincronizar();
+      ok(await push(), 5, numerada('ENVIADA'));
+      const up = await vi.waitFor(() => http.expectOne(URL_UPLOAD));
+      expect((await fila())[0]).toMatchObject({ op: 'UPLOAD', baseVersion: 5 });
+      // entre T (v5) e o upload, o admin atribuiu um técnico (v6); o toque do upload leva a v7
+      up.flush({ documento: { ...docServidor, codigoExibido: '000277' }, versaoProposta: 7 }, { status: 201, statusText: 'Created' });
+      const pushA = await push();
+      // base 6 (= 5 + o toque), não 7: o servidor está em 7 e devolve CONFLITO, e o usuário decide
+      expect(pushA.request.body.mutacoes[0]).toMatchObject({ baseVersion: 6, dados: { status: 'CANCELADA' } });
+      expect((await db.propostas.get('p1'))?.version).toBe(6);
+      pushA.flush({ resultados: [{
+        mutationId: pushA.request.body.mutacoes[0].mutationId, status: 'CONFLITO',
+        dadosServidor: numerada('ENVIADA', { tecnicoId: 't9' }), versionServidor: 7,
+      }] });
+      await pullVazio();
+      await p;
+
+      expect(await db.pendencias.toArray()).toMatchObject([{ tipo: 'CONFLITO', agregadoId: 'p1', versionServidor: 7 }]);
+      expect(await db.documentos.get('d1')).toMatchObject({ enviado: true, arquivoId: 'a1' });
+    });
+
+    it('P4b-R24: sem escrita alheia (versaoProposta = base + 1), a próxima mutação vai sobre a versão devolvida', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 4, numerada('ENVIADA')));
+      await db.documentos.put(docLocal({ codigoExibido: '000277' }));
+      await sync.registrar('proposta', 'p1', 'UPSERT', numerada('ENVIADA'), 4, { separada: true });
+      await sync.registrarUpload('p1', 'd1');
+      await sync.registrar('proposta', 'p1', 'UPSERT', numerada('APROVADA'), 4, { separada: true });
+
+      const p = sync.sincronizar();
+      ok(await push(), 5, numerada('ENVIADA'));
+      (await vi.waitFor(() => http.expectOne(URL_UPLOAD)))
+        .flush({ documento: { ...docServidor, codigoExibido: '000277' }, versaoProposta: 6 }, { status: 201, statusText: 'Created' });
+      const pushA = await push();
+      expect(pushA.request.body.mutacoes[0]).toMatchObject({ baseVersion: 6, dados: { status: 'APROVADA' } });
+      ok(pushA, 7, numerada('APROVADA'));
+      await pullVazio();
+      await p;
+      expect(await db.propostas.get('p1')).toMatchObject({ version: 7, status: 'APROVADA' });
+    });
+
+    it('P4b-R26: tombstone da proposta apaga os PDFs enviados dela; o PDF não enviado fica protegido pelo upload na fila', async () => {
+      await db.propostas.bulkPut([
+        paraPropostaLocal('p1', 3, numerada('ENVIADA')), paraPropostaLocal('p2', 3, numerada('ENVIADA')),
+        paraPropostaLocal('p3', 3, numerada('ENVIADA')),
+      ]);
+      await db.documentos.bulkPut([
+        docLocal({ id: 'd1', enviado: true, arquivoId: 'a1' }),
+        docLocal({ id: 'd1b', revisao: 2, enviado: true, arquivoId: 'a1b', bytes: null }),
+        docLocal({ id: 'd2', propostaId: 'p2', enviado: true, arquivoId: 'a2' }),
+        docLocal({ id: 'd3', propostaId: 'p3' }),
+      ]);
+      await sync.registrarUpload('p3', 'd3');
+
+      const p = sync.sincronizar();
+      // o upload falha de forma transitória e fica na fila
+      (await vi.waitFor(() => http.expectOne('/api/propostas/p3/documentos'))).flush({}, { status: 503, statusText: 'x' });
+      (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+        cursor: 9, temMais: false, usuarios: [],
+        mudancas: [
+          { entidade: 'proposta', id: 'p1', version: 4, deleted: true, dados: null },
+          { entidade: 'proposta', id: 'p3', version: 4, deleted: true, dados: null },
+        ],
+      });
+      await p;
+
+      expect(await db.propostas.get('p1')).toBeUndefined();
+      // p3 tem upload na fila: nem a proposta nem o PDF saem (o upload decide)
+      expect(await db.propostas.get('p3')).toBeDefined();
+      expect((await db.documentos.toArray()).map((d) => d.id).sort()).toEqual(['d2', 'd3']);
+      expect((await fila()).map((m) => [m.agregadoId, m.op])).toEqual([['p3', 'UPLOAD']]);
+    });
+
+    it('P4b-R26: upload aceito tira os bytes dos PDFs enviados das revisões anteriores e mantém os da revisão atual', async () => {
+      await db.propostas.put(paraPropostaLocal('p1', 3, numerada('ENVIADA', { revisao: 3 })));
+      const outro = new TextEncoder().encode('%PDF-1.7 outro').buffer as ArrayBuffer;
+      await db.documentos.bulkPut([
+        docLocal({ id: 'r1', revisao: 1, enviado: true, arquivoId: 'a-r1' }),
+        docLocal({ id: 'r2', revisao: 2, codigoExibido: `${PROV}-R2`, enviado: true, arquivoId: 'a-r2' }),
+        docLocal({ id: 'r3a', revisao: 3, codigoExibido: `${PROV}-R3`, enviado: true, arquivoId: 'a-r3a', bytes: outro }),
+        docLocal({ id: 'r3', revisao: 3, codigoExibido: `${PROV}-R3` }),
+        docLocal({ id: 'x1', propostaId: 'p9', revisao: 1, enviado: true, arquivoId: 'a-x1' }),
+      ]);
+      await sync.registrarUpload('p1', 'r3');
+
+      const p = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne(URL_UPLOAD)))
+        .flush({ documento: { ...docServidor, id: 'r3', revisao: 3, codigoExibido: `${PROV}-R3`, arquivoId: 'a-r3' }, versaoProposta: 4 },
+          { status: 201, statusText: 'Created' });
+      await pullVazio();
+      await p;
+
+      const docs = new Map((await db.documentos.toArray()).map((d) => [d.id, d]));
+      // revisões 1 e 2: ficam só os metadados (abrem online pelo arquivoId)
+      expect(docs.get('r1')).toMatchObject({ enviado: true, arquivoId: 'a-r1', bytes: null });
+      expect(docs.get('r2')).toMatchObject({ enviado: true, arquivoId: 'a-r2', bytes: null });
+      // revisão atual: os bytes ficam, inclusive os de um PDF anterior da mesma revisão
+      expect(docs.get('r3')).toMatchObject({ enviado: true, arquivoId: 'a-r3' });
+      expect(new Uint8Array(docs.get('r3')!.bytes!)).toEqual(new Uint8Array(PDF));
+      expect(new Uint8Array(docs.get('r3a')!.bytes!)).toEqual(new Uint8Array(outro));
+      // de outra proposta, nada muda
+      expect(docs.get('x1')!.bytes).not.toBeNull();
+    });
+
+    it('P4b-R23: envio offline com a criação recusada (item inativado): corrigirProposta troca a linha e E, T e UPLOAD saem em ordem', async () => {
+      const repo = TestBed.inject(PropostasRepo);
+      const pendencias = TestBed.inject(PendenciasService);
+      await db.clientes.put(paraClienteLocal('c1', 1, dados('Cliente')));
+      await db.templates.put(paraTemplateLocal('t1', 1, { nome: 'Venda', tipoProposta: 'VENDA', padrao: true, ativo: true, blocos: [] }));
+      await db.itens.bulkPut([paraItemLocal('i1', 1, item('PNL-1')), paraItemLocal('i2', 1, item('PNL-2'))]);
+
+      // sem rede: cria, inclui o item e envia (o PDF com o PROV vai para o cliente)
+      online.set(false);
+      const id = await repo.criar('VENDA', 'c1');
+      await repo.adicionarItem(id, (await db.itens.get('i1'))!);
+      await repo.enviar(id, async () => new Blob([PDF], { type: 'application/pdf' }));
+      const [doc] = await db.documentos.toArray();
+      const seqE = (await fila())[0].seq;
+      expect((await fila()).map((m) => [m.op, (m.dados as PropostaDados | null)?.status ?? null])).toEqual([
+        ['UPSERT', 'RASCUNHO'], ['UPSERT', 'ENVIADA'], ['UPLOAD', null],
+      ]);
+      // enquanto isso, o admin inativou o item (o pull trouxe)
+      await db.itens.put(paraItemLocal('i1', 2, { ...item('PNL-1'), ativo: false }));
+
+      // a rede volta: E é recusado; T e UPLOAD ficam retidos
+      online.set(true);
+      const s1 = sync.sincronizar();
+      const pushE = await push();
+      expect(pushE.request.body.mutacoes).toHaveLength(1);
+      pushE.flush({ resultados: [{
+        mutationId: pushE.request.body.mutacoes[0].mutationId, status: 'REJEITADO',
+        erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { 'itens[0].itemCatalogoId': 'Item do catálogo inativo ou não encontrado.' } },
+      }] });
+      await pullVazio();
+      await s1;
+      const [pend] = await db.pendencias.toArray();
+      const local = (await db.propostas.get(id))!;
+      expect(local.status).toBe('ENVIADA');
+
+      // manter o item inativo é recusado aqui mesmo, sem mexer em nada
+      const recusa = await pendencias.corrigirProposta(pend.mutationId, { itens: local.itens }).then(() => null, (e: unknown) => e);
+      expect(recusa).toBeInstanceOf(ErroProposta);
+      expect((recusa as ErroProposta).campo).toBe('itens[0].itemCatalogoId');
+      expect(await db.pendencias.count()).toBe(1);
+
+      // corrige: troca a linha pelo item ativo
+      const nova = { ...local.itens[0], id: 'linha-nova', itemCatalogoId: 'i2', codigo: 'PNL-2', nome: 'PNL-2' };
+      await pendencias.corrigirProposta(pend.mutationId, { itens: [nova] });
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.propostas.get(id)).toMatchObject({ status: 'ENVIADA', itens: [{ id: 'linha-nova', itemCatalogoId: 'i2' }] });
+      expect(await db.documentos.get(doc.id)).toMatchObject({ enviado: false, sha256: doc.sha256 });
+
+      const pushE2 = await push();
+      expect(pushE2.request.body.mutacoes[0]).toMatchObject({
+        id, baseVersion: null, dados: { status: 'RASCUNHO', itens: [{ id: 'linha-nova', itemCatalogoId: 'i2' }] },
+      });
+      expect((await fila())[0].seq).toBe(seqE);
+      ok(pushE2, 0, numerada('RASCUNHO', { codigoProvisorio: local.codigoProvisorio }));
+      const pushT = await push();
+      expect(pushT.request.body.mutacoes[0]).toMatchObject({
+        id, baseVersion: 0, dados: { status: 'ENVIADA', itens: [{ id: 'linha-nova', itemCatalogoId: 'i2' }] },
+      });
+      ok(pushT, 1, numerada('ENVIADA', { codigoProvisorio: local.codigoProvisorio }));
+      const up = await vi.waitFor(() => http.expectOne(`/api/propostas/${id}/documentos`));
+      // o PDF é o mesmo que o cliente recebeu: mesmo documento, mesmo código exibido
+      const metadados = JSON.parse(await ((up.request.body as FormData).get('metadados') as Blob).text());
+      expect(metadados).toMatchObject({ id: doc.id, codigoExibido: doc.codigoExibido, sha256: doc.sha256 });
+      up.flush({ documento: { ...docServidor, id: doc.id, codigoExibido: doc.codigoExibido }, versaoProposta: 2 },
+        { status: 201, statusText: 'Created' });
+      await pullVazio();
+      await sync.aguardarOciosa();
+
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.documentos.get(doc.id)).toMatchObject({ enviado: true, arquivoId: 'a1' });
+      expect(await db.propostas.get(id)).toMatchObject({ status: 'ENVIADA', numero: 277, version: 2 });
+    });
     it('upload cujo PDF não está mais no aparelho vira pendência sem chamar o servidor', async () => {
       await db.documentos.put(docLocal({ bytes: null }));
       await sync.registrarUpload('p1', 'd1');

@@ -331,6 +331,33 @@ describe('PropostasRepo', () => {
       expect((await db.propostas.get(id))!.totalCentavos).toBe(2700000);
     });
 
+    it('m1: o limite do total também vale para o total de descontos (como Totais.excedeLimite do servidor)', async () => {
+      const p = await existente('RASCUNHO');
+      // subtotal 0 (100% de desconto), mas o desconto passa de 99.999.999.999.999,99
+      const linha = { ...p.itens[0], quantidadeMilesimos: 999_999_999, precoUnitarioCentavos: 99_999_999_999_999, descontoCentesimos: 10_000 };
+      const e = await erroDe(repo.salvarRascunho('p1', { itens: [linha] }));
+      expect(e.codigo).toBe('VALIDACAO');
+      expect(e.campo).toBe('itens');
+      expect(await db.outbox.count()).toBe(0);
+    });
+
+    it('m5: data impossível (2026-02-30, mês 13) é recusada no próprio campo, com VALIDACAO', async () => {
+      await existente('RASCUNHO');
+      for (const [edicao, campo] of [
+        [{ validadeAte: '2026-02-30' }, 'validadeAte'],
+        [{ validadeAte: '2027-02-29' }, 'validadeAte'],
+        [{ dataEmissao: '2026-13-01' }, 'dataEmissao'],
+        [{ dataEmissao: '2026-04-31' }, 'dataEmissao'],
+      ] as const) {
+        const e = await erroDe(repo.salvarRascunho('p1', edicao));
+        expect(e.codigo).toBe('VALIDACAO');
+        expect(e.campo).toBe(campo);
+      }
+      expect(await db.outbox.count()).toBe(0);
+      await repo.salvarRascunho('p1', { validadeAte: '2028-02-29', dataEmissao: '2026-12-31' });
+      expect(await db.propostas.get('p1')).toMatchObject({ validadeAte: '2028-02-29', dataEmissao: '2026-12-31' });
+    });
+
     it('o responsável troca o técnico no rascunho', async () => {
       await existente('RASCUNHO');
       await repo.salvarRascunho('p1', { tecnicoId: TECNICO.id });
@@ -438,7 +465,8 @@ describe('PropostasRepo', () => {
         documentos: [{ id: 'd', revisao: 3, codigoExibido: '000280-R3', arquivoId: 'a', sha256: 'x', geradoEm: '', geradoPor: '' }],
       });
       usuario.set(ADMIN);
-      const novo = await repo.duplicar('p1');
+      const { id: novo, linhasDescartadas } = await repo.duplicar('p1');
+      expect(linhasDescartadas).toBe(0);
       const original = (await db.propostas.get('p1'))!;
       const p = (await db.propostas.get(novo))!;
       expect(novo).not.toBe('p1');
@@ -478,7 +506,10 @@ describe('PropostasRepo', () => {
           { ...l, id: 'f', itemCatalogoId: 'i-venda', meses: null, precoUnitarioCentavos: 777 },
         ],
       });
-      const p = (await db.propostas.get(await repo.duplicar('p1')))!;
+      const r = await repo.duplicar('p1');
+      // a tela avisa: "2 itens inativos não foram copiados"
+      expect(r.linhasDescartadas).toBe(2);
+      const p = (await db.propostas.get(r.id))!;
       expect(p.itens.map((i) => [i.itemCatalogoId, i.meses, i.ordem])).toEqual([
         ['i-loc', 6, 0], ['i-ex-locavel', null, 1], ['i-novo-locavel', 1, 2], ['i-venda', null, 3],
       ]);
@@ -510,9 +541,11 @@ describe('PropostasRepo', () => {
       expect((await erroDe(repo.enviar('p1', g))).campo).toBe('clienteId');
       await existente('RASCUNHO', { templateId: 'nao-baixado' });
       expect((await erroDe(repo.enviar('p1', g))).campo).toBe('templateId');
-      await existente('ENVIADA');
+      await existente('CANCELADA');
       expect((await erroDe(repo.enviar('p1', g))).codigo).toBe('TRANSICAO_INVALIDA');
       usuario.set(OUTRO_COMERCIAL);
+      await existente('ENVIADA');
+      expect((await erroDe(repo.enviar('p1', g))).codigo).toBe('ACESSO_NEGADO');
       await existente('RASCUNHO');
       expect((await erroDe(repo.enviar('p1', g))).codigo).toBe('ACESSO_NEGADO');
       expect(g).not.toHaveBeenCalled();
@@ -664,6 +697,42 @@ describe('PropostasRepo', () => {
       expect((await fila()).map((x) => x.op)).toEqual(['UPSERT', 'UPLOAD']);
     });
 
+    it('dois envios seguidos: o segundo recebe PROPOSTA_JA_ENVIADA já na primeira tentativa, sem gerar outro PDF', async () => {
+      await existente('RASCUNHO');
+      const g = gerar();
+      await repo.enviar('p1', g);
+      const e = await erroDe(repo.enviar('p1', g));
+      expect(e.codigo).toBe('PROPOSTA_JA_ENVIADA');
+      expect(e.message).toBe('Esta proposta já foi enviada.');
+      expect(g).toHaveBeenCalledTimes(1);
+      expect(await db.documentos.count()).toBe(1);
+      // depois do envio, em qualquer status seguinte, é a mesma resposta
+      for (const status of ['APROVADA', 'EM_EXECUCAO', 'FINALIZADA', 'RECUSADA'] as StatusProposta[]) {
+        await existente(status);
+        expect((await erroDe(repo.enviar('p1', g))).codigo).toBe('PROPOSTA_JA_ENVIADA');
+      }
+      // cancelada depois de enviada (tem documento) também
+      await existente('CANCELADA', {
+        documentos: [{ id: 'd', revisao: 1, codigoExibido: '000277', arquivoId: 'a', sha256: 'x', geradoEm: '', geradoPor: '' }],
+      });
+      expect((await erroDe(repo.enviar('p1', g))).codigo).toBe('PROPOSTA_JA_ENVIADA');
+      expect(g).toHaveBeenCalledTimes(1);
+    });
+
+    it('m2: PDF acima de 10 MB (limite do servidor) é recusado com PDF_GRANDE, sem gravar nem enfileirar', async () => {
+      await existente('RASCUNHO');
+      const g = vi.fn(async () => new Blob([new Uint8Array(10 * 1024 * 1024 + 1)], { type: 'application/pdf' }));
+      const e = await erroDe(repo.enviar('p1', g));
+      expect(e.codigo).toBe('PDF_GRANDE');
+      expect(e.message).toBe('O PDF passou de 10 MB. Reduza imagens do template.');
+      expect(await db.documentos.count()).toBe(0);
+      expect(await db.outbox.count()).toBe(0);
+      expect((await db.propostas.get('p1'))!.status).toBe('RASCUNHO');
+      // exatamente 10 MB passa (o servidor recusa só acima)
+      await repo.enviar('p1', async () => new Blob([new Uint8Array(10 * 1024 * 1024)]));
+      expect((await db.propostas.get('p1'))!.status).toBe('ENVIADA');
+    });
+
     it('snapshot acima de 512 KB é recusado antes de gerar o PDF', async () => {
       const grande = { id: 'b', tipo: 'TEXTO', config: { conteudo: { type: 'doc', content: [{ type: 'text', text: 'x'.repeat(600 * 1024) }] } } };
       await db.templates.put(paraTemplateLocal('t-venda', 1, {
@@ -684,6 +753,147 @@ describe('PropostasRepo', () => {
       expect(await db.documentos.count()).toBe(0);
       expect(await db.outbox.count()).toBe(0);
       expect((await db.propostas.get('p1'))!.status).toBe('RASCUNHO');
+    });
+  });
+
+  describe('excluir (P4b-R25)', () => {
+    const gerar = () => vi.fn<(e: EntradaPdf) => Promise<Blob>>(async () => new Blob([ABC], { type: 'application/pdf' }));
+
+    it('offline: criar, enviar, Nova revisão e excluir — sem documento órfão (R15) e sem nada na fila do agregado', async () => {
+      const id = await repo.criar('VENDA', 'c1');
+      await repo.adicionarItem(id, (await db.itens.get('i-venda'))!);
+      await repo.enviar(id, gerar());
+      await repo.transicionar(id, 'RASCUNHO');
+      expect(await db.documentos.where('propostaId').equals(id).count()).toBe(1);
+      expect((await fila()).map((m) => m.op)).toEqual(['UPSERT', 'UPSERT', 'UPLOAD', 'UPSERT']);
+
+      await repo.excluir(id);
+
+      expect(await db.propostas.get(id)).toBeUndefined();
+      expect(await db.documentos.where('propostaId').equals(id).count()).toBe(0);
+      expect(await db.outbox.where('agregadoId').equals(id).count()).toBe(0);
+      expect(sincronizar).toHaveBeenCalled();
+    });
+
+    it('rascunho que o servidor já conhece (sem número): DELETE sobre a versão local; os documentos locais saem junto', async () => {
+      await existente('RASCUNHO');
+      await db.documentos.put({
+        id: 'dl', propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-ABCDEF', sha256: 'x', geradoEm: '', geradoPor: null,
+        bytes: ABC.buffer as ArrayBuffer, enviado: true, arquivoId: 'a1',
+      });
+      await db.documentos.put({
+        id: 'outra', propostaId: 'p9', revisao: 1, codigoExibido: 'PROV-ZZZZZZ', sha256: 'x', geradoEm: '', geradoPor: null,
+        bytes: null, enviado: true, arquivoId: 'a9',
+      });
+      await db.pendencias.put(pendencia('proposta', 'p1'));
+      await repo.excluir('p1');
+      expect(await db.propostas.get('p1')).toBeUndefined();
+      expect((await db.documentos.toArray()).map((d) => d.id)).toEqual(['outra']);
+      expect((await fila()).map((m) => [m.agregadoId, m.op, m.baseVersion, m.dados])).toEqual([['p1', 'DELETE', 4, null]]);
+      // a exclusão substitui a rejeição anterior (como a edição do rascunho)
+      expect(await db.pendencias.count()).toBe(0);
+    });
+
+    it('recusa fora do rascunho, rascunho numerado, quem não edita e envio em voo, sem apagar nada', async () => {
+      await existente('ENVIADA');
+      expect((await erroDe(repo.excluir('p1'))).codigo).toBe('PROPOSTA_NAO_EDITAVEL');
+      await existente('RASCUNHO', { numero: 277 });
+      const numerada = await erroDe(repo.excluir('p1'));
+      expect(numerada.codigo).toBe('PROPOSTA_NUMERADA');
+      expect(numerada.message).toBe('Uma proposta numerada não pode ser excluída. Cancele-a.');
+      await existente('RASCUNHO');
+      usuario.set(OUTRO_COMERCIAL);
+      expect((await erroDe(repo.excluir('p1'))).codigo).toBe('ACESSO_NEGADO');
+      usuario.set(TECNICO);
+      expect((await erroDe(repo.excluir('p1'))).codigo).toBe('ACESSO_NEGADO');
+      usuario.set(COMERCIAL);
+      expect((await erroDe(repo.excluir('nao-existe'))).codigo).toBe('NAO_ENCONTRADA');
+      // a criação está no servidor agora (sem resposta): a resposta traz o número, e aí só cancelando
+      await existente('RASCUNHO', { version: null });
+      await db.outbox.add({
+        mutationId: 'm1', entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: null, dados: null, enviando: true,
+        criadaEm: '',
+      });
+      expect((await erroDe(repo.excluir('p1'))).codigo).toBe('PROPOSTA_SINCRONIZANDO');
+      expect(await db.propostas.get('p1')).toBeDefined();
+      expect((await fila()).map((m) => m.mutationId)).toEqual(['m1']);
+    });
+  });
+
+  describe('entradaPrevia (P4b-R25)', () => {
+    it('mesma montagem do PDF oficial, com previa = true, em qualquer status, sem gravar nada', async () => {
+      const id = await repo.criar('VENDA', 'c1');
+      await repo.adicionarItem(id, (await db.itens.get('i-venda'))!);
+      const previa = await repo.entradaPrevia(id);
+      const g = vi.fn<(e: EntradaPdf) => Promise<Blob>>(async () => new Blob([ABC]));
+      await repo.enviar(id, g);
+      expect(previa).toEqual({ ...g.mock.calls[0][0], previa: true });
+      expect(previa.previa).toBe(true);
+
+      // ENVIADA (qualquer status): a prévia continua disponível e não escreve
+      const antes = { docs: await db.documentos.count(), fila: await db.outbox.count(), p: await db.propostas.get(id) };
+      const depois = await repo.entradaPrevia(id);
+      expect(depois).toMatchObject({ previa: true, proposta: { codigoExibido: previa.proposta.codigoExibido } });
+      expect({ docs: await db.documentos.count(), fila: await db.outbox.count(), p: await db.propostas.get(id) }).toEqual(antes);
+    });
+
+    it('rascunho sem cliente mostra o cliente em branco; sem template ou com dado fora do aparelho, recusa no campo', async () => {
+      await existente('RASCUNHO', { clienteId: null });
+      expect((await repo.entradaPrevia('p1')).cliente).toEqual({
+        nome: '', documento: '', endereco: null, contato: null, telefone: null, email: null,
+      });
+      await existente('RASCUNHO', { templateId: null });
+      expect((await erroDe(repo.entradaPrevia('p1'))).campo).toBe('templateId');
+      await existente('RASCUNHO', { clienteId: 'nao-baixado' });
+      expect((await erroDe(repo.entradaPrevia('p1'))).campo).toBe('clienteId');
+    });
+
+    it('o técnico não vê prévia (o PDF tem valores)', async () => {
+      await existente('ENVIADA', { tecnicoId: TECNICO.id });
+      usuario.set(TECNICO);
+      expect((await erroDe(repo.entradaPrevia('p1'))).codigo).toBe('ACESSO_NEGADO');
+    });
+  });
+
+  describe('documentos (P4b-R25)', () => {
+    const local = (d: Partial<DocumentoLocal> & Pick<DocumentoLocal, 'id'>): DocumentoLocal => ({
+      propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-ABCDEF', sha256: 'x', geradoEm: '2026-09-20T10:00:00Z',
+      geradoPor: COMERCIAL.id, bytes: null, enviado: false, arquivoId: null, ...d,
+    });
+
+    it('observarDocumentos junta os do servidor e os locais, por revisão desc e data desc, com enviado e bytes locais', async () => {
+      await existente('ENVIADA', {
+        revisao: 2,
+        documentos: [
+          { id: 'd1', revisao: 1, codigoExibido: 'PROV-ABCDEF', arquivoId: 'a1', sha256: 'x', geradoEm: '2026-09-20T10:00:00Z', geradoPor: COMERCIAL.id },
+          { id: 'd2', revisao: 2, codigoExibido: 'PROV-ABCDEF-R2', arquivoId: 'a2', sha256: 'x', geradoEm: '2026-09-21T10:00:00Z', geradoPor: COMERCIAL.id },
+        ],
+      });
+      await db.documentos.bulkPut([
+        // d2: enviado e com os bytes no aparelho; d3: ainda não enviado, mais novo na mesma revisão
+        local({ id: 'd2', revisao: 2, codigoExibido: 'PROV-ABCDEF-R2', geradoEm: '2026-09-21T10:00:00Z', bytes: ABC.buffer as ArrayBuffer, enviado: true, arquivoId: 'a2' }),
+        local({ id: 'd3', revisao: 2, codigoExibido: 'PROV-ABCDEF-R2', geradoEm: '2026-09-21T10:00:00.5Z', bytes: ABC.buffer as ArrayBuffer }),
+        local({ id: 'x', propostaId: 'outra' }),
+      ]);
+      const docs = await firstValueFrom(repo.observarDocumentos('p1'));
+      expect(docs).toEqual([
+        { id: 'd3', revisao: 2, codigoExibido: 'PROV-ABCDEF-R2', geradoEm: '2026-09-21T10:00:00.5Z', enviado: false, temBytes: true, arquivoId: null },
+        { id: 'd2', revisao: 2, codigoExibido: 'PROV-ABCDEF-R2', geradoEm: '2026-09-21T10:00:00Z', enviado: true, temBytes: true, arquivoId: 'a2' },
+        { id: 'd1', revisao: 1, codigoExibido: 'PROV-ABCDEF', geradoEm: '2026-09-20T10:00:00Z', enviado: true, temBytes: false, arquivoId: 'a1' },
+      ]);
+    });
+
+    it('o técnico não recebe documentos; blobDoDocumento devolve o PDF local ou null', async () => {
+      await existente('ENVIADA');
+      await db.documentos.bulkPut([local({ id: 'd1', bytes: ABC.buffer as ArrayBuffer }), local({ id: 'd2' })]);
+      const blob = (await repo.blobDoDocumento('d1'))!;
+      expect(blob.type).toBe('application/pdf');
+      expect(Array.from(new Uint8Array(await blob.arrayBuffer()))).toEqual(Array.from(ABC));
+      expect(await repo.blobDoDocumento('d2')).toBeNull();
+      expect(await repo.blobDoDocumento('nao-existe')).toBeNull();
+      usuario.set(TECNICO);
+      expect(await firstValueFrom(repo.observarDocumentos('p1'))).toEqual([]);
+      expect(await repo.blobDoDocumento('d1')).toBeNull();
     });
   });
 
@@ -718,7 +928,7 @@ describe('PropostasRepo', () => {
         expect((await db.propostas.get('p1'))!.atualizadoEm).toBe(agora);
       }
       const dup = await repo.duplicar('p1');
-      expect((await db.propostas.get(dup))!.atualizadoEm).toBe(agora);
+      expect((await db.propostas.get(dup.id))!.atualizadoEm).toBe(agora);
     });
 
     it('buscar, temPendencia e observarNaoSincronizados', async () => {

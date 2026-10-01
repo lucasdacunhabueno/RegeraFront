@@ -28,8 +28,10 @@ import {
   DocumentoLocal,
   exigeMotivo,
   ItemPropostaLocal,
+  paraPropostaLocal,
   podeAlterarResponsavel,
   podeAlterarTecnico,
+  PropostaDados,
   PropostaLocal,
   StatusProposta,
   stripJava,
@@ -62,9 +64,10 @@ export function somarDias(data: string, dias: number): string {
 
 /**
  * Recusa local, com o mesmo `codigo` que o servidor daria (`ACESSO_NEGADO`, `PROPOSTA_NAO_EDITAVEL`,
- * `TRANSICAO_INVALIDA`, `VALIDACAO`...) ou um só do aparelho (`NAO_ENCONTRADA`, `USE_ENVIAR`, `PROPOSTA_ALTERADA`,
- * `SNAPSHOT_GRANDE`). `campo` é o primeiro campo com erro (nomes do servidor, ex.: `itens[0].quantidade`) ou
- * `proposta` quando o erro não é de um campo; `campos` traz todos, na validação.
+ * `TRANSICAO_INVALIDA`, `VALIDACAO`, `PROPOSTA_NUMERADA`...) ou um só do aparelho (`NAO_ENCONTRADA`, `USE_ENVIAR`,
+ * `PROPOSTA_ALTERADA`, `PROPOSTA_JA_ENVIADA`, `SNAPSHOT_GRANDE`, `PDF_GRANDE`, `PROPOSTA_SINCRONIZANDO`). `campo` é o
+ * primeiro campo com erro (nomes do servidor, ex.: `itens[0].quantidade`) ou `proposta` quando o erro não é de um
+ * campo; `campos` traz todos, na validação.
  */
 export class ErroProposta extends ErroCampo {
   constructor(
@@ -120,6 +123,8 @@ const PRECO_MAX_CENTAVOS = 99_999_999_999_999; // 999.999.999.999,99
 const PERCENTUAL_MAX_CENTESIMOS = 10_000; // 100%
 const TOTAL_MAX_CENTAVOS = 9_999_999_999_999_999n; // 99.999.999.999.999,99 (limite do servidor)
 const SNAPSHOT_MAX_BYTES = 512 * 1024;
+/** `ArquivoService.MAX_BYTES` do servidor (e o `max-file-size: 10MB` do multipart): acima disso o upload volta 413. */
+const PDF_MAX_BYTES = 10 * 1024 * 1024;
 const DATA = /^\d{4}-\d{2}-\d{2}$/;
 const TAMANHO_TEXTO: readonly ['condicoesPagamento' | 'prazoExecucao' | 'observacoes', number][] = [
   ['condicoesPagamento', 1000], ['prazoExecucao', 200], ['observacoes', 4000],
@@ -127,6 +132,11 @@ const TAMANHO_TEXTO: readonly ['condicoesPagamento' | 'prazoExecucao' | 'observa
 
 const inteiroEntre = (v: unknown, min: number, max: number): boolean =>
   typeof v === 'number' && Number.isSafeInteger(v) && v >= min && v <= max;
+
+/** `aaaa-mm-dd` de um dia que existe (2026-02-30 não): o `LocalDate` do servidor recusaria sem dizer o campo. */
+function dataValida(d: string): boolean {
+  return DATA.test(d) && somarDias(d, 0) === d;
+}
 
 /** Como o `texto()` do servidor (`isBlank` → null, senão `strip()`), com o mesmo critério de espaço do Java. */
 function texto(v: string | null | undefined): string | null {
@@ -157,7 +167,8 @@ function comTotais(p: PropostaLocal): PropostaLocal {
     BigInt(p.descontoGeralCentesimos ?? 0),
     p.tipo === 'LOCACAO',
   );
-  if (r.totalItensCentavos > TOTAL_MAX_CENTAVOS) {
+  // como `Totais.excedeLimite` do servidor: o total dos itens ou o dos descontos (100% de desconto zera o subtotal)
+  if (r.totalItensCentavos > TOTAL_MAX_CENTAVOS || r.totalDescontosCentavos > TOTAL_MAX_CENTAVOS) {
     validacao({ itens: 'O valor total da proposta excede o limite de 99.999.999.999.999,99.' });
   }
   return {
@@ -167,6 +178,62 @@ function comTotais(p: PropostaLocal): PropostaLocal {
     totalDescontosCentavos: Number(r.totalDescontosCentavos),
     totalCentavos: Number(r.totalCentavos),
   };
+}
+
+/** A edição sobre a proposta (o que faltar fica como está), sem conferir nada; subtotais e ordem ficam para `comTotais`. */
+function aplicarEdicao(p: PropostaLocal, edicao: Partial<EdicaoRascunho>): PropostaLocal {
+  return {
+    ...p,
+    ...(edicao.tipo !== undefined ? { tipo: edicao.tipo } : {}),
+    ...(edicao.clienteId !== undefined ? { clienteId: edicao.clienteId } : {}),
+    ...(edicao.templateId !== undefined ? { templateId: edicao.templateId } : {}),
+    ...(edicao.tecnicoId !== undefined ? { tecnicoId: edicao.tecnicoId } : {}),
+    ...(edicao.dataEmissao !== undefined ? { dataEmissao: edicao.dataEmissao } : {}),
+    ...(edicao.validadeAte !== undefined ? { validadeAte: edicao.validadeAte } : {}),
+    ...(edicao.condicoesPagamento !== undefined ? { condicoesPagamento: texto(edicao.condicoesPagamento) } : {}),
+    ...(edicao.prazoExecucao !== undefined ? { prazoExecucao: texto(edicao.prazoExecucao) } : {}),
+    ...(edicao.observacoes !== undefined ? { observacoes: texto(edicao.observacoes) } : {}),
+    ...(edicao.descontoGeralCentesimos !== undefined ? { descontoGeralCentesimos: edicao.descontoGeralCentesimos } : {}),
+    ...(edicao.itens !== undefined
+      ? { itens: edicao.itens.map((l) => ({ ...l, ordem: null, subtotalCentavos: null })) }
+      : {}),
+  };
+}
+
+/**
+ * P4b-R23: a mesma edição sobre os `dados` de uma mutação `proposta` da fila (a rejeitada ou uma retida atrás dela),
+ * com os totais recalculados. O resto dos dados da mutação (status, motivo, atribuição, revisão) fica como estava.
+ * Use depois de `PropostasRepo.conferirCorrecao`, que confere a edição.
+ */
+export function corrigirDadosDaProposta(id: string, dados: PropostaDados, edicao: Partial<EdicaoRascunho>): PropostaDados {
+  return dadosDaProposta(comTotais(aplicarEdicao(paraPropostaLocal(id, null, dados), edicao)));
+}
+
+/** Um PDF da proposta, do servidor ou só do aparelho (P4b-R25), para a lista de documentos do detalhe. */
+export interface DocumentoDaProposta {
+  id: string;
+  revisao: number;
+  codigoExibido: string;
+  geradoEm: string;
+  /** O upload foi aceito: está no servidor (`arquivoId`). */
+  enviado: boolean;
+  /** Os bytes estão neste aparelho: abre offline por `blobDoDocumento`; senão, só online pelo `arquivoId`. */
+  temBytes: boolean;
+  arquivoId: string | null;
+}
+
+/** `duplicar`: o rascunho novo e quantas linhas ficaram de fora (item do catálogo inativo ou fora do aparelho). */
+export interface Duplicada {
+  id: string;
+  linhasDescartadas: number;
+}
+
+/** Status que só existem depois de um envio (CANCELADA pode vir direto do rascunho: aí vale o documento). */
+const DEPOIS_DO_ENVIO: readonly StatusProposta[] = ['ENVIADA', 'APROVADA', 'EM_EXECUCAO', 'FINALIZADA', 'RECUSADA'];
+
+/** Fora do rascunho, a proposta já passou por um envio (e não é só uma transição que não existe). */
+function jaFoiEnviada(p: PropostaLocal): boolean {
+  return DEPOIS_DO_ENVIO.includes(p.status) || p.documentos.length > 0 || p.historico.some((h) => h.statusPara === 'ENVIADA');
 }
 
 function contexto(p: PropostaLocal, c: Partial<ContextoTransicao> = {}): ContextoTransicao {
@@ -191,6 +258,9 @@ const EMPRESA_VAZIA: EmpresaPdf = {
   razaoSocial: '', nomeFantasia: null, cnpj: null, endereco: null, telefone: null, email: null, site: null,
   corPrimaria: '#1d4ed8',
 };
+
+/** Só na prévia: rascunho ainda sem cliente (o envio exige cliente). */
+const CLIENTE_VAZIO: ClientePdf = { nome: '', documento: '', endereco: null, contato: null, telefone: null, email: null };
 
 /** Endereço principal (ou o primeiro) em uma linha: `Logradouro, nº - compl. - bairro - Cidade/UF - CEP 00000-000`. */
 function enderecoDoCliente(c: ClienteLocal): string | null {
@@ -341,22 +411,7 @@ export class PropostasRepo {
     if (edicao.tecnicoId !== undefined && edicao.tecnicoId !== atual.tecnicoId) {
       await this.conferirTecnico(atual, u, edicao.tecnicoId);
     }
-    const novo: PropostaLocal = {
-      ...atual,
-      ...(edicao.tipo !== undefined ? { tipo: edicao.tipo } : {}),
-      ...(edicao.clienteId !== undefined ? { clienteId: edicao.clienteId } : {}),
-      ...(edicao.templateId !== undefined ? { templateId: edicao.templateId } : {}),
-      ...(edicao.tecnicoId !== undefined ? { tecnicoId: edicao.tecnicoId } : {}),
-      ...(edicao.dataEmissao !== undefined ? { dataEmissao: edicao.dataEmissao } : {}),
-      ...(edicao.validadeAte !== undefined ? { validadeAte: edicao.validadeAte } : {}),
-      ...(edicao.condicoesPagamento !== undefined ? { condicoesPagamento: texto(edicao.condicoesPagamento) } : {}),
-      ...(edicao.prazoExecucao !== undefined ? { prazoExecucao: texto(edicao.prazoExecucao) } : {}),
-      ...(edicao.observacoes !== undefined ? { observacoes: texto(edicao.observacoes) } : {}),
-      ...(edicao.descontoGeralCentesimos !== undefined ? { descontoGeralCentesimos: edicao.descontoGeralCentesimos } : {}),
-      ...(edicao.itens !== undefined
-        ? { itens: edicao.itens.map((l) => ({ ...l, ordem: null, subtotalCentavos: null })) }
-        : {}),
-    };
+    const novo = aplicarEdicao(atual, edicao);
     validacao(await this.validarEdicao(atual, novo));
     const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
     await this.gravar(comTotais({ ...novo, version }), version, false, true);
@@ -449,17 +504,22 @@ export class PropostasRepo {
    * As linhas são novas para o servidor, então valem as regras de hoje: sai a linha cujo item do catálogo está
    * inativo ou não está no aparelho; `meses` some se o item deixou de ser locável (e vira 1 se passou a ser); sai o
    * técnico inativo; responsável inativo dá lugar ao usuário atual (só o ADMIN chega aqui com outro responsável).
+   * Devolve também quantas linhas saíram, para a tela avisar ("N itens inativos não foram copiados").
    */
-  async duplicar(id: string): Promise<string> {
+  async duplicar(id: string): Promise<Duplicada> {
     const u = this.usuario();
     const original = await this.carregar(id);
     this.checar(validarTransicao(null, 'RASCUNHO', u.perfil, original.responsavelId === u.id, contexto(original)));
     const empresa = await this.empresa();
     const hoje = hojeEmSaoPaulo();
     const itens: ItemPropostaLocal[] = [];
+    let linhasDescartadas = 0;
     for (const l of original.itens) {
       const catalogo = await this.db.itens.get(l.itemCatalogoId);
-      if (!catalogo?.ativo) continue;
+      if (!catalogo?.ativo) {
+        linhasDescartadas++;
+        continue;
+      }
       const meses = exigeMeses(original.tipo, catalogo) ? (l.meses ?? 1) : null;
       itens.push({ ...l, id: uuidv7(), meses });
     }
@@ -488,7 +548,7 @@ export class PropostasRepo {
     // última barreira: as mesmas regras da edição, com todas as linhas como novas
     validacao(await this.validarEdicao({ ...p, itens: [] }, p));
     await this.gravar(p, null);
-    return p.id;
+    return { id: p.id, linhasDescartadas };
   }
 
   /**
@@ -501,7 +561,10 @@ export class PropostasRepo {
    * 5. dispara a sincronização e devolve o Blob para compartilhar.
    * P4b-R21: se a proposta mudou durante a geração (tipicamente o retorno do push da criação, que traz `version` e
    * `numero`), recarrega e gera de novo com os dados novos, até 3 tentativas; se ela já não é rascunho (outro toque
-   * no botão, outra aba), `PROPOSTA_JA_ENVIADA`; se ainda muda na 3ª, `PROPOSTA_ALTERADA`.
+   * no botão, outra aba), `PROPOSTA_JA_ENVIADA`; se ainda muda na 3ª, `PROPOSTA_ALTERADA`. Já na 1ª tentativa, uma
+   * proposta que já foi enviada (status depois de ENVIADA, ou cancelada com documento) dá `PROPOSTA_JA_ENVIADA` para
+   * quem pode enviá-la, em vez de `TRANSICAO_INVALIDA` (ex.: enviar de novo depois de um envio completo).
+   * O PDF acima de 10 MB (limite do upload no servidor) é recusado com `PDF_GRANDE`, sem gravar nada.
    * Código exibido: o número (`000277`, com `-R<n>` na revisão > 1), se já existe; senão, o PROV (com o mesmo sufixo).
    * Com número e um documento PROV anterior, o PDF leva `(ref. PROV-xxxxxx)`.
    */
@@ -509,7 +572,11 @@ export class PropostasRepo {
     const u = this.usuario();
     for (let tentativa = 1; ; tentativa++) {
       const p = comTotais(await this.carregar(id));
-      if (tentativa > 1 && p.status !== 'RASCUNHO') throw jaEnviada();
+      if (p.status !== 'RASCUNHO') {
+        // o perfil primeiro: quem não pode enviar recebe ACESSO_NEGADO, como antes
+        this.checar(validarTransicao(p.status, p.status, u.perfil, p.responsavelId === u.id, contexto(p)));
+        if (tentativa > 1 || jaFoiEnviada(p)) throw jaEnviada();
+      }
       const blob = await this.tentarEnviar(p, u, gerarPdf);
       if (blob) {
         void this.sync.sincronizar();
@@ -535,7 +602,7 @@ export class PropostasRepo {
     if (!template) validacao({ templateId: 'O template não está neste aparelho. Sincronize e tente de novo.' });
 
     const empresa = await this.empresa();
-    const entrada = await this.montarEntrada(p, cliente!, template!, empresa, u);
+    const entrada = await this.montarEntrada(p, cliente!, template!, empresa, u, false);
     // snapshot: a entrada sem a logo em data URL (pesada; vai a referência do arquivo)
     const snapshot = JSON.parse(JSON.stringify({ ...entrada, logoDataUrl: undefined })) as Record<string, unknown>;
     snapshot['logoArquivoId'] = empresa?.logoArquivoId ?? null;
@@ -545,6 +612,10 @@ export class PropostasRepo {
 
     const blob = await gerarPdf(entrada);
     const bytes = await paraBytes(blob);
+    if (bytes.byteLength > PDF_MAX_BYTES) {
+      // o upload voltaria 413 e a proposta ficaria ENVIADA no servidor sem documento
+      throw new ErroProposta('PDF_GRANDE', 'proposta', 'O PDF passou de 10 MB. Reduza imagens do template.');
+    }
     const sha256 = await sha256Hex(bytes);
     const revisao = p.revisao ?? 1;
     const documento: DocumentoLocal = {
@@ -575,7 +646,111 @@ export class PropostasRepo {
     return gravou ? blob : null;
   }
 
+  /**
+   * Exclui o rascunho (§13 "Excluir rascunho"; P4b-R25): só RASCUNHO sem número (o numerado se cancela, como no
+   * servidor), por quem pode editá-lo. Numa transação: apaga a proposta local e os documentos locais dela (R15: um
+   * envio offline seguido de "Nova revisão" deixa PDF no aparelho), tira as pendências dela e enfileira o DELETE —
+   * que, se ela nunca chegou ao servidor, só esvazia a fila do agregado (inclusive o UPLOAD). Com uma mutação dela em
+   * voo, recusa (`PROPOSTA_SINCRONIZANDO`): a resposta pode trazer o número.
+   */
+  async excluir(id: string): Promise<void> {
+    const u = this.usuario();
+    const atual = await this.carregar(id);
+    this.exigirEdicao(atual, u);
+    if (atual.numero !== null) {
+      throw new ErroProposta('PROPOSTA_NUMERADA', 'proposta', 'Uma proposta numerada não pode ser excluída. Cancele-a.');
+    }
+    await this.db.transaction('rw', [this.db.propostas, this.db.documentos, this.db.outbox, this.db.pendencias], async () => {
+      if (await this.db.outbox.where('agregadoId').equals(id).filter((m) => !!m.enviando).count()) {
+        throw new ErroProposta('PROPOSTA_SINCRONIZANDO', 'proposta', 'A proposta está sendo sincronizada. Tente de novo em instantes.');
+      }
+      await this.db.documentos.where('propostaId').equals(id).delete();
+      await this.db.pendencias.where('agregadoId').equals(id).delete();
+      await this.db.propostas.delete(id);
+      await this.sync.registrar('proposta', id, 'DELETE', null, atual.version);
+    });
+    void this.sync.sincronizar();
+  }
+
+  /**
+   * A entrada da prévia (P4b-R25), em qualquer status: a mesma `montarEntrada` do PDF oficial, com `previa: true` (marca
+   * d'água). Sem cliente, o bloco do cliente sai em branco; sem template, recusa (os blocos vêm dele). Não grava nada.
+   * O técnico não vê valores (§10), então não tem prévia.
+   */
+  async entradaPrevia(id: string): Promise<EntradaPdf> {
+    const u = this.usuario();
+    if (u.perfil === 'TECNICO') {
+      throw new ErroProposta('ACESSO_NEGADO', 'proposta', 'O técnico não vê os valores da proposta.');
+    }
+    const p = comTotais(await this.carregar(id));
+    const cliente = p.clienteId === null ? null : await this.db.clientes.get(p.clienteId);
+    if (cliente === undefined) validacao({ clienteId: 'O cliente não está neste aparelho. Sincronize e tente de novo.' });
+    if (p.templateId === null) validacao({ templateId: 'Escolha o template para ver a prévia.' });
+    const template = await this.db.templates.get(p.templateId!);
+    if (!template) validacao({ templateId: 'O template não está neste aparelho. Sincronize e tente de novo.' });
+    return this.montarEntrada(p, cliente ?? null, template!, await this.empresa(), u, true);
+  }
+
+  /**
+   * Os PDFs da proposta (P4b-R25): os do servidor (`documentos` da proposta) e os do aparelho (ainda não enviados, ou
+   * enviados com os bytes guardados), por revisão desc e data desc. `[]` para o técnico (§10).
+   */
+  observarDocumentos(propostaId: string): Observable<DocumentoDaProposta[]> {
+    return observar(async () => {
+      if (!this.veDocumentos()) return [];
+      const doServidor = (await this.db.propostas.get(propostaId))?.documentos ?? [];
+      const locais = await this.db.documentos.where('propostaId').equals(propostaId).toArray();
+      const porId = new Map<string, DocumentoDaProposta>();
+      for (const d of doServidor) {
+        porId.set(d.id, {
+          id: d.id, revisao: d.revisao, codigoExibido: d.codigoExibido, geradoEm: d.geradoEm, enviado: true, temBytes: false,
+          arquivoId: d.arquivoId,
+        });
+      }
+      for (const d of locais) {
+        const servidor = porId.get(d.id);
+        porId.set(d.id, {
+          id: d.id, revisao: d.revisao, codigoExibido: d.codigoExibido, geradoEm: servidor?.geradoEm ?? d.geradoEm,
+          enviado: d.enviado || !!servidor, temBytes: d.bytes !== null, arquivoId: d.arquivoId ?? servidor?.arquivoId ?? null,
+        });
+      }
+      const instante = (d: DocumentoDaProposta) => Date.parse(d.geradoEm) || 0;
+      return [...porId.values()].sort((a, b) => b.revisao - a.revisao || instante(b) - instante(a));
+    });
+  }
+
+  /** O PDF guardado no aparelho (application/pdf); null se só os metadados estão aqui. null para o técnico (§10). */
+  async blobDoDocumento(documentoId: string): Promise<Blob | null> {
+    if (!this.veDocumentos()) return null;
+    const d = await this.db.documentos.get(documentoId);
+    return d?.bytes ? new Blob([d.bytes], { type: 'application/pdf' }) : null;
+  }
+
+  /**
+   * P4b-R23, para `PendenciasService.corrigirProposta` (dentro da transação dele, que precisa de `itens` e `usuarios`):
+   * confere a correção de uma proposta recusada pelo servidor e devolve a proposta local corrigida, com os totais e o
+   * status otimista mantido (ex.: ENVIADA). Mesmas regras de `salvarRascunho` (perfil, técnico, `validarEdicao`), mas
+   * sem exigir RASCUNHO no local: o que se corrige são os dados da mutação recusada, que é de rascunho. `criacao`: a
+   * recusada é a criação (`baseVersion` null), então para o servidor toda linha é nova e o catálogo vale para todas.
+   */
+  async conferirCorrecao(atual: PropostaLocal, edicao: Partial<EdicaoRascunho>, criacao: boolean): Promise<PropostaLocal> {
+    const u = this.usuario();
+    this.exigirEdicao({ ...atual, status: 'RASCUNHO' }, u);
+    if (edicao.tecnicoId !== undefined && edicao.tecnicoId !== atual.tecnicoId) {
+      await this.conferirTecnico(atual, u, edicao.tecnicoId);
+    }
+    const novo = aplicarEdicao(atual, edicao);
+    validacao(await this.validarEdicao(criacao ? { ...atual, itens: [] } : atual, novo));
+    return comTotais({ ...novo, atualizadoEm: new Date().toISOString() });
+  }
+
   // --- internos ---
+
+  /** Só ADMIN e COMERCIAL veem os PDFs (têm valores); o técnico e a sessão ausente, não (§10). */
+  private veDocumentos(): boolean {
+    const perfil = this.auth.usuario()?.perfil;
+    return perfil === 'ADMIN' || perfil === 'COMERCIAL';
+  }
 
   private usuario(): UsuarioSessao {
     const u = this.auth.usuario();
@@ -628,8 +803,8 @@ export class PropostasRepo {
   /** Limites de entrada do servidor (§7.3 e `PropostaDados`), com os mesmos nomes de campo. */
   private async validarEdicao(atual: PropostaLocal, novo: PropostaLocal): Promise<Record<string, string>> {
     const campos: Record<string, string> = {};
-    if (!DATA.test(novo.dataEmissao)) campos['dataEmissao'] = 'Informe a data de emissão.';
-    if (novo.validadeAte !== null && !DATA.test(novo.validadeAte)) campos['validadeAte'] = 'Data inválida.';
+    if (!dataValida(novo.dataEmissao)) campos['dataEmissao'] = 'Informe a data de emissão.';
+    if (novo.validadeAte !== null && !dataValida(novo.validadeAte)) campos['validadeAte'] = 'Data inválida.';
     for (const [campo, max] of TAMANHO_TEXTO) {
       if ((novo[campo] ?? '').length > max) campos[campo] = `Máximo de ${max} caracteres.`;
     }
@@ -676,12 +851,14 @@ export class PropostasRepo {
     return campos;
   }
 
+  /** A entrada do PDF oficial (`enviar`) e da prévia (`entradaPrevia`): uma montagem só, para as duas não divergirem. */
   private async montarEntrada(
     p: PropostaLocal,
-    cliente: ClienteLocal,
+    cliente: ClienteLocal | null,
     template: TemplateLocal,
     empresa: EmpresaLocal | undefined,
     u: UsuarioSessao,
+    previa: boolean,
   ): Promise<EntradaPdf> {
     const locais = await this.db.documentos.where('propostaId').equals(p.id).toArray();
     const provisorioAnterior =
@@ -701,7 +878,7 @@ export class PropostasRepo {
             corPrimaria: empresa.corPrimaria,
           }
         : { ...EMPRESA_VAZIA },
-      cliente: clienteDoPdf(cliente),
+      cliente: cliente ? clienteDoPdf(cliente) : { ...CLIENTE_VAZIO },
       proposta: {
         codigoExibido: codigoBase(p),
         referenciaProvisoria: provisorioAnterior ? p.codigoProvisorio : null,
@@ -721,7 +898,7 @@ export class PropostasRepo {
       itens: p.itens.map(itemDoPdf),
       blocos: template.blocos,
       logoDataUrl: await this.pdf.logoDataUrl(empresa ?? null),
-      previa: false,
+      previa,
     };
   }
 

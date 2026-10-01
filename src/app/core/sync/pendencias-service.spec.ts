@@ -6,11 +6,13 @@ import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { paraPropostaLocal, PropostaDados } from '../../features/propostas/proposta-models';
+import { ErroProposta, LinhaRascunho } from '../../features/propostas/propostas-repo';
+import type { UsuarioSessao } from '../auth/auth-models';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
 import { PendenciasService } from './pendencias-service';
-import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
+import { MutacaoLocal, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
 
 const dados = (nome: string, documento = '52998224725'): ClienteDados => ({
@@ -30,13 +32,15 @@ describe('PendenciasService', () => {
   let svc: PendenciasService;
   let db: RegeraDb;
   let http: HttpTestingController;
+  let usuarioAtual: UsuarioSessao;
 
   beforeEach(() => {
+    usuarioAtual = { id: 'u1', nome: 'Carla', email: 'carla@regera.com', perfil: 'COMERCIAL', ativo: true };
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: AuthService, useValue: { autenticado: () => true, sessaoExpirada: () => false } },
+        { provide: AuthService, useValue: { autenticado: () => true, sessaoExpirada: () => false, usuario: () => usuarioAtual } },
         { provide: ConectividadeService, useValue: { online: signal(false) } },
       ],
     });
@@ -454,6 +458,132 @@ describe('PendenciasService', () => {
     });
   });
 
+
+  describe('corrigirProposta (P4b-R23)', () => {
+    const catalogo = (codigo: string, ativo = true): ItemCatalogoDados => ({
+      natureza: 'PRODUTO', codigo, nome: codigo, descricao: null, unidade: 'un', precoVenda: 10, locavel: false,
+      fotoArquivoId: null, ativo,
+    });
+    const linhaDados = (id: string, itemCatalogoId: string) => ({
+      id, itemCatalogoId, codigo: itemCatalogoId, nome: itemCatalogoId, unidade: 'un', natureza: 'PRODUTO' as const,
+      quantidade: 1, precoUnitario: 10, descontoPercentual: 0, meses: null,
+    });
+    const proposta = (status: PropostaDados['status'], extra: Partial<PropostaDados> = {}): PropostaDados => ({
+      codigoProvisorio: 'PROV-0Z9XY7', tipo: 'VENDA', status, responsavelId: 'u1', dataEmissao: '2026-10-01',
+      clienteId: 'c1', templateId: 't1', descontoGeralPercentual: 0, itens: [linhaDados('l1', 'i1')], ...extra,
+    });
+    const linhaNova: LinhaRascunho = {
+      id: 'l2', itemCatalogoId: 'i2', codigo: 'i2', nome: 'i2', descricao: null, unidade: 'un', natureza: 'PRODUTO',
+      precoCustoCentavos: null, quantidadeMilesimos: 2000, precoUnitarioCentavos: 1000, descontoCentesimos: 0, meses: null,
+    };
+    const mut = (mutationId: string, seq: number, dados: PropostaDados, extra: Partial<MutacaoLocal> = {}): MutacaoLocal => ({
+      seq, mutationId, entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: 3, dados, criadaEm: '', ...extra,
+    });
+
+    async function cenario(): Promise<Pendencia> {
+      await db.itens.bulkPut([paraItemLocal('i1', 2, catalogo('i1', false)), paraItemLocal('i2', 1, catalogo('i2'))]);
+      // otimista: já ENVIADA no aparelho, com o PDF gerado (o cliente já recebeu)
+      await db.propostas.put(paraPropostaLocal('p1', 3, proposta('ENVIADA')));
+      await db.documentos.put({
+        id: 'd1', propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-0Z9XY7', sha256: 'a'.repeat(64), geradoEm: '',
+        geradoPor: 'u1', bytes: null, enviado: false, arquivoId: null,
+      });
+      // E (seq 5) foi recusada; atrás dela: T (ENVIADA), o UPLOAD e A (APROVADA); seq 9 é de outra proposta
+      await db.outbox.bulkAdd([
+        mut('t1', 6, proposta('ENVIADA'), { separada: true }),
+        { seq: 7, mutationId: 'up1', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p1', op: 'UPLOAD', baseVersion: null,
+          dados: { documentoId: 'd1' }, separada: true, criadaEm: '' },
+        mut('a1', 8, proposta('APROVADA'), { separada: true }),
+        mut('o1', 9, proposta('RASCUNHO', { clienteId: 'c5' }), { agregadoId: 'p2' }),
+      ]);
+      const p: Pendencia = {
+        mutationId: 'e1', entidade: 'proposta', agregadoId: 'p1', tipo: 'REJEITADO', criadaEm: '',
+        erro: { codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { 'itens[0].itemCatalogoId': 'Item do catálogo inativo.' } },
+        mutacao: mut('e1', 5, proposta('RASCUNHO')),
+      };
+      await db.pendencias.put(p);
+      return p;
+    }
+
+    it('aplica a edição na recusada e nas retidas do agregado, devolve no seq dela e mantém o status otimista', async () => {
+      await cenario();
+
+      await svc.corrigirProposta('e1', { itens: [linhaNova], observacoes: '  Corrigida ' });
+
+      expect(await db.pendencias.count()).toBe(0);
+      const fila = await db.outbox.orderBy('seq').toArray();
+      expect(fila.map((m) => m.seq)).toEqual([5, 6, 7, 8, 9]);
+      for (const [i, status] of [[0, 'RASCUNHO'], [1, 'ENVIADA'], [3, 'APROVADA']] as const) {
+        const d = fila[i].dados as PropostaDados;
+        expect(d).toMatchObject({ status, observacoes: 'Corrigida', totalItens: 20, total: 20 });
+        expect(d.itens).toMatchObject([{ id: 'l2', itemCatalogoId: 'i2', quantidade: 2, precoUnitario: 10, subtotal: 20, ordem: 0 }]);
+        // reescrita = outra mutação, fora de voo; a transição continua separada
+        expect(fila[i].enviando).toBe(false);
+        expect(!!fila[i].separada).toBe(i !== 0);
+      }
+      expect(fila.map((m) => m.mutationId).filter((x) => ['e1', 't1', 'a1'].includes(x))).toEqual([]);
+      // o upload e a outra proposta ficam como estavam
+      expect(fila[2]).toMatchObject({ mutationId: 'up1', op: 'UPLOAD', dados: { documentoId: 'd1' } });
+      expect(fila[4]).toMatchObject({ mutationId: 'o1', dados: { clienteId: 'c5', itens: [{ id: 'l1' }] } });
+      expect(await db.propostas.get('p1')).toMatchObject({
+        status: 'ENVIADA', version: 3, observacoes: 'Corrigida', totalCentavos: 2000, itens: [{ id: 'l2', subtotalCentavos: 2000 }],
+      });
+      expect(await db.documentos.get('d1')).toMatchObject({ enviado: false, codigoExibido: 'PROV-0Z9XY7' });
+      expect(TestBed.inject(SyncService).sincronizar).toHaveBeenCalled();
+    });
+
+    it('a correção passa pela validação do rascunho: inválida é recusada no campo e nada muda', async () => {
+      await cenario();
+      const antes = await db.outbox.orderBy('seq').toArray();
+      for (const [edicao, campo] of [
+        [{ itens: [{ ...linhaNova, quantidadeMilesimos: 0 }] }, 'itens[0].quantidade'],
+        [{ itens: [{ ...linhaNova, id: 'l3', itemCatalogoId: 'i1' }] }, 'itens[0].itemCatalogoId'],
+        [{ validadeAte: '2026-02-30' }, 'validadeAte'],
+        [{ tecnicoId: 'nao-e-tecnico' }, 'tecnicoId'],
+      ] as const) {
+        const e = await svc.corrigirProposta('e1', edicao).then(() => null, (x: unknown) => x);
+        expect(e).toBeInstanceOf(ErroProposta);
+        expect((e as ErroProposta).campo).toBe(campo);
+      }
+      expect(await db.outbox.orderBy('seq').toArray()).toEqual(antes);
+      expect(await db.pendencias.count()).toBe(1);
+      expect((await db.propostas.get('p1'))!.itens.map((l) => l.id)).toEqual(['l1']);
+    });
+
+    it('pendência que já não existe, que não é de proposta ou que não é recusa de dados: erro claro, nada muda', async () => {
+      await cenario();
+      const sumiu = await svc.corrigirProposta('nao-existe', { observacoes: 'x' }).then(() => null, (x: unknown) => x);
+      expect(sumiu).toBeInstanceOf(ErroProposta);
+      expect(sumiu).toMatchObject({ codigo: 'PENDENCIA_INEXISTENTE', message: 'Esta pendência já foi resolvida.' });
+
+      await db.pendencias.bulkPut([
+        pendencia({ mutationId: 'cli', tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } }),
+        { ...(await db.pendencias.get('e1'))!, mutationId: 'conf', agregadoId: 'p3', tipo: 'CONFLITO', versionServidor: 4 },
+        {
+          mutationId: 'up', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p4', tipo: 'REJEITADO', criadaEm: '',
+          mutacao: { mutationId: 'up', entidade: TIPO_UPLOAD_DOCUMENTO, agregadoId: 'p4', op: 'UPLOAD', baseVersion: null, dados: { documentoId: 'd1' }, criadaEm: '' },
+        },
+      ]);
+      for (const id of ['cli', 'conf', 'up']) {
+        const e = await svc.corrigirProposta(id, { observacoes: 'x' }).then(() => null, (x: unknown) => x);
+        expect(e).toMatchObject({
+          codigo: 'PENDENCIA_NAO_CORRIGIVEL', message: 'Só uma proposta recusada pelo servidor pode ser corrigida aqui.',
+        });
+      }
+      expect(await db.pendencias.count()).toBe(4);
+      expect((await db.outbox.toArray()).map((m) => m.mutationId)).toEqual(['t1', 'up1', 'a1', 'o1']);
+    });
+
+    it('o técnico e o comercial que não é o responsável não corrigem', async () => {
+      await cenario();
+      for (const u of [{ id: 'u-tec', perfil: 'TECNICO' }, { id: 'u2', perfil: 'COMERCIAL' }] as const) {
+        usuarioAtual = { ...usuarioAtual, ...u };
+        const e = await svc.corrigirProposta('e1', { observacoes: 'x' }).then(() => null, (x: unknown) => x);
+        expect(e).toMatchObject({ codigo: 'ACESSO_NEGADO' });
+      }
+      expect(await db.pendencias.count()).toBe(1);
+    });
+  });
   describe('item do catálogo', () => {
     const item = (nome: string): ItemCatalogoDados => ({
       natureza: 'PRODUTO', codigo: 'PNL', nome, descricao: null, unidade: 'un', precoVenda: 1,

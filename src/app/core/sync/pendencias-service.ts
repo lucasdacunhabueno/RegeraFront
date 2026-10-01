@@ -4,6 +4,9 @@ import { firstValueFrom, Observable } from 'rxjs';
 import { observar } from '../db/observar';
 import { RegeraDb } from '../db/regera-db';
 import type { PropostaDados } from '../../features/propostas/proposta-models';
+import {
+  corrigirDadosDaProposta, EdicaoRascunho, ErroProposta, PropostasRepo,
+} from '../../features/propostas/propostas-repo';
 import { Adaptador, adaptadorDe } from './adaptadores';
 import { DadosUpload, Mudanca, MutacaoLocal, Pendencia, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
@@ -23,6 +26,7 @@ export class PendenciasService {
   private readonly db = inject(RegeraDb);
   private readonly http = inject(HttpClient);
   private readonly sync = inject(SyncService);
+  private readonly repo = inject(PropostasRepo);
 
   observar(): Observable<Pendencia[]> {
     return observar(async () => (await this.db.pendencias.toArray()).sort((a, b) => a.criadaEm.localeCompare(b.criadaEm)));
@@ -114,6 +118,41 @@ export class PendenciasService {
     });
     void this.sync.sincronizar();
     return idExistente;
+  }
+
+  /**
+   * "Corrigir e reenviar" de uma proposta recusada pelo servidor (§11.5, P4b-R23), mesmo com o status otimista já
+   * adiante (ex.: enviada offline: a fila é `[E recusada, T ENVIADA, UPLOAD]`). Numa transação só:
+   * 1. relê a pendência (tem de existir e ser a recusa de dados de uma proposta);
+   * 2. confere a edição com as regras de `salvarRascunho` (`PropostasRepo.conferirCorrecao`); inválida, nada muda;
+   * 3. aplica a edição aos `dados` da mutação recusada e de todas as mutações `proposta` retidas atrás dela, como
+   *    `remapearCliente` faz com o `clienteId` (cada uma mantém o próprio status; as reescritas ganham outro
+   *    `mutationId`);
+   * 4. devolve a recusada à fila no `seq` dela (`devolverAFila`), na frente das retidas;
+   * 5. grava a proposta local corrigida, com o status otimista.
+   * UPLOAD e documentos não mudam: o PDF já gerado é o que o cliente recebeu, e o código exibido não muda.
+   */
+  async corrigirProposta(pendenciaId: string, edicao: Partial<EdicaoRascunho>): Promise<void> {
+    const tabelas = [this.db.pendencias, this.db.outbox, this.db.propostas, this.db.itens, this.db.usuarios];
+    await this.db.transaction('rw', tabelas, async () => {
+      const p = await this.db.pendencias.get(pendenciaId);
+      if (!p) throw new ErroProposta('PENDENCIA_INEXISTENTE', 'proposta', 'Esta pendência já foi resolvida.');
+      if (p.entidade !== 'proposta' || p.tipo !== 'REJEITADO' || p.mutacao.op !== 'UPSERT' || !p.mutacao.dados) {
+        throw new ErroProposta('PENDENCIA_NAO_CORRIGIVEL', 'proposta', 'Só uma proposta recusada pelo servidor pode ser corrigida aqui.');
+      }
+      const local = await this.db.propostas.get(p.agregadoId);
+      if (!local) throw new ErroProposta('NAO_ENCONTRADA', 'proposta', 'Proposta não encontrada neste aparelho.');
+      const corrigida = await this.repo.conferirCorrecao(local, edicao, p.mutacao.baseVersion === null);
+      const corrigir = (d: unknown) => corrigirDadosDaProposta(p.agregadoId, d as PropostaDados, edicao);
+      const retidas = await this.db.outbox.where('agregadoId').equals(p.agregadoId).toArray();
+      for (const m of retidas.filter((x) => x.entidade === 'proposta' && x.dados)) {
+        await this.db.outbox.update(m.seq!, { dados: corrigir(m.dados), mutationId: crypto.randomUUID(), enviando: false });
+      }
+      await this.db.pendencias.delete(p.mutationId);
+      await this.devolverAFila(p, { dados: corrigir(p.mutacao.dados) });
+      await this.db.propostas.put(corrigida);
+    });
+    void this.sync.sincronizar();
   }
 
   /**
