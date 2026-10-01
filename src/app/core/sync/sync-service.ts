@@ -2,6 +2,7 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { Toasts } from '../../shared/ui/toasts';
+import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { observar } from '../db/observar';
@@ -26,6 +27,7 @@ export class SyncService {
   private readonly auth = inject(AuthService);
   private readonly conectividade = inject(ConectividadeService);
   private readonly toasts = inject(Toasts);
+  private readonly arquivos = inject(ArquivosService);
   private emAndamento: Promise<void> | null = null;
 
   readonly sincronizando = signal(false);
@@ -95,7 +97,10 @@ export class SyncService {
     this.sincronizando.set(true);
     try {
       await this.enviar();
-      await this.receber();
+      const aplicou = await this.receber();
+      if (aplicou && this.conectividade.online()) {
+        this.prefetchArquivos().catch(() => undefined);
+      }
       const agora = new Date().toISOString();
       this.ultimoSync.set(agora);
       await this.db.gravarMeta(CHAVE_ULTIMO_SYNC, agora);
@@ -201,23 +206,29 @@ export class SyncService {
     });
   }
 
-  private async receber(): Promise<void> {
-    const dono = this.auth.usuario?.()?.id ?? null;
+  /** true se aplicou alguma mudança do servidor. */
+  private async receber(): Promise<boolean> {
+    // o que o servidor manda depende do perfil (ex.: preço de custo): trocou o perfil, o cache local não vale mais
+    const usuario = this.auth.usuario?.();
+    const dono = usuario ? `${usuario.id}:${usuario.perfil}` : null;
     const cursorGravado = await this.db.lerMeta<number>(CHAVE_CURSOR);
     let cursor = cursorGravado ?? 0;
+    let aplicou = false;
     if (cursorGravado !== undefined && (await this.db.lerMeta<string | null>(CHAVE_CURSOR_DONO)) !== dono) {
-      // cursor de outra sessão (ex.: escrito por um sync que sobreviveu ao logout): recomeça do zero
+      // cursor de outra sessão/perfil (ou gravado no formato antigo, só o id): recomeça do zero
       cursor = 0;
-      await this.db.transaction('rw', [this.db.clientes, this.db.usuarios], async () => {
-        await this.db.clientes.clear();
-        await this.db.usuarios.clear();
+      const tabelas = [...Object.values(ADAPTADORES).map((a) => a.tabela(this.db)), this.db.usuarios];
+      await this.db.transaction('rw', tabelas, async () => {
+        await Promise.all(tabelas.map((t) => t.clear()));
       });
+      this.arquivos.limpar();
     }
     for (;;) {
       const resp = await firstValueFrom(
         this.http.get<RespostaPull>('/api/sync/pull', { params: { cursor, limite: LIMITE_PULL } }),
       );
       await this.aplicarMudancas(resp.mudancas);
+      aplicou ||= resp.mudancas.length > 0;
       await this.db.transaction('rw', this.db.usuarios, async () => {
         await this.db.usuarios.clear();
         await this.db.usuarios.bulkPut(resp.usuarios);
@@ -228,8 +239,28 @@ export class SyncService {
         await this.db.gravarMeta(CHAVE_CURSOR, cursor);
         await this.db.gravarMeta(CHAVE_CURSOR_DONO, dono);
       });
-      if (!resp.temMais || !avancou) return;
+      if (!resp.temMais || !avancou) return aplicou;
     }
+  }
+
+  /**
+   * Depois de um pull com mudanças: baixa para o cache local o logo da empresa e as fotos dos itens ativos,
+   * para aparecerem (e irem no PDF) offline. Em segundo plano, dois por vez, sem propagar erro.
+   */
+  private async prefetchArquivos(): Promise<void> {
+    const empresas = await this.db.empresa.toArray();
+    const itens = await this.db.itens.filter((i) => i.ativo && !!i.fotoArquivoId).toArray();
+    const ids = [...new Set([...empresas.map((e) => e.logoArquivoId), ...itens.map((i) => i.fotoArquivoId)])]
+      .filter((id): id is string => !!id);
+    // logout ou troca de sessão no meio: para, sem pedir arquivos sem token nem para outra sessão
+    const geracao = this.arquivos.geracaoAtual();
+    const trabalhador = async () => {
+      for (let id = ids.shift(); id !== undefined; id = ids.shift()) {
+        if (!this.conectividade.online() || !this.auth.autenticado() || this.arquivos.geracaoAtual() !== geracao) return;
+        await this.arquivos.garantirCache(id);
+      }
+    };
+    await Promise.all([trabalhador(), trabalhador()]);
   }
 
   private async aplicarMudancas(mudancas: Mudanca[]): Promise<void> {

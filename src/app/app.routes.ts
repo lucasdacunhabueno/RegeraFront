@@ -34,8 +34,26 @@ export const routes: Routes = [
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
         loadComponent: () => import('./features/clientes/clientes-page').then((m) => m.ClientesPage),
       },
-      { path: 'catalogo', canMatch: [perfilGuard('ADMIN', 'COMERCIAL')], loadComponent: emBreve, data: { titulo: 'Catálogo' } },
-      { path: 'empresa', canMatch: [perfilGuard('ADMIN')], loadComponent: emBreve, data: { titulo: 'Empresa' } },
+      {
+        path: 'catalogo/novo',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/catalogo/item-form-page').then((m) => m.ItemFormPage),
+      },
+      {
+        path: 'catalogo/:id',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/catalogo/item-form-page').then((m) => m.ItemFormPage),
+      },
+      {
+        path: 'catalogo',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        loadComponent: () => import('./features/catalogo/catalogo-page').then((m) => m.CatalogoPage),
+      },
+      {
+        path: 'empresa',
+        canMatch: [perfilGuard('ADMIN')],
+        loadComponent: () => import('./features/empresa/empresa-page').then((m) => m.EmpresaPage),
+      },
       {
         path: 'pendencias',
         loadComponent: () => import('./features/pendencias/pendencias-page').then((m) => m.PendenciasPage),
