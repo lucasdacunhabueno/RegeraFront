@@ -54,6 +54,24 @@ export function hojeEmSaoPaulo(agora: Date = new Date()): string {
   return `${partes.get('year')}-${partes.get('month')}-${partes.get('day')}`;
 }
 
+const RELOGIO_SAO_PAULO = new Intl.DateTimeFormat('en-GB', {
+  timeZone: 'America/Sao_Paulo',
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+  hourCycle: 'h23',
+});
+
+/**
+ * Milissegundos de `agora` até a próxima meia-noite de São Paulo (quando `hojeEmSaoPaulo` muda). Conta pela hora de
+ * parede: num dia com mudança de fuso erra por até uma hora, e quem agenda confere de novo ao disparar.
+ */
+export function msAteAmanhaEmSaoPaulo(agora: Date = new Date()): number {
+  const partes = new Map(RELOGIO_SAO_PAULO.formatToParts(agora).map((p) => [p.type, Number(p.value)]));
+  const segundos = ((partes.get('hour') ?? 0) * 60 + (partes.get('minute') ?? 0)) * 60 + (partes.get('second') ?? 0);
+  return 86_400_000 - (segundos * 1000 + agora.getUTCMilliseconds());
+}
+
 /** Aritmética de calendário sobre `aaaa-mm-dd` (em UTC, só como contador de dias: sem fuso nem horário de verão). */
 export function somarDias(data: string, dias: number): string {
   const [ano, mes, dia] = data.split('-').map(Number);
@@ -243,13 +261,13 @@ export interface DocumentoDaProposta {
   arquivoId: string | null;
 }
 
-/** `duplicar`: o rascunho novo e quantas linhas ficaram de fora (item do catálogo inativo ou fora do aparelho). */
 /** Ids com mutação na outbox e ids com pendência (`observarEstadoSync`). */
 export interface EstadoSync {
   naOutbox: ReadonlySet<string>;
   comPendencia: ReadonlySet<string>;
 }
 
+/** `duplicar`: o rascunho novo e quantas linhas ficaram de fora (item do catálogo inativo ou fora do aparelho). */
 export interface Duplicada {
   id: string;
   linhasDescartadas: number;

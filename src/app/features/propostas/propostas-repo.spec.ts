@@ -22,7 +22,7 @@ import { codigoProvisorioValido } from './codigo-provisorio';
 import {
   dadosDaProposta, DocumentoLocal, ItemPropostaLocal, PropostaDados, PropostaLocal, StatusProposta,
 } from './proposta-models';
-import { ErroProposta, hojeEmSaoPaulo, PropostasRepo, somarDias } from './propostas-repo';
+import { ErroProposta, hojeEmSaoPaulo, msAteAmanhaEmSaoPaulo, PropostasRepo, somarDias } from './propostas-repo';
 
 const COMERCIAL: UsuarioSessao = { id: 'u-com', nome: 'Carla Comercial', email: 'carla@regera.com', perfil: 'COMERCIAL', ativo: true };
 const OUTRO_COMERCIAL: UsuarioSessao = { id: 'u-com2', nome: 'Beto', email: 'beto@regera.com', perfil: 'COMERCIAL', ativo: true };
@@ -61,6 +61,12 @@ describe('datas da proposta', () => {
   it('hoje é a data civil de São Paulo, não a do UTC', () => {
     expect(hojeEmSaoPaulo(new Date('2026-10-02T01:30:00Z'))).toBe('2026-10-01');
     expect(hojeEmSaoPaulo(new Date('2026-10-02T03:00:00Z'))).toBe('2026-10-02');
+  });
+
+  it('msAteAmanhaEmSaoPaulo: quanto falta para a meia-noite de São Paulo, não a do UTC', () => {
+    expect(msAteAmanhaEmSaoPaulo(new Date('2026-10-02T02:59:00Z'))).toBe(60_000);
+    expect(msAteAmanhaEmSaoPaulo(new Date('2026-10-02T03:00:00Z'))).toBe(86_400_000);
+    expect(msAteAmanhaEmSaoPaulo(new Date('2026-10-01T15:00:00.250Z'))).toBe(12 * 3_600_000 - 250);
   });
 
   it('somarDias é aritmética de calendário pura (virada de mês, de ano e bissexto)', () => {

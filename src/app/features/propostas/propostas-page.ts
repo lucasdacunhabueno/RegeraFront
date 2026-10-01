@@ -1,4 +1,4 @@
-import { Component, computed, inject, signal } from '@angular/core';
+import { Component, computed, DestroyRef, DOCUMENT, effect, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { AuthService } from '../../core/auth/auth-service';
@@ -7,7 +7,7 @@ import { TIPOS_PROPOSTA, TipoProposta } from '../templates/template-models';
 import { correspondeABusca, Selo, selosDaProposta } from './formatos-proposta';
 import { PropostaCard } from './proposta-card';
 import { PropostaLocal, STATUS_PROPOSTA, StatusProposta } from './proposta-models';
-import { EstadoSync, hojeEmSaoPaulo, PropostasRepo } from './propostas-repo';
+import { EstadoSync, hojeEmSaoPaulo, msAteAmanhaEmSaoPaulo, PropostasRepo } from './propostas-repo';
 
 type FiltroStatus = 'TODAS' | StatusProposta;
 type FiltroTipo = 'TODOS' | TipoProposta;
@@ -33,26 +33,29 @@ interface Linha {
   imports: [RouterLink, PropostaCard],
   template: `
     <div class="mb-4 flex items-center justify-between gap-3">
-      <h1 class="text-xl font-semibold">{{ restrito ? 'Minhas propostas' : 'Propostas' }}</h1>
-      @if (!restrito) {
+      <h1 class="text-xl font-semibold">{{ restrito() ? 'Minhas propostas' : 'Propostas' }}</h1>
+      @if (!restrito()) {
         <a routerLink="/propostas/nova" class="inline-flex min-h-12 items-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Nova proposta</a>
       }
     </div>
 
-    <label for="busca-propostas" class="sr-only">Buscar propostas</label>
-    <input id="busca-propostas" type="search" [value]="busca()" (input)="busca.set($any($event.target).value)"
-           placeholder="Número, PROV, cliente ou CPF/CNPJ"
-           class="mb-3 h-12 w-full rounded-lg border border-slate-300 px-3" />
+    <!-- celular: busca e tipo empilhados; desktop (lg): na mesma linha, a busca ocupa o resto -->
+    <div data-filtros class="mb-3 flex flex-col gap-3 lg:flex-row lg:items-center">
+      <label for="busca-propostas" class="sr-only">Buscar propostas</label>
+      <input id="busca-propostas" type="search" [value]="busca()" (input)="busca.set($any($event.target).value)"
+             placeholder="Número, PROV, cliente ou CPF/CNPJ"
+             class="h-12 w-full rounded-lg border border-slate-300 px-3 lg:w-auto lg:min-w-0 lg:flex-1" />
 
-    <div class="mb-3 flex items-center gap-2">
-      <label for="tipo-propostas" class="text-sm text-slate-600">Tipo</label>
-      <select id="tipo-propostas" [value]="tipo()" (change)="tipo.set($any($event.target).value)"
-              class="h-12 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3">
-        <option value="TODOS">Todos os tipos</option>
-        @for (t of tipos; track t.valor) {
-          <option [value]="t.valor">{{ t.rotulo }}</option>
-        }
-      </select>
+      <div class="flex items-center gap-2 lg:shrink-0">
+        <label for="tipo-propostas" class="text-sm text-slate-600">Tipo</label>
+        <select id="tipo-propostas" [value]="tipo()" (change)="tipo.set($any($event.target).value)"
+                class="h-12 min-w-0 flex-1 rounded-lg border border-slate-300 bg-white px-3 lg:w-56 lg:flex-none">
+          <option value="TODOS">Todos os tipos</option>
+          @for (t of tipos; track t.valor) {
+            <option [value]="t.valor">{{ t.rotulo }}</option>
+          }
+        </select>
+      </div>
     </div>
 
     <div class="mb-2 flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar por status">
@@ -80,7 +83,7 @@ interface Linha {
       <p class="py-8 text-center text-slate-500">Carregando…</p>
     } @else if (propostas()!.length === 0) {
       <p class="py-8 text-center text-slate-500">
-        {{ restrito ? 'Nenhuma proposta atribuída a você.' : 'Nenhuma proposta ainda. Toque em Nova proposta.' }}
+        {{ restrito() ? 'Nenhuma proposta atribuída a você.' : 'Nenhuma proposta ainda. Crie a primeira em Nova proposta.' }}
       </p>
     } @else if (linhas().length === 0) {
       <p class="py-8 text-center text-slate-500">
@@ -94,7 +97,7 @@ interface Linha {
         @for (l of linhas(); track l.proposta.id) {
           <li>
             <app-proposta-card [proposta]="l.proposta" [clienteNome]="l.clienteNome" [responsavelNome]="l.responsavelNome"
-                               [mostrarValores]="!restrito" [selos]="l.selos" />
+                               [mostrarValores]="!restrito()" [selos]="l.selos" />
           </li>
         }
       </ul>
@@ -103,9 +106,12 @@ interface Linha {
 })
 export class PropostasPage {
   private readonly repo = inject(PropostasRepo);
-  private readonly usuario = inject(AuthService).usuario();
-  /** A visão do técnico: sem valores e sem criar. */
-  protected readonly restrito = this.usuario?.perfil !== 'ADMIN' && this.usuario?.perfil !== 'COMERCIAL';
+  private readonly usuario = inject(AuthService).usuario;
+  /** A visão do técnico: sem valores e sem criar (também sem sessão ou com perfil desconhecido). */
+  protected readonly restrito = computed(() => {
+    const perfil = this.usuario()?.perfil;
+    return perfil !== 'ADMIN' && perfil !== 'COMERCIAL';
+  });
 
   protected readonly busca = signal('');
   protected readonly status = signal<FiltroStatus>('TODAS');
@@ -113,17 +119,18 @@ export class PropostasPage {
   protected readonly mostrarEncerradas = signal(false);
   protected readonly tipos = TIPOS_PROPOSTA;
 
-  /** undefined até a primeira leitura do banco (sem isso a tela piscaria o estado vazio). */
-  protected readonly propostas = toSignal(
-    this.restrito ? this.repo.observarDoTecnico(this.usuario?.id ?? '') : this.repo.observarTodas(),
-  );
+  /** undefined até a primeira leitura do banco (sem isso a tela piscaria o estado vazio); preenchido pelo effect do construtor. */
+  protected readonly propostas = signal<PropostaLocal[] | undefined>(undefined);
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
   private readonly usuarios = toSignal(this.repo.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>() } as EstadoSync,
   });
-  /** Data civil de São Paulo ao abrir a tela (selo Expirada). */
-  private readonly hoje = hojeEmSaoPaulo();
+  /**
+   * Data civil de São Paulo (selo Expirada). Refeita à meia-noite de São Paulo e quando a aba volta a ficar visível
+   * (o timer atrasa com o aparelho dormindo).
+   */
+  private readonly hoje = signal(hojeEmSaoPaulo());
 
   protected readonly carregando = computed(() => this.propostas() === undefined || this.clientes() === undefined);
 
@@ -159,9 +166,42 @@ export class PropostasPage {
         proposta: p,
         clienteNome: p.clienteId ? (clientes.get(p.clienteId)?.nome ?? 'Cliente não encontrado') : 'Sem cliente',
         responsavelNome: nomes.get(p.responsavelId) ?? null,
-        selos: selosDaProposta(p, { pendente: comPendencia.has(p.id), naoSincronizada: naOutbox.has(p.id), hoje: this.hoje }),
+        selos: selosDaProposta(p, { pendente: comPendencia.has(p.id), naoSincronizada: naOutbox.has(p.id), hoje: this.hoje() }),
       }));
   });
+
+  constructor() {
+    const documento = inject(DOCUMENT);
+    const atualizar = () => this.hoje.set(hojeEmSaoPaulo());
+    const aoMudarVisibilidade = () => {
+      if (documento.visibilityState === 'visible') atualizar();
+    };
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    // +1 s de folga para já estar no dia seguinte; se disparar cedo (dia com mudança de fuso), reagenda o resto.
+    const agendar = () => {
+      timer = setTimeout(() => {
+        atualizar();
+        agendar();
+      }, msAteAmanhaEmSaoPaulo() + 1000);
+    };
+    // O técnico (ou a visão restrita) lê só as atribuídas a ele; a fonte troca se o usuário mudar. Um effect e não
+    // toObservable + switchMap: estes levariam ~1 kB ao bundle inicial.
+    const quem = computed(() => (this.restrito() ? `tecnico:${this.usuario()?.id ?? ''}` : 'todas'));
+    effect((aoLimpar) => {
+      const q = quem();
+      this.propostas.set(undefined);
+      const fonte = q === 'todas' ? this.repo.observarTodas() : this.repo.observarDoTecnico(q.slice('tecnico:'.length));
+      const assinatura = fonte.subscribe((lista) => this.propostas.set(lista));
+      aoLimpar(() => assinatura.unsubscribe());
+    });
+
+    documento.addEventListener('visibilitychange', aoMudarVisibilidade);
+    agendar();
+    inject(DestroyRef).onDestroy(() => {
+      clearTimeout(timer);
+      documento.removeEventListener('visibilitychange', aoMudarVisibilidade);
+    });
+  }
 
   protected alternarEncerradas(): void {
     const mostrar = !this.mostrarEncerradas();

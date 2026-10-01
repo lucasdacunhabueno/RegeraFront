@@ -1,4 +1,4 @@
-import { signal } from '@angular/core';
+import { signal, WritableSignal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { Observable, of, Subject } from 'rxjs';
@@ -54,6 +54,7 @@ const LISTA: PropostaLocal[] = [
 
 interface Opcoes {
   usuario?: UsuarioSessao;
+  usuarioSinal?: WritableSignal<UsuarioSessao | null>;
   todas?: Observable<PropostaLocal[]>;
   doTecnico?: Observable<PropostaLocal[]>;
   estado?: EstadoSync;
@@ -69,7 +70,7 @@ function montar(o: Opcoes = {}) {
   TestBed.configureTestingModule({
     providers: [
       provideRouter([]),
-      { provide: AuthService, useValue: { usuario: signal(o.usuario ?? ADMIN) } },
+      { provide: AuthService, useValue: { usuario: o.usuarioSinal ?? signal(o.usuario ?? ADMIN) } },
       { provide: PropostasRepo, useValue: repo },
       { provide: ClientesRepo, useValue: { observarTodos: () => of(CLIENTES) } },
     ],
@@ -223,6 +224,19 @@ describe('PropostasPage', () => {
       await ate(fixture, () => expect(contagem.textContent?.trim()).toBe('1 proposta'));
     });
 
+    it('no desktop (lg) a busca e o tipo ficam na mesma linha; no celular, empilhados', () => {
+      const { el } = montar();
+      const busca = el.querySelector<HTMLInputElement>('input[type=search]')!;
+      const tipo = el.querySelector<HTMLSelectElement>('select#tipo-propostas')!;
+      const linha = busca.closest<HTMLElement>('[data-filtros]')!;
+      expect(linha.contains(tipo)).toBe(true);
+      expect(linha.className).toContain('flex-col');
+      expect(linha.className).toContain('lg:flex-row');
+      expect(busca.className).toContain('lg:flex-1');
+      expect(tipo.className).toContain('lg:w-56');
+      expect(el.querySelector('label[for=tipo-propostas]')?.textContent).toContain('Tipo');
+    });
+
     it('sem nenhuma encerrada visível: dica para mostrar as encerradas', async () => {
       const { fixture, el } = montar({ todas: of([LISTA[3]]) });
       expect(codigos(el)).toEqual([]);
@@ -234,7 +248,7 @@ describe('PropostasPage', () => {
 
     it('vazio do comercial', () => {
       const { el } = montar({ usuario: COMERCIAL, todas: of([]) });
-      expect(el.textContent).toContain('Nenhuma proposta ainda. Toque em Nova proposta.');
+      expect(el.textContent).toContain('Nenhuma proposta ainda. Crie a primeira em Nova proposta.');
     });
 
     it('"Carregando…" antes da primeira emissão', async () => {
@@ -245,6 +259,78 @@ describe('PropostasPage', () => {
       todas.next(LISTA);
       await ate(fixture, () => expect(codigos(el)).toHaveLength(4));
       expect(el.textContent).not.toContain('Carregando…');
+    });
+  });
+
+  describe('hoje (selo Expirada)', () => {
+    /** 23:59 de 2026-10-01 em São Paulo: a validade 2026-10-01 da 'f' ainda vale. */
+    const QUASE_MEIA_NOITE = new Date('2026-10-02T02:59:00Z');
+    const selosDeF = (el: HTMLElement) => [...card(el, 'PROV-F00000').querySelectorAll('[data-selo]')].map((s) => s.textContent?.trim());
+
+    beforeEach(() => {
+      vi.useRealTimers();
+      vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+      vi.setSystemTime(QUASE_MEIA_NOITE);
+    });
+
+    afterEach(() => {
+      vi.restoreAllMocks();
+    });
+
+    it('vira à meia-noite de São Paulo com a tela aberta', () => {
+      const { fixture, el } = montar();
+      expect(selosDeF(el)).toEqual([]);
+      vi.advanceTimersByTime(59_000);
+      fixture.detectChanges();
+      expect(selosDeF(el)).toEqual([]);
+      vi.advanceTimersByTime(2_000);
+      fixture.detectChanges();
+      expect(selosDeF(el)).toEqual(['Expirada']);
+    });
+
+    it('confere de novo quando a aba volta a ficar visível', () => {
+      const visibilidade = vi.spyOn(document, 'visibilityState', 'get').mockReturnValue('hidden');
+      const { fixture, el } = montar();
+      vi.setSystemTime(new Date('2026-10-02T12:00:00Z'));
+      document.dispatchEvent(new Event('visibilitychange'));
+      fixture.detectChanges();
+      expect(selosDeF(el)).toEqual([]);
+      visibilidade.mockReturnValue('visible');
+      document.dispatchEvent(new Event('visibilitychange'));
+      fixture.detectChanges();
+      expect(selosDeF(el)).toEqual(['Expirada']);
+    });
+
+    it('ao sair da tela, o timer e o listener são desfeitos', () => {
+      const remover = vi.spyOn(document, 'removeEventListener');
+      const { fixture } = montar();
+      expect(vi.getTimerCount()).toBe(1);
+      fixture.destroy();
+      expect(vi.getTimerCount()).toBe(0);
+      expect(remover).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
+    });
+  });
+
+  describe('restrito acompanha usuario()', () => {
+    const titulo = (el: HTMLElement) => el.querySelector('h1')?.textContent?.trim();
+
+    it('a troca de perfil muda a visão e a fonte dos dados', async () => {
+      const usuario = signal<UsuarioSessao | null>(ADMIN);
+      const { fixture, el, repo } = montar({ usuarioSinal: usuario });
+      expect(titulo(el)).toBe('Propostas');
+      expect(el.textContent).toMatch(/R\$/);
+      usuario.set(TECNICO);
+      await ate(fixture, () => expect(titulo(el)).toBe('Minhas propostas'));
+      expect(repo.observarDoTecnico).toHaveBeenCalledWith(TECNICO.id);
+      expect(el.textContent).not.toMatch(/R\$/);
+      expect(el.querySelector('a[href="/propostas/nova"]')).toBeNull();
+    });
+
+    it('sem sessão: a visão restrita, sem valores', () => {
+      const { el, repo } = montar({ usuarioSinal: signal<UsuarioSessao | null>(null) });
+      expect(titulo(el)).toBe('Minhas propostas');
+      expect(repo.observarTodas).not.toHaveBeenCalled();
+      expect(el.textContent).not.toMatch(/R\$/);
     });
   });
 
