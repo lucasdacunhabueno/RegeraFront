@@ -1,5 +1,6 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, ElementRef, inject, signal, viewChild } from '@angular/core';
+import { Component, computed, ElementRef, inject, signal, viewChild } from '@angular/core';
+import { toSignal } from '@angular/core/rxjs-interop';
 import { AbstractControl, NonNullableFormBuilder, ReactiveFormsModule, ValidationErrors, Validators } from '@angular/forms';
 import { RouterLink } from '@angular/router';
 import { ArquivosService } from '../../core/arquivos/arquivos-service';
@@ -7,6 +8,7 @@ import { ImagemService } from '../../core/arquivos/imagem-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { RegeraDb } from '../../core/db/regera-db';
 import { camposComErro, mensagemDeErro } from '../../core/http/erro-api';
+import { avisarAoSairDaPagina, ComAlteracoes, instantaneo } from '../../core/navegacao/alteracoes-guard';
 import { cnpjValido, normalizarDocumento } from '../../core/util/documentos';
 import { formatarTelefone, mascararDocumento, somenteDigitos } from '../../core/util/formatos';
 import { Toasts } from '../../shared/ui/toasts';
@@ -113,7 +115,7 @@ const naoSoEspacos = (c: AbstractControl<string>): ValidationErrors | null =>
     </form>
   `,
 })
-export class EmpresaPage {
+export class EmpresaPage implements ComAlteracoes {
   private readonly fb = inject(NonNullableFormBuilder);
   private readonly api = inject(EmpresaApi);
   private readonly db = inject(RegeraDb);
@@ -143,8 +145,32 @@ export class EmpresaPage {
     condicoesPagamentoPadrao: [''],
   });
 
+  /** Estado depois de carregar ou de salvar (P4a-R12); null enquanto carrega. */
+  private readonly estadoSalvo = signal<string | null>(null);
+  private readonly valores = toSignal(this.form.valueChanges);
+  private readonly alterado = computed(() => {
+    this.valores();
+    this.logoArquivoId();
+    this.estadoSalvo();
+    return this.temAlteracoes();
+  });
+
   constructor() {
+    avisarAoSairDaPagina(this.alterado);
     void this.carregar();
+  }
+
+  temAlteracoes(): boolean {
+    const salvo = this.estadoSalvo();
+    return salvo !== null && this.estado() !== salvo;
+  }
+
+  private estado(): string {
+    return instantaneo({ ...this.form.getRawValue(), logoArquivoId: this.logoArquivoId() });
+  }
+
+  private marcarSalvo(): void {
+    this.estadoSalvo.set(this.estado());
   }
 
   protected campo(nome: string): string | null {
@@ -227,10 +253,12 @@ export class EmpresaPage {
       } catch {
         // já está salvo no servidor; o próximo pull grava a cópia local
       }
+      this.marcarSalvo();
       this.toasts.mostrar('Dados da empresa salvos.');
     } catch (e) {
       if (e instanceof HttpErrorResponse && e.status === 409) {
         this.toasts.erro(mensagemDeErro(e));
+        // sem a versão atual (carregar devolve false), o digitado continua como alteração não salva
         await this.carregar(true);
       } else {
         this.erros.set(camposComErro(e));
@@ -241,8 +269,11 @@ export class EmpresaPage {
     }
   }
 
-  /** aposConflito: precisa da versão atual do servidor; sem ela, avisa em vez de ficar com a versão velha. */
-  private async carregar(aposConflito = false): Promise<void> {
+  /**
+   * aposConflito: precisa da versão atual do servidor; sem ela, avisa em vez de ficar com a versão velha e devolve
+   * false (o formulário fica como estava, com as alterações não salvas).
+   */
+  private async carregar(aposConflito = false): Promise<boolean> {
     let r: EmpresaResposta | null = null;
     let erro: unknown = null;
     if (this.online()) {
@@ -256,13 +287,16 @@ export class EmpresaPage {
     }
     if (aposConflito && erro) {
       this.erroGeral.set(`Não foi possível carregar a versão atual: ${mensagemDeErro(erro)} Recarregue antes de salvar de novo.`);
-      return;
+      return false;
     }
     if (erro) this.toasts.erro(mensagemDeErro(erro));
     const local = r ? undefined : await this.db.empresa.get(ID_EMPRESA);
     const d = r?.dados ?? local ?? null;
     this.version = r ? r.version : (local?.version ?? null);
-    if (!d) return;
+    if (!d) {
+      this.marcarSalvo();
+      return true;
+    }
     const e = paraEmpresaLocal(ID_EMPRESA, this.version, d);
     this.form.patchValue({
       razaoSocial: e.razaoSocial,
@@ -277,6 +311,9 @@ export class EmpresaPage {
       condicoesPagamentoPadrao: e.condicoesPagamentoPadrao ?? '',
     });
     this.logoArquivoId.set(e.logoArquivoId);
+    // antes de esperar a URL da logo: o que for digitado durante essa espera já conta como alteração
+    this.marcarSalvo();
     this.logoUrl.set(e.logoArquivoId ? await this.arquivos.obterUrl(e.logoArquivoId) : null);
+    return true;
   }
 }

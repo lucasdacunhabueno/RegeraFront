@@ -12,6 +12,7 @@ import { SyncService } from '../../core/sync/sync-service';
     <ul class="divide-y divide-slate-200 overflow-hidden rounded-xl bg-white">
       @if (admin()) {
         <li><a routerLink="/usuarios" class="block px-4 py-4">Usuários</a></li>
+        <li><a routerLink="/templates" class="block px-4 py-4">Templates de proposta</a></li>
         <li><a routerLink="/empresa" class="block px-4 py-4">Empresa</a></li>
       }
       <li>

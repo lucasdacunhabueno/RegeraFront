@@ -41,8 +41,18 @@ describe('MaisPage', () => {
     expect(el.textContent).toContain('Empresa');
   });
 
+  it('admin vê "Templates de proposta" entre Usuários e Empresa', () => {
+    const { el } = montar('ADMIN');
+    const links = [...el.querySelectorAll('a')].map((a) => a.textContent?.trim());
+    const i = links.indexOf('Templates de proposta');
+    expect(i).toBe(links.indexOf('Usuários') + 1);
+    expect(links[i + 1]).toBe('Empresa');
+    expect(el.querySelector('a[href="/templates"]')).toBeTruthy();
+  });
+
   it('comercial não vê Usuários nem Empresa', () => {
     const { el } = montar('COMERCIAL');
+    expect(el.textContent).not.toContain('Templates de proposta');
     expect(el.textContent).not.toContain('Usuários');
     expect(el.textContent).toContain('Trocar senha');
   });

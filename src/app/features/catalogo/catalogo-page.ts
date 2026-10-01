@@ -6,7 +6,7 @@ import { AuthService } from '../../core/auth/auth-service';
 import { formatarMoeda } from '../../core/util/moeda';
 import { CatalogoRepo } from './catalogo-repo';
 import { FotoItem } from './foto-item';
-import { FiltroCatalogo, filtrarItens, ItemLocal } from './item-models';
+import { FiltroCatalogo, filtrarItens } from './item-models';
 
 @Component({
   selector: 'app-catalogo-page',
@@ -26,7 +26,7 @@ import { FiltroCatalogo, filtrarItens, ItemLocal } from './item-models';
     <div class="mb-3 flex flex-wrap items-center gap-2" role="group" aria-label="Filtrar catálogo">
       @for (f of filtros; track f.valor) {
         <button type="button" (click)="filtro.set(f.valor)" [attr.aria-pressed]="filtro() === f.valor"
-                class="rounded-full border px-3 py-1.5 text-sm"
+                class="min-h-12 rounded-full border px-4 py-1.5 text-sm"
                 [class.border-blue-600]="filtro() === f.valor" [class.bg-blue-50]="filtro() === f.valor"
                 [class.border-slate-300]="filtro() !== f.valor">{{ f.rotulo }}</button>
       }
@@ -38,7 +38,9 @@ import { FiltroCatalogo, filtrarItens, ItemLocal } from './item-models';
       }
     </div>
 
-    @if (filtrados().length === 0) {
+    @if (todos() === undefined) {
+      <p class="py-8 text-center text-slate-500">Carregando…</p>
+    } @else if (filtrados().length === 0) {
       <p class="py-8 text-center text-slate-500">
         {{ busca().trim() || filtro() !== 'TODOS' ? 'Nenhum item encontrado.' : 'Nenhum item no catálogo ainda.' }}
       </p>
@@ -96,10 +98,11 @@ export class CatalogoPage {
     { valor: 'SERVICO', rotulo: 'Serviços' },
     { valor: 'LOCAVEL', rotulo: 'Locáveis' },
   ];
-  protected readonly todos = toSignal(this.repo.observarTodos(), { initialValue: [] as ItemLocal[] });
+  /** undefined até a primeira leitura do banco: sem isso a tela piscaria o vazio. */
+  protected readonly todos = toSignal(this.repo.observarTodos());
   protected readonly naoSincronizados = toSignal(this.repo.observarNaoSincronizados(), { initialValue: new Set<string>() });
   protected readonly filtrados = computed(() =>
-    filtrarItens(this.todos(), this.filtro(), this.busca(), this.admin() && this.inativos()),
+    filtrarItens(this.todos() ?? [], this.filtro(), this.busca(), this.admin() && this.inativos()),
   );
   protected readonly moeda = formatarMoeda;
 }

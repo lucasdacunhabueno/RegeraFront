@@ -166,6 +166,32 @@ describe('SyncService', () => {
     expect((await db.clientes.get('c3'))?.nome).toBe('Novo');
   });
 
+  it('aplica a página do pull numa transação só, sem sobrescrever o que tem pendência local', async () => {
+    await db.clientes.put(paraClienteLocal('c0', 0, dados('Minha edição')));
+    await db.pendencias.put({
+      mutationId: 'm0', entidade: 'cliente', agregadoId: 'c0', tipo: 'REJEITADO',
+      mutacao: { mutationId: 'm0', entidade: 'cliente', agregadoId: 'c0', op: 'UPSERT', baseVersion: 0, dados: null, criadaEm: '' },
+      criadaEm: '',
+    });
+    await db.clientes.put(paraClienteLocal('c1', 0, dados('Vai sumir')));
+    const mudancas = Array.from({ length: 300 }, (_, i) => ({
+      entidade: 'cliente', id: `c${i}`, version: 1, deleted: i === 1, dados: i === 1 ? null : dados(`S${i}`),
+    }));
+    const transacao = vi.spyOn(db, 'transaction');
+
+    const p = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull')))
+      .flush({ cursor: 300, temMais: false, usuarios: [], mudancas });
+    await p;
+
+    const comClientes = transacao.mock.calls.filter((args) => args.some((a) => Array.isArray(a) && a.includes(db.clientes)));
+    expect(comClientes).toHaveLength(1);
+    expect((await db.clientes.get('c0'))?.nome).toBe('Minha edição');
+    expect(await db.clientes.get('c1')).toBeUndefined();
+    expect((await db.clientes.get('c299'))?.nome).toBe('S299');
+    expect(await db.clientes.count()).toBe(299);
+  });
+
   it('pull pagina enquanto temMais', async () => {
     const p = sync.sincronizar();
     (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull' && r.params.get('cursor') === '0')))
@@ -430,6 +456,51 @@ describe('SyncService', () => {
     const p2 = sync.sincronizar();
     await pullVazio();
     await Promise.all([p1, p2]);
+  });
+
+  it('sincronizar durante a rodada envia, ao terminar, o que entrou na outbox no meio dela', async () => {
+    const p = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'));
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+    const p2 = sync.sincronizar();
+    expect(p2).toBe(p);
+    pull.flush({ cursor: 0, temMais: false, mudancas: [], usuarios: [] });
+
+    // sem esperar o timer: a nova rodada começa assim que a atual termina
+    const push = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+    push.flush({ resultados: [{ mutationId: push.request.body.mutacoes[0].mutationId, status: 'OK', version: 0, dados: dados('A') }] });
+    await pullVazio();
+    await p2;
+    expect(await db.outbox.count()).toBe(0);
+  });
+
+  it('sincronizar durante a rodada com a outbox vazia não faz um segundo pull', async () => {
+    const p = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'));
+    const p2 = sync.sincronizar();
+    pull.flush({ cursor: 0, temMais: false, mudancas: [], usuarios: [] });
+    await Promise.all([p, p2]);
+    await new Promise((r) => setTimeout(r, 20));
+    http.expectNone((r) => r.url === '/api/sync/pull');
+    http.expectNone('/api/sync/push');
+  });
+
+  it('rodadas repetidas param no teto quando o servidor segue devolvendo ERRO_INTERNO', async () => {
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+    const p = sync.sincronizar();
+    // a primeira rodada e mais 3 repetições, cada uma pedida no meio da anterior
+    for (let i = 0; i < 4; i++) {
+      const push = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+      void sync.sincronizar();
+      push.flush({
+        resultados: [{ mutationId: push.request.body.mutacoes[0].mutationId, status: 'REJEITADO', erro: { codigo: 'ERRO_INTERNO', mensagem: 'falha' } }],
+      });
+      await pullVazio();
+    }
+    await p;
+    await new Promise((r) => setTimeout(r, 20));
+    http.expectNone('/api/sync/push');
+    expect(await db.outbox.count()).toBe(1);
   });
 
   it('conta mutações e pendências não sincronizadas', async () => {

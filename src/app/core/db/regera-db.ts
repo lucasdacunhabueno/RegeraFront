@@ -3,6 +3,7 @@ import Dexie, { type Table } from 'dexie';
 import type { ClienteLocal } from '../../features/clientes/cliente-models';
 import type { ItemLocal } from '../../features/catalogo/item-models';
 import type { EmpresaLocal } from '../../features/empresa/empresa-models';
+import type { TemplateLocal } from '../../features/templates/template-models';
 import type { MutacaoLocal, Pendencia, UsuarioResumo } from '../sync/sync-models';
 
 export interface MetaRegistro {
@@ -26,6 +27,7 @@ export class RegeraDb extends Dexie {
   itens!: Table<ItemLocal, string>;
   empresa!: Table<EmpresaLocal, string>;
   arquivos!: Table<ArquivoLocal, string>;
+  templates!: Table<TemplateLocal, string>;
   private readonly aoLimparTudo = new Set<() => void>();
 
   constructor() {
@@ -51,6 +53,22 @@ export class RegeraDb extends Dexie {
       })
       .upgrade(async (tx) => {
         // fronts P2 pularam item_catalogo/empresa como entidade desconhecida e avançaram o cursor: puxa tudo de novo
+        await tx.table('meta').bulkDelete(['cursor', 'cursorDono']);
+      });
+    this.version(4)
+      .stores({
+        meta: 'chave',
+        clientes: 'id, documento, nomeBusca',
+        outbox: '++seq, agregadoId',
+        pendencias: 'mutationId, agregadoId',
+        usuarios: 'id',
+        itens: 'id, codigo, nomeBusca',
+        empresa: 'id',
+        arquivos: 'id',
+        templates: 'id, tipoProposta, nomeBusca',
+      })
+      .upgrade(async (tx) => {
+        // fronts P3 pularam template_proposta como entidade desconhecida e avançaram o cursor: puxa tudo de novo
         await tx.table('meta').bulkDelete(['cursor', 'cursorDono']);
       });
   }

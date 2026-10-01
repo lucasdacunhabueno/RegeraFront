@@ -2,6 +2,7 @@ import type { Table } from 'dexie';
 import { ClienteDados, ClienteLocal, dadosDoCliente, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { dadosDoItem, ItemCatalogoDados, ItemLocal, paraItemLocal } from '../../features/catalogo/item-models';
 import { dadosDaEmpresa, EmpresaDados, EmpresaLocal, paraEmpresaLocal } from '../../features/empresa/empresa-models';
+import { dadosDoTemplate, paraTemplateLocal, TemplateDados, TemplateLocal } from '../../features/templates/template-models';
 import type { RegeraDb } from '../db/regera-db';
 import { Entidade } from './sync-models';
 
@@ -31,5 +32,10 @@ export const ADAPTADORES: Record<Entidade, Adaptador> = {
     tabela: (db) => db.empresa as unknown as Table<RegistroLocal, string>,
     paraLocal: (id, version, dados) => paraEmpresaLocal(id, version, dados as Partial<EmpresaDados>),
     dadosDe: (local) => dadosDaEmpresa(local as EmpresaLocal),
+  },
+  template_proposta: {
+    tabela: (db) => db.templates as unknown as Table<RegistroLocal, string>,
+    paraLocal: (id, version, dados) => paraTemplateLocal(id, version, dados as TemplateDados),
+    dadosDe: (local) => dadosDoTemplate(local as TemplateLocal),
   },
 };

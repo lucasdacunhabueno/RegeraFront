@@ -1,8 +1,9 @@
-import { Component, DestroyRef, effect, inject, input, signal } from '@angular/core';
+import { Component, computed, DestroyRef, effect, inject, input, signal } from '@angular/core';
 import { takeUntilDestroyed, toSignal } from '@angular/core/rxjs-interop';
 import { FormArray, NonNullableFormBuilder, ReactiveFormsModule, Validators } from '@angular/forms';
 import { Router, RouterLink } from '@angular/router';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
+import { avisarAoSairDaPagina, ComAlteracoes, instantaneo } from '../../core/navegacao/alteracoes-guard';
 import { documentoValido, normalizarDocumento } from '../../core/util/documentos';
 import {
   formatarCep,
@@ -201,18 +202,22 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
       @if (erroGeral()) {
         <p role="alert" class="text-sm text-red-600">{{ erroGeral() }}</p>
       }
-      <button type="submit" [disabled]="salvando()" class="h-12 w-full rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
-        Salvar
-      </button>
-      @if (id()) {
-        <button type="button" data-testid="excluir" (click)="excluir()" [disabled]="excluindo()" class="h-12 w-full rounded-lg border border-red-300 font-semibold text-red-600 disabled:opacity-60">
-          Excluir cliente
+      @if (falhaCarga()) {
+        <p class="rounded-lg bg-red-50 px-3 py-2 text-sm text-red-800" role="alert">Não foi possível carregar o cliente.</p>
+      } @else {
+        <button type="submit" [disabled]="salvando()" class="h-12 w-full rounded-lg bg-blue-600 font-semibold text-white disabled:opacity-60">
+          Salvar
         </button>
+        @if (id()) {
+          <button type="button" data-testid="excluir" (click)="excluir()" [disabled]="excluindo()" class="h-12 w-full rounded-lg border border-red-300 font-semibold text-red-600 disabled:opacity-60">
+            Excluir cliente
+          </button>
+        }
       }
     </form>
   `,
 })
-export class ClienteFormPage {
+export class ClienteFormPage implements ComAlteracoes {
   readonly id = input<string>();
 
   private readonly fb = inject(NonNullableFormBuilder);
@@ -231,6 +236,7 @@ export class ClienteFormPage {
   protected readonly erroDocumento = signal<string | null>(null);
   protected readonly temPendencia = signal(false);
   protected readonly naoEncontrado = signal(false);
+  protected readonly falhaCarga = signal(false);
   /** Versão lida ao abrir o formulário (undefined = cliente novo). */
   private versaoCarregada: number | null | undefined;
 
@@ -251,12 +257,36 @@ export class ClienteFormPage {
 
   protected readonly tipo = toSignal(this.form.controls.tipo.valueChanges, { initialValue: 'PF' as TipoPessoa });
 
+  /** Estado ao abrir, depois de carregar ou de salvar (P4a-R12). */
+  private estadoSalvo = '';
+  /** Depois de excluir, sair não pergunta nada. */
+  private liberado = false;
+  /** Até a carga da edição terminar, nada conta como alteração. */
+  private readonly carregado = signal(true);
+  private readonly valores = toSignal(this.form.valueChanges);
+  private readonly alterado = computed(() => {
+    this.valores();
+    this.carregado();
+    return this.temAlteracoes();
+  });
+
   constructor() {
+    this.estadoSalvo = this.estado();
+    avisarAoSairDaPagina(this.alterado);
     this.form.controls.tipo.valueChanges.pipe(takeUntilDestroyed(inject(DestroyRef))).subscribe(() => this.aoDigitarDocumento());
     effect(() => {
       const id = this.id();
       if (id) void this.carregar(id);
     });
+  }
+
+  temAlteracoes(): boolean {
+    if (this.liberado || !this.carregado() || this.naoEncontrado() || this.falhaCarga()) return false;
+    return this.estado() !== this.estadoSalvo;
+  }
+
+  private estado(): string {
+    return instantaneo(this.form.getRawValue());
   }
 
   protected get enderecos(): FormArray<GrupoEndereco> {
@@ -329,6 +359,7 @@ export class ClienteFormPage {
   }
 
   protected async salvar(): Promise<void> {
+    if (this.falhaCarga()) return;
     if (this.form.invalid) {
       this.form.markAllAsTouched();
       this.erroGeral.set('Corrija os campos destacados.');
@@ -368,6 +399,7 @@ export class ClienteFormPage {
     this.salvando.set(true);
     try {
       await this.repo.salvar(dados, this.id(), this.versaoCarregada);
+      this.estadoSalvo = this.estado();
       this.toasts.mostrar('Cliente salvo.');
       await this.router.navigateByUrl('/clientes');
     } catch (e) {
@@ -383,10 +415,11 @@ export class ClienteFormPage {
 
   protected async excluir(): Promise<void> {
     const id = this.id();
-    if (!id || this.excluindo() || !window.confirm('Excluir este cliente?')) return;
+    if (!id || this.excluindo() || this.falhaCarga() || !window.confirm('Excluir este cliente?')) return;
     this.excluindo.set(true);
     try {
       await this.repo.excluir(id, this.versaoCarregada);
+      this.liberado = true;
       this.toasts.mostrar('Cliente excluído.');
       await this.router.navigateByUrl('/clientes');
     } catch {
@@ -397,8 +430,27 @@ export class ClienteFormPage {
   }
 
   private async carregar(id: string): Promise<void> {
+    this.carregado.set(false);
+    this.falhaCarga.set(false);
+    try {
+      await this.preencher(id);
+    } catch {
+      // formulário vazio salvaria um cliente em branco por cima do existente: bloqueia
+      if (this.id() === id) this.falhaCarga.set(true);
+    } finally {
+      if (this.id() === id) {
+        this.estadoSalvo = this.estado();
+        this.carregado.set(true);
+      }
+    }
+  }
+
+  private async preencher(id: string): Promise<void> {
     const c = await this.repo.buscar(id);
-    this.temPendencia.set(await this.repo.temPendencia(id));
+    const pendencia = await this.repo.temPendencia(id);
+    // o id mudou durante a leitura: a carga do id novo é que preenche o formulário
+    if (this.id() !== id) return;
+    this.temPendencia.set(pendencia);
     if (!c) {
       this.naoEncontrado.set(true);
       return;

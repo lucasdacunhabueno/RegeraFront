@@ -7,6 +7,7 @@ import { ArquivosService } from '../../core/arquivos/arquivos-service';
 import { ImagemService } from '../../core/arquivos/imagem-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { mensagemDeErro } from '../../core/http/erro-api';
+import { avisarAoSairDaPagina, ComAlteracoes, instantaneo } from '../../core/navegacao/alteracoes-guard';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { formatarMoedaInput, parseMoeda } from '../../core/util/moeda';
 import { Toasts } from '../../shared/ui/toasts';
@@ -137,7 +138,7 @@ const CORRIJA = 'Corrija os campos destacados.';
     </form>
   `,
 })
-export class ItemFormPage {
+export class ItemFormPage implements ComAlteracoes {
   readonly id = input<string>();
 
   private readonly fb = inject(NonNullableFormBuilder);
@@ -191,7 +192,20 @@ export class ItemFormPage {
     return (((venda - custo) / venda) * 100).toLocaleString('pt-BR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
   });
 
+  /** Estado ao abrir, depois de carregar ou de salvar (P4a-R12). */
+  private estadoSalvo = '';
+  /** Depois de excluir, sair não pergunta nada. */
+  private liberado = false;
+  private readonly alterado = computed(() => {
+    this.valores();
+    this.fotoArquivoId();
+    this.carregando();
+    return this.temAlteracoes();
+  });
+
   constructor() {
+    this.estadoSalvo = this.estado();
+    avisarAoSairDaPagina(this.alterado);
     effect(() => {
       const id = this.id();
       if (id) void this.carregar(id);
@@ -208,6 +222,15 @@ export class ItemFormPage {
     this.form.valueChanges.pipe(takeUntilDestroyed()).subscribe(() => {
       if (this.erroGeral() === CORRIJA && this.form.valid && Object.keys(this.erros()).length === 0) this.erroGeral.set(null);
     });
+  }
+
+  temAlteracoes(): boolean {
+    if (this.liberado || this.carregando() || this.naoEncontrado() || this.falhaCarga()) return false;
+    return this.estado() !== this.estadoSalvo;
+  }
+
+  private estado(): string {
+    return instantaneo({ ...this.form.getRawValue(), fotoArquivoId: this.fotoArquivoId() });
   }
 
   protected maiusculas(evento: Event): void {
@@ -291,6 +314,7 @@ export class ItemFormPage {
     this.salvando.set(true);
     try {
       await this.repo.salvar(dados, this.id(), this.versaoCarregada);
+      this.estadoSalvo = this.estado();
       this.toasts.mostrar('Item salvo.');
       await this.router.navigateByUrl('/catalogo');
     } catch (e) {
@@ -307,6 +331,7 @@ export class ItemFormPage {
     this.excluindo.set(true);
     try {
       await this.repo.excluir(id, this.versaoCarregada);
+      this.liberado = true;
       this.toasts.mostrar('Item excluído.');
       await this.router.navigateByUrl('/catalogo');
     } catch {
@@ -330,7 +355,10 @@ export class ItemFormPage {
 
   private async preencher(id: string): Promise<void> {
     const i = await this.repo.buscar(id);
-    this.temPendencia.set(await this.repo.temPendencia(id));
+    const pendencia = await this.repo.temPendencia(id);
+    // o id mudou durante a leitura: a carga do id novo é que preenche o formulário
+    if (this.id() !== id) return;
+    this.temPendencia.set(pendencia);
     this.naoEncontrado.set(!i);
     if (!i) return;
     this.versaoCarregada = i.version;
@@ -347,6 +375,7 @@ export class ItemFormPage {
       ativo: i.ativo,
     });
     this.fotoArquivoId.set(i.fotoArquivoId);
+    this.estadoSalvo = this.estado();
     // a foto pode depender da rede: não segura o formulário por ela
     const foto = i.fotoArquivoId;
     if (foto) {

@@ -171,6 +171,56 @@ describe('ArquivosService', () => {
     expect(await db.arquivos.get('c1')).toBeUndefined();
   });
 
+  it('obterDataUrl monta o data URL base64 a partir do cache, sem ir ao servidor nem criar object URL', async () => {
+    await db.arquivos.put({ id: 'd1', mime: 'image/png', bytes: new Uint8Array([137, 80, 78, 71]).buffer });
+    expect(await svc.obterDataUrl('d1')).toBe('data:image/png;base64,iVBORw==');
+    http.expectNone('/api/arquivos/d1');
+    expect(URL.createObjectURL).not.toHaveBeenCalled();
+  });
+
+  it('obterDataUrl baixa online e grava no cache; offline sem cache, sem sessão ou erro devolvem null', async () => {
+    const p = svc.obterDataUrl('d2');
+    (await vi.waitFor(() => http.expectOne('/api/arquivos/d2'))).flush(new Blob([new Uint8Array([255, 216, 255])], { type: 'image/jpeg' }));
+    expect(await p).toBe('data:image/jpeg;base64,/9j/');
+    expect((await db.arquivos.get('d2'))?.bytes.byteLength).toBe(3);
+
+    const p2 = svc.obterDataUrl('d3');
+    (await vi.waitFor(() => http.expectOne('/api/arquivos/d3'))).flush(null, { status: 404, statusText: 'x' });
+    expect(await p2).toBeNull();
+
+    online.set(false);
+    expect(await svc.obterDataUrl('d4')).toBeNull();
+    online.set(true);
+    autenticado.set(false);
+    expect(await svc.obterDataUrl('d5')).toBeNull();
+    http.expectNone('/api/arquivos/d4');
+    http.expectNone('/api/arquivos/d5');
+  });
+
+  it('obterDataUrl com bytes grandes (acima do limite de argumentos) não quebra', async () => {
+    const bytes = new Uint8Array(300_000).fill(65);
+    await db.arquivos.put({ id: 'd6', mime: 'image/png', bytes: bytes.buffer });
+    const url = await svc.obterDataUrl('d6');
+    expect(url?.startsWith('data:image/png;base64,QUFB')).toBe(true);
+    expect(url!.length).toBe('data:image/png;base64,'.length + 400_000);
+  });
+
+  it('limpar() durante um obterDataUrl em voo devolve null e não grava os bytes', async () => {
+    const p = svc.obterDataUrl('d7');
+    const req = await vi.waitFor(() => http.expectOne('/api/arquivos/d7'));
+    svc.limpar();
+    req.flush(new Blob([new Uint8Array([1])], { type: 'image/png' }));
+    expect(await p).toBeNull();
+    expect(await db.arquivos.get('d7')).toBeUndefined();
+  });
+
+  it('limpar() depois da leitura do cache e antes do fim devolve null (bytes da sessão anterior)', async () => {
+    await db.arquivos.put({ id: 'd8', mime: 'image/png', bytes: new Uint8Array([1]).buffer });
+    const p = svc.obterDataUrl('d8');
+    svc.limpar();
+    expect(await p).toBeNull();
+  });
+
   it('sem sessão não baixa nada', async () => {
     autenticado.set(false);
     await svc.garantirCache('b6');

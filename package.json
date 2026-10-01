@@ -9,11 +9,13 @@
     "test": "ng test",
     "lint": "ng lint",
     "test:ci": "ng test --watch=false",
-    "e2e": "playwright test"
+    "e2e": "playwright test",
+    "checar:csp": "node scripts/checar-csp-index.mjs"
   },
   "private": true,
   "packageManager": "npm@11.16.0",
   "dependencies": {
+    "@angular/cdk": "^22.2.1",
     "@angular/common": "^22.2.0",
     "@angular/compiler": "^22.2.0",
     "@angular/core": "^22.2.0",
@@ -22,7 +24,12 @@
     "@angular/router": "^22.2.0",
     "@angular/service-worker": "^22.2.0",
     "@lucide/angular": "^1.48.0",
+    "@tiptap/core": "3.31",
+    "@tiptap/extension-text-align": "3.31",
+    "@tiptap/pm": "3.31",
+    "@tiptap/starter-kit": "3.31",
     "dexie": "^4.4.6",
+    "pdfmake": "^0.3.11",
     "rxjs": "~7.8.0",
     "tslib": "^2.3.0"
   },
@@ -33,6 +40,7 @@
     "@eslint/js": "^10.0.1",
     "@playwright/test": "^1.63.0",
     "@tailwindcss/postcss": "^4.3.3",
+    "@types/pdfmake": "^0.3.3",
     "angular-eslint": "22.5.0",
     "eslint": "^10.9.1",
     "fake-indexeddb": "^6.2.5",

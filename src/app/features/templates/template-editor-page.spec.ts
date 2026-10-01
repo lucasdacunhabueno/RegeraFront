@@ -1,0 +1,804 @@
+import { CdkDropList } from '@angular/cdk/drag-drop';
+import { ComponentFixture, TestBed } from '@angular/core/testing';
+import { By } from '@angular/platform-browser';
+import { provideRouter, Router } from '@angular/router';
+import { vi } from 'vitest';
+import { RegeraDb } from '../../core/db/regera-db';
+import { PdfService } from '../../core/pdf/pdf-service';
+import { ErroCampo } from '../../core/util/erro-campo';
+import { ID_EMPRESA, paraEmpresaLocal } from '../empresa/empresa-models';
+import { Toasts } from '../../shared/ui/toasts';
+import { Bloco, paraTemplateLocal, TemplateDados } from './template-models';
+import { TemplateEditorPage } from './template-editor-page';
+import { TemplatesRepo } from './templates-repo';
+
+const blocosExistentes = (): Bloco[] => [
+  { id: 'c1', tipo: 'CABECALHO', config: { mostrarLogo: true, mostrarDadosEmpresa: false, titulo: 'Orçamento' } },
+  { id: 'i1', tipo: 'ITENS', config: { colunas: ['descricao', 'subtotal'], agruparPorNatureza: false } },
+];
+const existente = (blocos: Bloco[] = blocosExistentes()): TemplateDados => ({
+  nome: 'Venda padrão', tipoProposta: 'SERVICO', padrao: true, ativo: true, blocos,
+});
+const empresa = paraEmpresaLocal(ID_EMPRESA, 1, { razaoSocial: 'Solar Ltda', logoArquivoId: 'logo-1' });
+
+function montar(
+  opcoes: {
+    id?: string;
+    dados?: TemplateDados;
+    salvar?: ReturnType<typeof vi.fn>;
+    buscar?: ReturnType<typeof vi.fn>;
+    pendencia?: boolean;
+    /** Id do padrão efetivo do tipo (o template carregado, por padrão). */
+    padraoEfetivo?: string | null;
+  } = {},
+) {
+  const padraoEfetivo = opcoes.padraoEfetivo === undefined ? 't1' : opcoes.padraoEfetivo;
+  const repo = {
+    buscar: opcoes.buscar ?? vi.fn().mockResolvedValue(paraTemplateLocal('t1', 3, opcoes.dados ?? existente())),
+    temPendencia: vi.fn().mockResolvedValue(opcoes.pendencia ?? false),
+    salvar: opcoes.salvar ?? vi.fn().mockResolvedValue('novo'),
+    excluir: vi.fn().mockResolvedValue(undefined),
+    padraoPorTipo: vi.fn().mockResolvedValue(padraoEfetivo ? paraTemplateLocal(padraoEfetivo, 1, existente()) : undefined),
+  };
+  const blob = new Blob(['%PDF'], { type: 'application/pdf' });
+  const pdf = { gerarBlob: vi.fn().mockResolvedValue(blob), logoDataUrl: vi.fn().mockResolvedValue('data:image/png;base64,AAAA') };
+  const db = { empresa: { get: vi.fn().mockResolvedValue(empresa) } };
+  TestBed.configureTestingModule({
+    providers: [
+      provideRouter([]),
+      { provide: TemplatesRepo, useValue: repo },
+      { provide: PdfService, useValue: pdf },
+      { provide: RegeraDb, useValue: db },
+    ],
+  });
+  const fixture = TestBed.createComponent(TemplateEditorPage);
+  if (opcoes.id) fixture.componentRef.setInput('id', opcoes.id);
+  fixture.detectChanges();
+  const navegar = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
+  const toast = vi.spyOn(TestBed.inject(Toasts), 'mostrar');
+  const toastErro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+  return { fixture, el: fixture.nativeElement as HTMLElement, repo, pdf, db, navegar, toast, toastErro, blob };
+}
+
+async function estavel(fixture: ComponentFixture<unknown>) {
+  fixture.detectChanges();
+  await fixture.whenStable();
+  fixture.detectChanges();
+}
+
+/** Espera o carregamento assíncrono do template (repo mockado) terminar. */
+async function carregado(fixture: ComponentFixture<unknown>) {
+  const el = fixture.nativeElement as HTMLElement;
+  await vi.waitFor(() => {
+    fixture.detectChanges();
+    expect(el.textContent).not.toContain('Carregando…');
+  });
+  await estavel(fixture);
+}
+
+const tipos = (el: HTMLElement) => [...el.querySelectorAll('[data-testid=bloco-tipo]')].map((e) => e.textContent?.trim());
+const cartoes = (el: HTMLElement) => [...el.querySelectorAll<HTMLElement>('li[data-bloco-id]')];
+const botaoDe = (li: HTMLElement, rotulo: string) => li.querySelector<HTMLButtonElement>(`button[aria-label="${rotulo}"]`)!;
+const botaoTexto = (el: HTMLElement, texto: string) =>
+  [...el.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === texto)!;
+
+function digitar(fixture: ComponentFixture<unknown>, seletor: string, valor: string) {
+  const campo = (fixture.nativeElement as HTMLElement).querySelector<HTMLInputElement>(seletor)!;
+  campo.value = valor;
+  campo.dispatchEvent(new Event('input'));
+  fixture.detectChanges();
+}
+
+const enviar = (el: HTMLElement) => el.querySelector<HTMLButtonElement>('button[type=submit]')!.click();
+
+describe('TemplateEditorPage', () => {
+  let urls: number;
+  const criar = vi.fn(() => `blob:http://localhost/previa-${++urls}`);
+  const revogar = vi.fn();
+  const originais = {
+    criar: URL.createObjectURL, revogar: URL.revokeObjectURL, largura: window.innerWidth, matchMedia: window.matchMedia,
+  };
+
+  beforeAll(() => {
+    Range.prototype.getClientRects ??= () => [] as unknown as DOMRectList;
+    Range.prototype.getBoundingClientRect ??= () => new DOMRect();
+  });
+  beforeEach(() => {
+    urls = 0;
+    criar.mockClear();
+    revogar.mockClear();
+    URL.createObjectURL = criar;
+    URL.revokeObjectURL = revogar;
+  });
+  afterEach(() => {
+    vi.restoreAllMocks();
+    URL.createObjectURL = originais.criar;
+    URL.revokeObjectURL = originais.revogar;
+    Object.defineProperty(window, 'innerWidth', { configurable: true, value: originais.largura });
+    Object.defineProperty(window, 'matchMedia', { configurable: true, writable: true, value: originais.matchMedia });
+  });
+  const largura = (px: number) => Object.defineProperty(window, 'innerWidth', { configurable: true, value: px });
+  /** Simula um aparelho de ponteiro grosso (toque) para `matchMedia('(pointer: coarse)')`. */
+  const ponteiroGrosso = () =>
+    Object.defineProperty(window, 'matchMedia', {
+      configurable: true,
+      writable: true,
+      value: (q: string) => ({ matches: q === '(pointer: coarse)', media: q, addEventListener: () => undefined, removeEventListener: () => undefined }),
+    });
+
+  describe('template novo', () => {
+    it('começa com os 5 blocos iniciais', () => {
+      const { el } = montar();
+      expect(el.querySelector('h1')?.textContent).toContain('Novo template');
+      expect(tipos(el)).toEqual(['Cabeçalho', 'Texto', 'Itens', 'Totais', 'Assinatura']);
+      expect(el.querySelector<HTMLInputElement>('#nome')!.classList).toContain('h-12');
+    });
+
+    it('"+ Bloco" abre o menu com os seis tipos e adicionar QUEBRA deixa 6', async () => {
+      const { fixture, el } = montar();
+      const mais = botaoTexto(el, '+ Bloco');
+      expect(mais.getAttribute('aria-expanded')).toBe('false');
+      mais.click();
+      await estavel(fixture);
+      const itens = [...el.querySelectorAll('[role=menuitem]')].map((b) => b.textContent?.trim());
+      expect(itens).toEqual(['Cabeçalho', 'Texto', 'Itens', 'Totais', 'Assinatura', 'Quebra de página']);
+
+      // teclado: o foco vai para o primeiro tipo; setas navegam; Esc fecha e volta ao botão
+      const itensMenu = [...el.querySelectorAll<HTMLButtonElement>('[role=menuitem]')];
+      expect(document.activeElement).toBe(itensMenu[0]);
+      const tecla = (key: string) =>
+        (document.activeElement as HTMLElement).dispatchEvent(new KeyboardEvent('keydown', { key, bubbles: true, cancelable: true }));
+      tecla('ArrowUp');
+      expect(document.activeElement).toBe(itensMenu[5]);
+      tecla('ArrowDown');
+      expect(document.activeElement).toBe(itensMenu[0]);
+      tecla('Escape');
+      await estavel(fixture);
+      expect(el.querySelectorAll('[role=menuitem]').length).toBe(0);
+      expect(document.activeElement).toBe(mais);
+      mais.click();
+      await estavel(fixture);
+
+      botaoTexto(el, 'Quebra de página').click();
+      await estavel(fixture);
+      expect(el.querySelectorAll('[role=menuitem]').length).toBe(0);
+      expect(tipos(el)).toEqual(['Cabeçalho', 'Texto', 'Itens', 'Totais', 'Assinatura', 'Quebra de página']);
+      const ids = cartoes(el).map((li) => li.dataset['blocoId']!);
+      expect(new Set(ids).size).toBe(6);
+      expect(ids[5]).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-/);
+    });
+
+    it('↑ e ↓ reordenam e o foco fica no bloco movido', async () => {
+      const { fixture, el } = montar();
+      const [primeiro] = cartoes(el);
+      expect(botaoDe(primeiro, 'Mover bloco para cima').disabled).toBe(true);
+      botaoDe(primeiro, 'Mover bloco para baixo').click();
+      await estavel(fixture);
+      expect(tipos(el)).toEqual(['Texto', 'Cabeçalho', 'Itens', 'Totais', 'Assinatura']);
+      expect(document.activeElement).toBe(botaoDe(cartoes(el)[1], 'Mover bloco para baixo'));
+      expect(el.querySelector('[role=status]')?.textContent).toContain('posição 2 de 5');
+
+      botaoDe(cartoes(el)[4], 'Mover bloco para cima').click();
+      await estavel(fixture);
+      expect(tipos(el)).toEqual(['Texto', 'Cabeçalho', 'Itens', 'Assinatura', 'Totais']);
+      expect(botaoDe(cartoes(el)[4], 'Mover bloco para baixo').disabled).toBe(true);
+    });
+
+    it('arrastar (CDK drop) reordena com moveItemInArray', async () => {
+      const { fixture, el } = montar();
+      const lista = fixture.debugElement.query(By.directive(CdkDropList)).injector.get(CdkDropList);
+      expect(cartoes(el)[0].querySelector('[cdkDragHandle], .cdk-drag-handle')?.getAttribute('aria-label')).toBe(
+        'Arrastar para reordenar o bloco',
+      );
+      lista.dropped.emit({ previousIndex: 0, currentIndex: 3 } as never);
+      await estavel(fixture);
+      expect(tipos(el)).toEqual(['Texto', 'Itens', 'Totais', 'Cabeçalho', 'Assinatura']);
+    });
+
+    it('remover pede confirmação', async () => {
+      const confirmar = vi.spyOn(window, 'confirm').mockReturnValueOnce(false).mockReturnValueOnce(true);
+      const { fixture, el } = montar();
+      botaoDe(cartoes(el)[1], 'Remover bloco').click();
+      await estavel(fixture);
+      expect(tipos(el).length).toBe(5);
+      botaoDe(cartoes(el)[1], 'Remover bloco').click();
+      await estavel(fixture);
+      expect(confirmar).toHaveBeenCalledTimes(2);
+      expect(tipos(el)).toEqual(['Cabeçalho', 'Itens', 'Totais', 'Assinatura']);
+    });
+
+    it('tocar no card abre a configuração do bloco em linha', async () => {
+      const { fixture, el } = montar();
+      const abrir = cartoes(el)[3].querySelector<HTMLButtonElement>('[data-testid=abrir-bloco]')!;
+      expect(abrir.getAttribute('aria-expanded')).toBe('false');
+      abrir.click();
+      await estavel(fixture);
+      expect(abrir.getAttribute('aria-expanded')).toBe('true');
+      expect(cartoes(el)[3].querySelector('app-bloco-config input[name=mostrarDescontos]')).toBeTruthy();
+      expect(el.querySelectorAll('app-bloco-config').length).toBe(1);
+
+      cartoes(el)[3].querySelector<HTMLInputElement>('input[name=mostrarDescontos]')!.click();
+      await estavel(fixture);
+      expect(cartoes(el)[3].textContent).toContain('Sem descontos');
+    });
+
+    it('salvar chama repo.salvar com os blocos na ordem da tela e versão undefined', async () => {
+      const { fixture, el, repo, navegar, toast } = montar();
+      digitar(fixture, '#nome', '  Serviço básico  ');
+      const tipo = el.querySelector<HTMLSelectElement>('#tipo')!;
+      tipo.value = 'MANUTENCAO';
+      tipo.dispatchEvent(new Event('change'));
+      botaoDe(cartoes(el)[0], 'Mover bloco para baixo').click();
+      await estavel(fixture);
+      const ordem = cartoes(el).map((li) => li.dataset['blocoId']);
+
+      enviar(el);
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/templates'));
+      const [dados, id, versao] = repo.salvar.mock.calls[0];
+      expect(id).toBeUndefined();
+      expect(versao).toBeUndefined();
+      expect(dados).toMatchObject({ nome: 'Serviço básico', tipoProposta: 'MANUTENCAO', ativo: true, padrao: false });
+      expect((dados as TemplateDados).blocos.map((b) => b.id)).toEqual(ordem);
+      expect((dados as TemplateDados).blocos.map((b) => b.tipo)).toEqual(['TEXTO', 'CABECALHO', 'ITENS', 'TOTAIS', 'ASSINATURA']);
+      expect(toast).toHaveBeenCalledWith('Template salvo.');
+    });
+
+    it('nome vazio mostra erro e não salva', async () => {
+      const { fixture, el, repo } = montar();
+      enviar(el);
+      await estavel(fixture);
+      expect(el.textContent).toContain('Informe o nome.');
+      expect(el.querySelector('[data-testid=erro-geral]')?.textContent).toContain('Corrija os campos destacados.');
+      expect(repo.salvar).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('edição', () => {
+    it('carrega o template e salva com a versão carregada', async () => {
+      const { fixture, el, repo, navegar } = montar({ id: 't1' });
+      await carregado(fixture);
+      expect(el.querySelector('h1')?.textContent).toContain('Editar template');
+      expect(el.querySelector<HTMLInputElement>('#nome')!.value).toBe('Venda padrão');
+      expect(el.querySelector<HTMLSelectElement>('#tipo')!.value).toBe('SERVICO');
+      expect(el.querySelector<HTMLInputElement>('#padrao')!.checked).toBe(true);
+      expect(tipos(el)).toEqual(['Cabeçalho', 'Itens']);
+      expect(cartoes(el)[0].textContent).toContain('Orçamento');
+      expect(cartoes(el)[1].textContent).toContain('Descrição, Subtotal');
+
+      enviar(el);
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/templates'));
+      expect(repo.salvar).toHaveBeenCalledWith(existente(), 't1', 3);
+    });
+
+    it('ITENS sem colunas: uma só mensagem (inline com o bloco aberto, no card com ele fechado) e não salva', async () => {
+      const blocos = blocosExistentes();
+      blocos[1] = { id: 'i1', tipo: 'ITENS', config: { colunas: [], agruparPorNatureza: false } };
+      const { fixture, el, repo } = montar({ id: 't1', dados: existente(blocos) });
+      await carregado(fixture);
+      enviar(el);
+      await estavel(fixture);
+      expect(repo.salvar).not.toHaveBeenCalled();
+      expect(el.querySelector('[data-testid=erro-geral]')?.textContent).toContain('Corrija os campos destacados.');
+      // o bloco com erro fica aberto e mostra só a mensagem inline do formulário
+      const itens = cartoes(el)[1];
+      expect(itens.querySelector('app-bloco-config')).toBeTruthy();
+      expect(itens.querySelector('[data-testid=erro-bloco]')).toBeNull();
+      expect(itens.textContent).toContain('Escolha pelo menos uma coluna.');
+      expect(itens.textContent).not.toContain('Escolha pelo menos uma opção.');
+      expect(itens.querySelectorAll('p.text-red-600').length).toBe(1);
+      expect(cartoes(el)[0].querySelector('[data-testid=erro-bloco]')).toBeNull();
+
+      // fechado, o card mostra o resumo do erro
+      itens.querySelector<HTMLButtonElement>('[data-testid=abrir-bloco]')!.click();
+      await estavel(fixture);
+      expect(cartoes(el)[1].querySelector('app-bloco-config')).toBeNull();
+      expect(cartoes(el)[1].querySelector('[data-testid=erro-bloco]')?.textContent).toContain('Escolha pelo menos uma opção.');
+    });
+
+    it('Padrão começa desmarcado quando outro template é o padrão efetivo do tipo', async () => {
+      const { fixture, el, repo } = montar({ id: 't1', padraoEfetivo: 't9' });
+      await carregado(fixture);
+      expect(repo.padraoPorTipo).toHaveBeenCalledWith('SERVICO');
+      expect(el.querySelector<HTMLInputElement>('#padrao')!.checked).toBe(false);
+      // o que a tela mostra é o estado salvo: nada a perguntar ao sair
+      expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+    });
+
+    it('desmarcar Ativo desmarca e desabilita Padrão', async () => {
+      const { fixture, el, repo } = montar({ id: 't1' });
+      await carregado(fixture);
+      const padrao = el.querySelector<HTMLInputElement>('#padrao')!;
+      expect(padrao.disabled).toBe(false);
+      el.querySelector<HTMLInputElement>('#ativo')!.click();
+      await estavel(fixture);
+      expect(padrao.checked).toBe(false);
+      expect(padrao.disabled).toBe(true);
+      enviar(el);
+      await vi.waitFor(() => expect(repo.salvar).toHaveBeenCalled());
+      expect(repo.salvar.mock.calls[0][0]).toMatchObject({ ativo: false, padrao: false });
+    });
+
+    it('ErroCampo("blocos") vindo do repo aparece', async () => {
+      const salvar = vi.fn().mockRejectedValue(new ErroCampo('blocos', 'Template grande demais.'));
+      const { fixture, el, navegar } = montar({ id: 't1', salvar });
+      await carregado(fixture);
+      enviar(el);
+      await vi.waitFor(() => expect(salvar).toHaveBeenCalled());
+      await estavel(fixture);
+      expect(el.querySelector('[data-testid=erro-geral]')?.textContent).toContain('Template grande demais.');
+      expect(navegar).not.toHaveBeenCalled();
+    });
+
+    it('pendência mostra a faixa com link para Pendências', async () => {
+      const { fixture, el } = montar({ id: 't1', pendencia: true });
+      await carregado(fixture);
+      expect(el.textContent).toContain('pendência de sincronização');
+      expect(el.querySelector('a[href="/pendencias"]')).toBeTruthy();
+    });
+
+    it('excluir pede confirmação e chama repo.excluir com a versão', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const { fixture, el, repo, navegar } = montar({ id: 't1' });
+      await carregado(fixture);
+      el.querySelector<HTMLButtonElement>('[data-testid=excluir]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/templates'));
+      expect(repo.excluir).toHaveBeenCalledWith('t1', 3);
+    });
+
+    it('bloco de tipo desconhecido (do pull) aparece na lista e a validação barra o salvar', async () => {
+      const blocos = [...blocosExistentes(), { id: 'x', tipo: 'IMAGEM', config: {} } as unknown as Bloco];
+      const { fixture, el, repo } = montar({ id: 't1', dados: existente(blocos) });
+      await carregado(fixture);
+      expect(tipos(el)).toEqual(['Cabeçalho', 'Itens', 'Bloco desconhecido']);
+      enviar(el);
+      await estavel(fixture);
+      expect(repo.salvar).not.toHaveBeenCalled();
+      // aberto: a mensagem vai para dentro do bloco-config, uma vez só
+      const card = cartoes(el)[2];
+      expect(card.querySelector('[data-testid=erro-bloco]')).toBeNull();
+      expect(card.querySelector('app-bloco-config')?.textContent).toContain('Tipo de bloco desconhecido.');
+      expect(card.textContent!.split('Tipo de bloco desconhecido.').length - 1).toBe(1);
+    });
+  });
+
+  describe('prévia', () => {
+    it('em 1280 px gera o blob com dados fictícios e mostra o iframe com blob:', async () => {
+      largura(1280);
+      const { fixture, el, pdf, db } = montar({ id: 't1' });
+      await carregado(fixture);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalled());
+      await estavel(fixture);
+      expect(db.empresa.get).toHaveBeenCalledWith(ID_EMPRESA);
+      expect(pdf.logoDataUrl).toHaveBeenCalledWith(empresa);
+      const entrada = pdf.gerarBlob.mock.calls[0][0];
+      expect(entrada).toMatchObject({ previa: true, logoDataUrl: 'data:image/png;base64,AAAA', blocos: blocosExistentes() });
+      expect(entrada.empresa.razaoSocial).toBe('Solar Ltda');
+      // os dados fictícios seguem o tipo do template carregado
+      expect(entrada.proposta.tipo).toBe('SERVICO');
+      const iframe = el.querySelector<HTMLIFrameElement>('iframe[title="Prévia do PDF"]')!;
+      expect(iframe.getAttribute('src')).toBe('blob:http://localhost/previa-1');
+    });
+
+    it('mostra "Gerando prévia…" durante o processo e toast em caso de erro', async () => {
+      largura(1280);
+      const { fixture, el, pdf, toastErro } = montar();
+      let falhar!: (e: Error) => void;
+      pdf.gerarBlob.mockReturnValue(new Promise((_, rej) => (falhar = rej)));
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(pdf.gerarBlob).toHaveBeenCalled());
+      await estavel(fixture);
+      expect(el.textContent).toContain('Gerando prévia…');
+      falhar(new Error('x'));
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Não foi possível gerar a prévia.'));
+      await estavel(fixture);
+      expect(el.textContent).not.toContain('Gerando prévia…');
+    });
+
+    const janelaFalsa = () => ({
+      location: { href: '' },
+      close: vi.fn(),
+      opener: {} as unknown,
+      document: { title: '', body: { textContent: '' } },
+    });
+
+    it('em 390 px abre a aba de forma síncrona no clique e só depois aponta para o blob', async () => {
+      largura(390);
+      const janela = janelaFalsa();
+      const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+      const { fixture, el, pdf } = montar();
+      let liberar!: (b: Blob) => void;
+      pdf.gerarBlob.mockReturnValue(new Promise<Blob>((r) => (liberar = r)));
+
+      botaoTexto(el, 'Gerar prévia').click();
+      // antes de qualquer await: ainda dentro do gesto do usuário (iOS/Safari)
+      expect(abrir).toHaveBeenCalledWith('', '_blank');
+      expect(pdf.gerarBlob).not.toHaveBeenCalled();
+      expect(janela.document.body.textContent).toBe('Gerando prévia…');
+      expect(janela.location.href).toBe('');
+
+      await vi.waitFor(() => expect(pdf.gerarBlob).toHaveBeenCalled());
+      liberar(new Blob(['%PDF'], { type: 'application/pdf' }));
+      await vi.waitFor(() => expect(janela.location.href).toBe('blob:http://localhost/previa-1'));
+      await estavel(fixture);
+      expect(abrir).toHaveBeenCalledTimes(1);
+      expect(el.querySelector('iframe')).toBeNull();
+      expect([...el.querySelectorAll('a')].some((a) => a.textContent?.trim() === 'Abrir prévia')).toBe(false);
+      expect(el.textContent).toContain('A prévia foi aberta em uma nova aba.');
+    });
+
+    it('em 390 px com popup bloqueado mostra o link "Abrir prévia"', async () => {
+      largura(390);
+      vi.spyOn(window, 'open').mockReturnValue(null);
+      const { fixture, el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalled());
+      await estavel(fixture);
+      const link = [...el.querySelectorAll('a')].find((a) => a.textContent?.trim() === 'Abrir prévia')!;
+      expect(link.getAttribute('href')).toBe('blob:http://localhost/previa-1');
+      expect(link.getAttribute('target')).toBe('_blank');
+    });
+
+    it('em 390 px, se a geração falhar, fecha a aba aberta e mostra o toast', async () => {
+      largura(390);
+      const janela = janelaFalsa();
+      vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+      const { el, pdf, toastErro } = montar();
+      pdf.gerarBlob.mockRejectedValue(new Error('x'));
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Não foi possível gerar a prévia.'));
+      expect(janela.close).toHaveBeenCalled();
+      expect(criar).not.toHaveBeenCalled();
+    });
+
+    it('tablet de 1280 px com ponteiro grosso abre em aba, não no iframe', async () => {
+      largura(1280);
+      ponteiroGrosso();
+      const janela = janelaFalsa();
+      const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+      const { fixture, el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      expect(abrir).toHaveBeenCalledWith('', '_blank');
+      await vi.waitFor(() => expect(janela.location.href).toBe('blob:http://localhost/previa-1'));
+      await estavel(fixture);
+      expect(el.querySelector('iframe')).toBeNull();
+    });
+
+    it('iOS (iPad de 1366 px) abre em aba mesmo sem matchMedia de ponteiro grosso', async () => {
+      largura(1366);
+      vi.spyOn(navigator, 'userAgent', 'get').mockReturnValue('Mozilla/5.0 (iPad; CPU OS 18_0 like Mac OS X) AppleWebKit/605.1.15');
+      const janela = janelaFalsa();
+      const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+      const { fixture, el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      expect(abrir).toHaveBeenCalledWith('', '_blank');
+      await vi.waitFor(() => expect(janela.location.href).toBe('blob:http://localhost/previa-1'));
+      await estavel(fixture);
+      expect(el.querySelector('iframe')).toBeNull();
+    });
+
+    const linkBaixar = (el: HTMLElement) => [...el.querySelectorAll('a')].find((a) => a.textContent?.trim() === 'Baixar PDF');
+
+    it('em aba ou bloqueada mostra também "Baixar PDF" com o nome do template; no iframe, não', async () => {
+      largura(390);
+      const abrir = vi.spyOn(window, 'open').mockReturnValue(janelaFalsa() as unknown as Window);
+      const { fixture, el } = montar({ id: 't1' });
+      await carregado(fixture);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(1));
+      await estavel(fixture);
+      expect(linkBaixar(el)?.getAttribute('href')).toBe('blob:http://localhost/previa-1');
+      expect(linkBaixar(el)?.getAttribute('download')).toBe('previa-Venda padrão.pdf');
+
+      abrir.mockReturnValue(null);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(2));
+      await estavel(fixture);
+      expect(el.textContent).toContain('O navegador bloqueou a nova aba.');
+      expect(linkBaixar(el)?.getAttribute('href')).toBe('blob:http://localhost/previa-2');
+
+      largura(1280);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(3));
+      await estavel(fixture);
+      expect(el.querySelector('iframe')).toBeTruthy();
+      expect(linkBaixar(el)).toBeUndefined();
+    });
+
+    it('em 1280 px não abre janela nenhuma', async () => {
+      largura(1280);
+      const abrir = vi.spyOn(window, 'open');
+      const { el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalled());
+      expect(abrir).not.toHaveBeenCalled();
+    });
+
+    it('revoga o URL anterior a cada nova prévia e no destroy', async () => {
+      largura(1280);
+      const { fixture, el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(1));
+      await estavel(fixture);
+      expect(revogar).not.toHaveBeenCalled();
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(2));
+      expect(revogar).toHaveBeenCalledWith('blob:http://localhost/previa-1');
+      fixture.destroy();
+      expect(revogar).toHaveBeenCalledWith('blob:http://localhost/previa-2');
+    });
+
+    it('usa os blocos da tela, não os salvos', async () => {
+      largura(1280);
+      const { fixture, el, pdf } = montar({ id: 't1' });
+      await carregado(fixture);
+      botaoTexto(el, '+ Bloco').click();
+      await estavel(fixture);
+      botaoTexto(el, 'Totais').click();
+      await estavel(fixture);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(pdf.gerarBlob).toHaveBeenCalled());
+      expect(pdf.gerarBlob.mock.calls[0][0].blocos.map((b: Bloco) => b.tipo)).toEqual(['CABECALHO', 'ITENS', 'TOTAIS']);
+    });
+  });
+  describe('desempenho por tecla', () => {
+    afterEach(() => vi.useRealTimers());
+    const comItensInvalido = () => {
+      const blocos = blocosExistentes();
+      blocos[1] = { id: 'i1', tipo: 'ITENS', config: { colunas: [], agruparPorNatureza: false } };
+      return existente(blocos);
+    };
+    const erroGeral = (el: HTMLElement) => el.querySelector('[data-testid=erro-geral]');
+
+    it('validação dos blocos e aviso de saída da aba esperam 300 ms sem edição; o guard de rota não espera', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const { fixture, el, repo } = montar({ id: 't1', dados: comItensInvalido() });
+      await carregado(fixture);
+      enviar(el);
+      await estavel(fixture);
+      expect(repo.salvar).not.toHaveBeenCalled();
+      expect(erroGeral(el)?.textContent).toContain('Corrija os campos destacados.');
+
+      vi.useFakeTimers();
+      const ouvir = vi.spyOn(window, 'addEventListener');
+      botaoDe(cartoes(el)[1], 'Remover bloco').click();
+      fixture.detectChanges();
+      expect(fixture.componentInstance.temAlteracoes()).toBe(true);
+      expect(erroGeral(el)).not.toBeNull();
+      expect(ouvir).not.toHaveBeenCalledWith('beforeunload', expect.anything());
+
+      vi.advanceTimersByTime(299);
+      fixture.detectChanges();
+      expect(erroGeral(el)).not.toBeNull();
+      vi.advanceTimersByTime(1);
+      fixture.detectChanges();
+      expect(erroGeral(el)).toBeNull();
+      expect(ouvir).toHaveBeenCalledWith('beforeunload', expect.any(Function));
+    });
+
+    it('Salvar logo depois de editar valida o estado atual, sem esperar o debounce', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const { fixture, el, repo } = montar({ id: 't1', dados: comItensInvalido() });
+      await carregado(fixture);
+      vi.useFakeTimers();
+      botaoDe(cartoes(el)[1], 'Remover bloco').click();
+      fixture.detectChanges();
+      enviar(el);
+      fixture.detectChanges();
+      expect(repo.salvar).toHaveBeenCalledTimes(1);
+      expect(repo.salvar.mock.calls[0][0].blocos.map((b: Bloco) => b.id)).toEqual(['c1']);
+    });
+  });
+
+  describe('alterações não salvas (P4a-R12)', () => {
+    it('novo: limpo ao abrir, sujo ao editar, limpo depois de salvar', async () => {
+      const { fixture, el, navegar } = montar();
+      const pagina = fixture.componentInstance;
+      expect(pagina.temAlteracoes()).toBe(false);
+      digitar(fixture, '#nome', 'Novo');
+      expect(pagina.temAlteracoes()).toBe(true);
+      enviar(el);
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/templates'));
+      expect(pagina.temAlteracoes()).toBe(false);
+    });
+
+    it('edição: limpo depois de carregar, sujo ao mover bloco, limpo de novo ao desfazer; excluir libera', async () => {
+      vi.spyOn(window, 'confirm').mockReturnValue(true);
+      const { fixture, el, navegar } = montar({ id: 't1' });
+      const pagina = fixture.componentInstance;
+      await carregado(fixture);
+      expect(pagina.temAlteracoes()).toBe(false);
+      botaoDe(cartoes(el)[0], 'Mover bloco para baixo').click();
+      await estavel(fixture);
+      expect(pagina.temAlteracoes()).toBe(true);
+      botaoDe(cartoes(el)[1], 'Mover bloco para cima').click();
+      await estavel(fixture);
+      expect(pagina.temAlteracoes()).toBe(false);
+      el.querySelector<HTMLInputElement>('#ativo')!.click();
+      await estavel(fixture);
+      expect(pagina.temAlteracoes()).toBe(true);
+      el.querySelector<HTMLButtonElement>('[data-testid=excluir]')!.click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/templates'));
+      expect(pagina.temAlteracoes()).toBe(false);
+    });
+
+    it('carregando ou não encontrado: nunca sujo', async () => {
+      const { fixture } = montar({ id: 't1', buscar: vi.fn().mockResolvedValue(undefined) });
+      expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect((fixture.nativeElement as HTMLElement).textContent).toContain('Template não encontrado');
+      });
+      expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+    });
+  });
+
+  describe('estados e acessibilidade', () => {
+    it('não encontrado: esconde campos, blocos e prévia', async () => {
+      const { fixture, el } = montar({ id: 't1', buscar: vi.fn().mockResolvedValue(undefined) });
+      await carregado(fixture);
+      expect(el.textContent).toContain('Template não encontrado neste aparelho.');
+      expect(el.querySelectorAll('li[data-bloco-id]').length).toBe(0);
+      expect(el.querySelector('#nome')).toBeNull();
+      expect(botaoTexto(el, '+ Bloco')).toBeUndefined();
+      expect(botaoTexto(el, 'Gerar prévia')).toBeUndefined();
+    });
+
+    it('falha de carga: esconde campos, blocos e prévia', async () => {
+      const { fixture, el } = montar({ id: 't1', buscar: vi.fn().mockRejectedValue(new Error('idb')) });
+      await carregado(fixture);
+      expect(el.textContent).toContain('Não foi possível carregar o template.');
+      expect(el.querySelectorAll('li[data-bloco-id]').length).toBe(0);
+      expect(botaoTexto(el, 'Gerar prévia')).toBeUndefined();
+    });
+
+    it('troca de id durante a carga: só o último id preenche os campos', async () => {
+      const pendentes = new Map<string, (t: unknown) => void>();
+      const buscar = vi.fn((id: string) => new Promise((r) => pendentes.set(id, r)));
+      const { fixture, el, repo } = montar({ id: 't1', buscar });
+      await vi.waitFor(() => expect(buscar).toHaveBeenCalledWith('t1'));
+      fixture.componentRef.setInput('id', 't2');
+      fixture.detectChanges();
+      await vi.waitFor(() => expect(buscar).toHaveBeenCalledWith('t2'));
+      pendentes.get('t2')!(paraTemplateLocal('t2', 7, { ...existente(), nome: 'Segundo' }));
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(el.querySelector<HTMLInputElement>('#nome')?.value).toBe('Segundo');
+      });
+      pendentes.get('t1')!(paraTemplateLocal('t1', 3, { ...existente(), nome: 'Primeiro' }));
+      await new Promise((r) => setTimeout(r, 0));
+      await estavel(fixture);
+      expect(el.querySelector<HTMLInputElement>('#nome')!.value).toBe('Segundo');
+      enviar(el);
+      await vi.waitFor(() => expect(repo.salvar).toHaveBeenCalled());
+      expect(repo.salvar.mock.calls[0].slice(1)).toEqual(['t2', 7]);
+    });
+
+    it('"+ Bloco" fecha com pointerdown fora do menu, mas não com pointerdown dentro', async () => {
+      const { fixture, el } = montar();
+      botaoTexto(el, '+ Bloco').click();
+      await estavel(fixture);
+      el.querySelector('[role=menuitem]')!.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      await estavel(fixture);
+      expect(el.querySelectorAll('[role=menuitem]').length).toBe(6);
+      document.body.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      await estavel(fixture);
+      expect(el.querySelectorAll('[role=menuitem]').length).toBe(0);
+    });
+
+    it('salvar com só o nome inválido foca #nome', async () => {
+      const { fixture, el } = montar();
+      enviar(el);
+      await estavel(fixture);
+      expect(document.activeElement).toBe(el.querySelector('#nome'));
+    });
+
+    it('alça de arrastar fora da ordem de Tab; erro do Padrão ligado ao campo', async () => {
+      const salvar = vi.fn().mockRejectedValue(new ErroCampo('padrao', 'Um template inativo não pode ser o padrão.'));
+      const { fixture, el } = montar({ id: 't1', salvar });
+      await carregado(fixture);
+      expect(cartoes(el)[0].querySelector('button[aria-label="Arrastar para reordenar o bloco"]')!.getAttribute('tabindex')).toBe('-1');
+      enviar(el);
+      await vi.waitFor(() => expect(salvar).toHaveBeenCalled());
+      await estavel(fixture);
+      const erro = el.querySelector('#padrao-erro')!;
+      expect(erro.getAttribute('role')).toBe('alert');
+      expect(erro.textContent).toContain('Um template inativo não pode ser o padrão.');
+      expect(el.querySelector('#padrao')!.getAttribute('aria-describedby')).toContain('padrao-erro');
+    });
+
+    it('prévia fica grudada abaixo do cabeçalho no desktop', () => {
+      const { el } = montar();
+      expect(el.querySelector('section[aria-labelledby=titulo-previa]')!.classList).toContain('lg:top-[4.5rem]');
+    });
+  });
+
+  describe('prévia: revogação e offline', () => {
+    /** Guarda os setTimeout de 60 s (revogação adiada); os outros seguem normais. */
+    function capturarAdiados() {
+      const adiados: (() => void)[] = [];
+      const original = window.setTimeout.bind(window);
+      vi.spyOn(window, 'setTimeout').mockImplementation(((fn: () => void, ms?: number, ...args: unknown[]) => {
+        if (ms === 60_000) {
+          adiados.push(fn);
+          return 0;
+        }
+        return original(fn, ms, ...args);
+      }) as typeof window.setTimeout);
+      return adiados;
+    }
+    const janelaFalsa = () => ({
+      location: { href: '' },
+      close: vi.fn(),
+      opener: null as unknown,
+      document: { title: '', body: { textContent: '' } },
+    });
+
+    it('no celular (aba separada) a revogação é adiada 60 s, na troca e no destroy', async () => {
+      largura(390);
+      const adiados = capturarAdiados();
+      vi.spyOn(window, 'open').mockImplementation(() => janelaFalsa() as never);
+      const { fixture, el } = montar();
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(1));
+      await estavel(fixture);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalledTimes(2));
+      expect(revogar).not.toHaveBeenCalled();
+      expect(adiados.length).toBe(1);
+      fixture.destroy();
+      expect(revogar).not.toHaveBeenCalled();
+      expect(adiados.length).toBe(2);
+      adiados.forEach((f) => f());
+      expect(revogar).toHaveBeenCalledWith('blob:http://localhost/previa-1');
+      expect(revogar).toHaveBeenCalledWith('blob:http://localhost/previa-2');
+    });
+
+    it('no desktop, geração que termina depois do destroy não cria URL', async () => {
+      largura(1280);
+      const { fixture, el, pdf } = montar();
+      let liberar!: (b: Blob) => void;
+      pdf.gerarBlob.mockReturnValue(new Promise<Blob>((r) => (liberar = r)));
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(pdf.gerarBlob).toHaveBeenCalled());
+      fixture.destroy();
+      liberar(new Blob(['%PDF']));
+      await new Promise((r) => setTimeout(r, 0));
+      expect(criar).not.toHaveBeenCalled();
+    });
+
+    it('no celular, geração que termina depois do destroy ainda leva o PDF à aba e revoga depois de 60 s', async () => {
+      largura(390);
+      const adiados = capturarAdiados();
+      const janela = janelaFalsa();
+      vi.spyOn(window, 'open').mockReturnValue(janela as never);
+      const { fixture, el, pdf } = montar();
+      let liberar!: (b: Blob) => void;
+      pdf.gerarBlob.mockReturnValue(new Promise<Blob>((r) => (liberar = r)));
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(pdf.gerarBlob).toHaveBeenCalled());
+      fixture.destroy();
+      liberar(new Blob(['%PDF']));
+      await vi.waitFor(() => expect(janela.location.href).toBe('blob:http://localhost/previa-1'));
+      expect(revogar).not.toHaveBeenCalled();
+      expect(adiados.length).toBe(1);
+      adiados[0]();
+      expect(revogar).toHaveBeenCalledWith('blob:http://localhost/previa-1');
+    });
+
+    it('offline, sem empresa local e sem logo: prévia com a empresa fictícia', async () => {
+      largura(1280);
+      const { fixture, el, pdf, db } = montar();
+      db.empresa.get.mockResolvedValue(undefined);
+      pdf.logoDataUrl.mockResolvedValue(null);
+      botaoTexto(el, 'Gerar prévia').click();
+      await vi.waitFor(() => expect(criar).toHaveBeenCalled());
+      await estavel(fixture);
+      expect(pdf.logoDataUrl).toHaveBeenCalledWith(null);
+      const entrada = pdf.gerarBlob.mock.calls[0][0];
+      expect(entrada.logoDataUrl).toBeNull();
+      expect(entrada.empresa.razaoSocial).toBe('Sua Empresa Ltda');
+      expect(el.querySelector('iframe[title="Prévia do PDF"]')).toBeTruthy();
+    });
+  });
+});

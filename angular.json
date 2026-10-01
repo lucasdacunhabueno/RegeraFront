@@ -25,7 +25,8 @@
                 "input": "public"
               }
             ],
-            "styles": ["src/styles.css"]
+            "styles": ["src/styles.css"],
+            "allowedCommonJsDependencies": ["pdfmake"]
           },
           "configurations": {
             "production": {
@@ -41,6 +42,14 @@
                   "maximumError": "8kB"
                 }
               ],
+              "optimization": {
+                "scripts": true,
+                "styles": {
+                  "minify": true,
+                  "inlineCritical": false
+                },
+                "fonts": true
+              },
               "outputHashing": "all",
               "serviceWorker": "ngsw-config.json"
             },

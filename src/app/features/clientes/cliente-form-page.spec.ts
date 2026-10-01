@@ -16,9 +16,9 @@ const existente: ClienteDados = {
   enderecos: [{ tipo: 'PRINCIPAL', cep: '01001000', logradouro: 'Praça da Sé', numero: '1', complemento: null, bairro: 'Sé', cidade: 'São Paulo', uf: 'SP' }],
 };
 
-function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn> } = {}) {
+function montar(opcoes: { id?: string; salvar?: ReturnType<typeof vi.fn>; buscar?: Promise<unknown> } = {}) {
   const repo = {
-    buscar: vi.fn().mockResolvedValue(paraClienteLocal('id1', 3, existente)),
+    buscar: opcoes.buscar ? vi.fn().mockReturnValue(opcoes.buscar) : vi.fn().mockResolvedValue(paraClienteLocal('id1', 3, existente)),
     salvar: opcoes.salvar ?? vi.fn().mockResolvedValue('novo-id'),
     excluir: vi.fn().mockResolvedValue(undefined),
     temPendencia: vi.fn().mockResolvedValue(false),
@@ -66,6 +66,20 @@ describe('ClienteFormPage', () => {
     const [dados, id] = repo.salvar.mock.calls[0];
     expect(id).toBeUndefined();
     expect(dados).toMatchObject({ tipo: 'PF', documento: '52998224725', nome: 'Maria', telefone: '11999998888', nomeFantasia: null, enderecos: [] });
+  });
+
+  it('falha ao ler o cliente: avisa, esconde Salvar e Excluir e não salva', async () => {
+    const { fixture, el, repo } = montar({ id: 'id1', buscar: Promise.reject(new Error('IndexedDB indisponível')) });
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.textContent).toContain('Não foi possível carregar o cliente.');
+    });
+    expect(el.querySelector('button[type=submit]')).toBeNull();
+    expect(el.querySelector('[data-testid=excluir]')).toBeNull();
+    el.querySelector('form')!.dispatchEvent(new Event('submit'));
+    await new Promise((r) => setTimeout(r, 10));
+    expect(repo.salvar).not.toHaveBeenCalled();
+    expect(fixture.componentInstance.temAlteracoes()).toBe(false);
   });
 
   it('CPF inválido mostra erro e não salva', async () => {
@@ -203,5 +217,33 @@ describe('ClienteFormPage', () => {
     await vi.waitFor(() => expect(el.querySelector('[data-testid=excluir]')).not.toBeNull());
     clicar(el, '[data-testid=excluir]');
     expect(repo.excluir).not.toHaveBeenCalled();
+  });
+  it('alterações não salvas: limpo ao abrir, sujo ao editar, limpo depois de salvar', async () => {
+    const { fixture, el, navegar } = montar();
+    const pagina = fixture.componentInstance;
+    expect(pagina.temAlteracoes()).toBe(false);
+    digitar(fixture, '#documento', '52998224725');
+    expect(pagina.temAlteracoes()).toBe(true);
+    digitar(fixture, '#nome', 'Maria');
+    el.querySelector<HTMLButtonElement>('button[type=submit]')!.click();
+    await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/clientes'));
+    expect(pagina.temAlteracoes()).toBe(false);
+  });
+
+  it('alterações não salvas na edição: limpo depois de carregar, sujo ao remover endereço, excluir libera', async () => {
+    vi.spyOn(window, 'confirm').mockReturnValue(true);
+    const { fixture, el, navegar } = montar({ id: 'id1' });
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(el.querySelectorAll('[data-testid=endereco]').length).toBe(1);
+    });
+    const pagina = fixture.componentInstance;
+    expect(pagina.temAlteracoes()).toBe(false);
+    [...el.querySelectorAll<HTMLButtonElement>('[data-testid=endereco] button')].find((b) => b.textContent?.trim() === 'Remover')!.click();
+    fixture.detectChanges();
+    expect(pagina.temAlteracoes()).toBe(true);
+    clicar(el, '[data-testid=excluir]');
+    await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith('/clientes'));
+    expect(pagina.temAlteracoes()).toBe(false);
   });
 });
