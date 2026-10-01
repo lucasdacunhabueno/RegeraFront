@@ -31,6 +31,8 @@ jobs:
       - run: npx ng lint
       - run: npx ng test --watch=false
       - run: npx ng build
+      # o build padrão é o de production (angular.json: defaultConfiguration), o mesmo da imagem
+      - run: node scripts/checar-csp-index.mjs dist/regera-front/browser/index.html
 
   image:
     needs: test
