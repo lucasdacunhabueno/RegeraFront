@@ -16,6 +16,12 @@ import {
 import { SyncService } from './sync-service';
 import { ehUpload, tabelasDeUpload, tiposUpload, tipoUploadDe } from './tipos-upload';
 
+/** Os ids das notas das mutações que o servidor ainda não tem (sem a data dele e fora das notas de `servidor`). */
+function notasNovas(mutacoes: readonly OsDados[], servidor: OsDados | null | undefined): string[] {
+  const doServidor = new Set((servidor?.notas ?? []).map((n) => n.id));
+  return [...new Set(mutacoes.flatMap((d) => (d.notas ?? []).filter((n) => n.criadaEm == null && !doServidor.has(n.id)).map((n) => n.id)))];
+}
+
 /**
  * Decisões do usuário sobre conflitos e rejeições (§11.5). Toda ação relê a pendência gravada dentro da própria
  * transação e não faz nada se ela já não existe (toque duplo, outra aba): vale a `mutacao` gravada, não a cópia da tela.
@@ -63,10 +69,13 @@ export class PendenciasService {
    * altera vêm do servidor, `responsavelId` vai null e o status não volta, senão o servidor a recusaria
    * (`OS_NAO_EDITAVEL`, `TRANSICAO_INVALIDA`). As seguintes da OS na fila e a OS local passam pelo `rebaseFilaOs`: o
    * que nelas era igual ao da mutação do conflito segue o rebase dela, e o que só o aparelho tem fica.
+   * `notasDescartadas`: o rebase tirou notas que o perfil não acrescenta no status do servidor (a OS foi encerrada lá:
+   * o ADMIN na cancelada, o COMERCIAL na concluída ou cancelada), e a tela avisa.
    */
-  async manterMinha(daTela: Pendencia): Promise<void> {
+  async manterMinha(daTela: Pendencia): Promise<{ notasDescartadas: boolean }> {
     const adaptador = this.adaptador(daTela);
     const tabela = adaptador.tabela(this.db);
+    let notasDescartadas = false;
     await this.db.transaction('rw', [this.db.pendencias, this.db.outbox, tabela], async () => {
       const p = await this.db.pendencias.get(daTela.mutationId);
       if (!p) return;
@@ -75,9 +84,10 @@ export class PendenciasService {
       const atras = await this.db.outbox.where('agregadoId').equals(p.agregadoId).count();
       await this.db.pendencias.delete(p.mutationId);
       if (p.entidade === 'os') {
-        const dados = await this.rebasearOs(p, local as OsLocal | undefined, base);
-        if (dados) {
-          await this.sync.devolverAFila(p, { baseVersion: base, dados });
+        const rebase = await this.rebasearOs(p, local as OsLocal | undefined, base);
+        if (rebase) {
+          notasDescartadas = rebase.notasDescartadas;
+          await this.sync.devolverAFila(p, { baseVersion: base, dados: rebase.dados });
           return;
         }
         // sem o estado do servidor (excluída lá) ou num DELETE: a regra comum, sem perder o que é só do aparelho
@@ -89,13 +99,19 @@ export class PendenciasService {
       await this.sync.devolverAFila(p, { baseVersion: base, ...(excluido ? { op: 'DELETE' as const, dados: null } : {}) });
     });
     void this.sync.sincronizar();
+    return { notasDescartadas };
   }
 
   /**
    * M2P1-R19: os dados da mutação da OS em conflito rebaseados (`manterMinhaOs`), com as seguintes da fila e a OS local
-   * rebaseadas sobre eles; null sem o estado do servidor ou fora de um UPSERT. Roda na transação do `manterMinha`.
+   * rebaseadas sobre eles, e se alguma nota nova saiu no caminho; null sem o estado do servidor ou fora de um UPSERT.
+   * Roda na transação do `manterMinha`.
    */
-  private async rebasearOs(p: Pendencia, local: OsLocal | undefined, base: number | null): Promise<OsDados | null> {
+  private async rebasearOs(
+    p: Pendencia,
+    local: OsLocal | undefined,
+    base: number | null,
+  ): Promise<{ dados: OsDados; notasDescartadas: boolean } | null> {
     const servidor = p.dadosServidor as OsDados | null | undefined;
     const enviado = p.mutacao.dados as OsDados | null;
     if (p.mutacao.op !== 'UPSERT' || !servidor || !enviado) return null;
@@ -113,7 +129,30 @@ export class PendenciasService {
     if (local) {
       await this.db.os.put({ ...rebaseOsLocal(local, originais.at(-1) ?? enviado, rebaseadas.at(-1) ?? dados), version: base });
     }
-    return dados;
+    const ficaram = new Set([dados, ...rebaseadas].flatMap((d) => d.notas.map((n) => n.id)));
+    const notasDescartadas = notasNovas([enviado, ...originais], servidor).some((id) => !ficaram.has(id));
+    return { dados, notasDescartadas };
+  }
+
+  /**
+   * O que "Usar a do servidor" ou "Descartar" levaria de uma OS (P4c-R15): `anexos` = um upload de anexo na fila ou nas
+   * pendências dela, ou um anexo gravado aqui e ainda não enviado (fotos, assinatura, PDF); `notas` = uma mutação dela
+   * (a da pendência, na fila ou noutra pendência) com nota que o servidor ainda não tem (com ela vai o resumo). Não
+   * escreve nada.
+   */
+  async perdaDaOs(p: Pendencia): Promise<{ anexos: boolean; notas: boolean }> {
+    if (p.entidade !== 'os') return { anexos: false, notas: false };
+    const id = p.agregadoId;
+    const mutacoes = [
+      p.mutacao,
+      ...(await this.db.outbox.where('agregadoId').equals(id).toArray()),
+      ...(await this.db.pendencias.where('agregadoId').equals(id).toArray()).map((x) => x.mutacao),
+    ];
+    const anexos = mutacoes.some((m) => m.entidade === TIPO_UPLOAD_ANEXO_OS)
+      || (await this.db.anexosOs.where('osId').equals(id).filter((a) => !a.enviado).count()) > 0;
+    const daOs = mutacoes.filter((m) => m.entidade === 'os' && !!m.dados).map((m) => m.dados as OsDados);
+    const notas = notasNovas(daOs, p.dadosServidor as OsDados | null | undefined).length > 0;
+    return { anexos, notas };
   }
 
   /** Busca o estado ATUAL do servidor (dadosServidor pode estar velho); sem rede, usa o que a pendência guardou. */
@@ -136,21 +175,21 @@ export class PendenciasService {
    * (`limparAgregado`), inclusive o envio feito neste aparelho. true quando isso levaria um envio (a transição para
    * ENVIADA ou um UPLOAD, na fila ou numa pendência da proposta) ou um PDF gerado aqui e ainda não enviado: a tela pede
    * confirmação antes. Não escreve nada.
-   * Na OS (M2-P2, carry M1), o mesmo com as fotos, a assinatura e o PDF: um upload de anexo na fila ou nas pendências da
-   * OS, ou um anexo gravado aqui e ainda não enviado. A pendência do próprio upload descarta só o anexo dele: false.
+   * Na OS (M2-P2, carry M1), o mesmo com as fotos, a assinatura, o PDF e as notas ainda não enviados (`perdaDaOs`). A
+   * pendência do próprio upload de um anexo descarta só o anexo dele: false.
    */
   async descartaEnvio(p: Pendencia): Promise<boolean> {
-    if (p.entidade !== 'proposta' && p.entidade !== 'os') return false;
+    if (p.entidade === 'os') {
+      const perda = await this.perdaDaOs(p);
+      return perda.anexos || perda.notas;
+    }
+    if (p.entidade !== 'proposta') return false;
     const id = p.agregadoId;
     const mutacoes = [
       p.mutacao,
       ...(await this.db.outbox.where('agregadoId').equals(id).toArray()),
       ...(await this.db.pendencias.where('agregadoId').equals(id).toArray()).map((x) => x.mutacao),
     ];
-    if (p.entidade === 'os') {
-      if (mutacoes.some((m) => m.entidade === TIPO_UPLOAD_ANEXO_OS)) return true;
-      return (await this.db.anexosOs.where('osId').equals(id).filter((a) => !a.enviado).count()) > 0;
-    }
     const envio = (m: MutacaoLocal) =>
       m.entidade === TIPO_UPLOAD_DOCUMENTO
       || (m.entidade === 'proposta' && !!m.separada && (m.dados as PropostaDados | null)?.status === 'ENVIADA');

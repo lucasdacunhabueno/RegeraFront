@@ -31,10 +31,17 @@ const CAMINHO_BLOCO = /^blocos\[(\d+)\]/;
 const ROTULO_ANEXO_OS: Readonly<Record<TipoAnexoOs, string>> = { FOTO: 'Foto', ASSINATURA: 'Assinatura', DOCUMENTO: 'PDF' };
 
 /** P4c-R15: o texto da confirmação quando a ação levaria o que foi feito neste aparelho e ainda não foi enviado. */
-const AVISO_DESCARTE = {
-  proposta: 'Isto descarta o envio e o PDF gerado neste aparelho.',
-  os: 'Isto descarta as fotos, a assinatura e o PDF desta OS que ainda não foram enviados deste aparelho.',
-} as const;
+const AVISO_PROPOSTA = 'Isto descarta o envio e o PDF gerado neste aparelho.';
+
+/** Na OS, o que ela levaria (`perdaDaOs`): as notas (e o resumo) e os anexos ainda não enviados. */
+function avisoDaOs(perda: { anexos: boolean; notas: boolean }): string {
+  const oQue = perda.notas && perda.anexos ? 'as notas, o resumo, as fotos, a assinatura e o PDF'
+    : perda.notas ? 'as notas e o resumo' : 'as fotos, a assinatura e o PDF';
+  return `Isto descarta ${oQue} desta OS que ainda não foram enviados deste aparelho.`;
+}
+
+/** M2P1-R19: o "Manter a minha" tirou notas que o perfil não acrescenta na OS encerrada no servidor. */
+const NOTAS_DESCARTADAS = 'As notas não puderam ser acrescentadas: a OS está encerrada.';
 
 /** P4c-R15: a ação sobre a proposta ou a OS (não sobre o upload dela) pode levar o que foi feito aqui: pergunta antes. */
 const perguntaAntes = (p: Pendencia) => p.entidade === 'proposta' || p.entidade === 'os';
@@ -44,6 +51,8 @@ interface Confirmacao {
   pendencia: Pendencia;
   gatilho: HTMLElement | null;
   acao: 'servidor' | 'descartar';
+  /** O aviso, conforme o que a ação levaria. */
+  texto?: string;
 }
 
 @Component({
@@ -145,7 +154,7 @@ interface Confirmacao {
 
     @if (confirmacao(); as c) {
       <app-dialogo-motivo [gatilho]="c.gatilho" [titulo]="c.acao === 'servidor' ? 'Usar a do servidor?' : 'Descartar a pendência?'"
-                          [texto]="avisoDescarte(c.pendencia)" [rotuloConfirmar]="c.acao === 'servidor' ? 'Usar a do servidor' : 'Descartar'"
+                          [texto]="c.texto ?? ''" [rotuloConfirmar]="c.acao === 'servidor' ? 'Usar a do servidor' : 'Descartar'"
                           rotuloCancelar="Voltar" [pedirMotivo]="false" [perigo]="true" [ocupado]="ocupada(c.pendencia)"
                           (confirmado)="confirmar(c)" (cancelado)="confirmacao.set(null)" />
     }
@@ -403,13 +412,12 @@ export class PendenciasPage {
   }
 
   protected manterMinha(p: Pendencia): Promise<void> {
-    return this.agir(p, () => this.servico.manterMinha(p));
+    return this.agir(p, async () => {
+      const r = await this.servico.manterMinha(p);
+      if (r?.notasDescartadas) this.toasts.mostrar(NOTAS_DESCARTADAS);
+    });
   }
 
-  /** P4c-R15: o texto da confirmação quando a ação levaria o envio feito aqui (na OS, as fotos, a assinatura e o PDF). */
-  protected avisoDescarte(p: Pendencia): string {
-    return p.entidade === 'os' ? AVISO_DESCARTE.os : AVISO_DESCARTE.proposta;
-  }
   /**
    * A confirmação aberta (`DialogoMotivo` sem motivo, `alertdialog`): de "Usar a do servidor" ou de "Descartar", com o
    * botão que a abriu para o foco voltar.
@@ -440,16 +448,26 @@ export class PendenciasPage {
   private async perguntarSeDescartaEnvio(c: Confirmacao): Promise<void> {
     const p = c.pendencia;
     if (this.ocupada(p)) return;
-    const perguntar = await this.servico.descartaEnvio(p).catch((e: unknown) => {
+    // P4c-R15: o aviso diz o que sai; na OS, conforme o que ela levaria
+    const aviso = await this.avisoDoDescarte(p).catch((e: unknown) => {
       this.toasts.erro(this.mensagemDoErro(p, e));
-      return null;
+      return undefined;
     });
-    if (perguntar === null) return;
-    if (perguntar) {
-      this.confirmacao.set(c);
+    if (aviso === undefined) return;
+    if (aviso !== null) {
+      this.confirmacao.set({ ...c, texto: aviso });
       return;
     }
     await this.agir(p, () => this.executarDescarte(c));
+  }
+
+  /** O texto da confirmação, ou null quando a ação não leva nada feito aqui. */
+  private async avisoDoDescarte(p: Pendencia): Promise<string | null> {
+    if (p.entidade === 'os') {
+      const perda = await this.servico.perdaDaOs(p);
+      return perda.anexos || perda.notas ? avisoDaOs(perda) : null;
+    }
+    return (await this.servico.descartaEnvio(p)) ? AVISO_PROPOSTA : null;
   }
 
   protected async confirmar(c: Confirmacao): Promise<void> {

@@ -1307,24 +1307,61 @@ describe('SyncService', () => {
         expect(await db.os.get('o1')).toMatchObject({ ...ESCRITORIO, version: 9 });
       });
 
-      it('R26: a OS foi cancelada pelo escritório; o concluir da fila não tenta passar de cancelada para concluída', async () => {
+      it('R26 (M5): [nota, foto, concluir, PDF] com a OS cancelada pelo escritório: a foto entra, o concluir não volta, o PDF fica numa pendência só', async () => {
         perfil = 'TECNICO';
-        await db.os.put(paraOsLocal('o1', 4, os('CONCLUIDA', { resumoExecucao: 'Feito' })));
-        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }), 4);
-        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { resumoExecucao: 'Feito', notas: [{ id: 'n1', texto: 'a' }] }), 4,
+        await db.os.put(paraOsLocal('o1', 4, os('CONCLUIDA', { numero: 123, resumoExecucao: 'Feito' })));
+        await db.anexosOs.bulkPut([anexoLocal(), documentoOs('d1', 1)]);
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { numero: 123, notas: [{ id: 'n1', texto: 'a' }] }), 4);
+        await sync.registrarUploadAnexoOs('o1', 'f1');
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { numero: 123, resumoExecucao: 'Feito', notas: [{ id: 'n1', texto: 'a' }] }), 4,
           { separada: true });
+        await sync.registrarUploadAnexoOs('o1', 'd1');
+        const cancelada = (extra: Partial<OsDados> = {}) => os('CANCELADA', {
+          numero: 123, motivoCancelamento: 'Cliente desistiu', notas: [{ id: 'n1', texto: 'a', autorId: 'u1' }], ...extra,
+        });
 
         const p = sync.sincronizar();
-        ok(await push(), 8, os('CANCELADA', { motivoCancelamento: 'Cliente desistiu', notas: [{ id: 'n1', texto: 'a', autorId: 'u1' }] }));
+        ok(await push(), 8, cancelada());
+        // R26: o técnico atribuído acrescenta a foto à OS encerrada
+        (await upload()).flush({ anexo: anexoServidor(), versaoOs: 9 }, { status: 201, statusText: 'Created' });
         const push2 = await push();
         // como o servidor no R26: da OS encerrada o técnico só acrescenta notas (o resumo dele não muda a cancelada)
         expect(push2.request.body.mutacoes[0]).toMatchObject({
-          baseVersion: 8, dados: { status: 'CANCELADA', resumoExecucao: null, notas: [{ id: 'n1', texto: 'a' }] },
+          baseVersion: 9, dados: { status: 'CANCELADA', resumoExecucao: null, notas: [{ id: 'n1', texto: 'a' }] },
         });
-        ok(push2, 8, os('CANCELADA', { motivoCancelamento: 'Cliente desistiu', notas: [{ id: 'n1', texto: 'a', autorId: 'u1' }] }));
+        ok(push2, 9, cancelada({ anexos: [anexoServidor()] }));
+        (await upload()).flush({ codigo: 'STATUS_INVALIDO', detail: 'x' }, { status: 409, statusText: 'Conflict' });
         await pullVazio();
         await p;
-        expect(await db.os.get('o1')).toMatchObject({ status: 'CANCELADA', version: 8 });
+
+        const pend = await db.pendencias.toArray();
+        expect(pend).toHaveLength(1);
+        expect(pend[0]).toMatchObject({ tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, mutacao: { dados: { anexoId: 'd1' } },
+          erro: { codigo: 'STATUS_INVALIDO' } });
+        expect(pend[0].erro?.mensagem).toContain('No servidor, a OS não está concluída');
+        expect(await db.outbox.count()).toBe(0);
+        expect(await db.anexosOs.get('f1')).toMatchObject({ enviado: true });
+        vi.spyOn(sync, 'sincronizar').mockResolvedValue();
+        await TestBed.inject(PendenciasService).descartar(pend[0]);
+        expect(await db.pendencias.count()).toBe(0);
+        expect(await db.anexosOs.get('d1')).toBeUndefined();
+        expect(await db.os.get('o1')).toMatchObject({ status: 'CANCELADA', version: 9 });
+      });
+
+      it('M2-R3 (M4a): o servidor fica atrás do enviado (o técnico desatribuído); a nota seguinte leva o status do servidor', async () => {
+        perfil = 'TECNICO';
+        await db.os.put(paraOsLocal('o1', 4, os('CONCLUIDA', { resumoExecucao: 'Feito' })));
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { resumoExecucao: 'Feito' }), 4, { separada: true });
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { resumoExecucao: 'Feito', notas: [{ id: 'n1', texto: 'a' }] }), 4);
+
+        const p = sync.sincronizar();
+        // a conclusão do técnico que não está mais atribuído não vale: o servidor devolve o estado dele
+        ok(await push(), 8, os('EM_ANDAMENTO', { tecnicoId: 'u7' }));
+        const push2 = await push();
+        expect(push2.request.body.mutacoes[0]).toMatchObject({ baseVersion: 8, dados: { status: 'EM_ANDAMENTO', notas: [{ id: 'n1' }] } });
+        ok(push2, 9, os('EM_ANDAMENTO', { tecnicoId: 'u7', notas: [{ id: 'n1', texto: 'a', autorId: 'u1' }] }));
+        await pullVazio();
+        await p;
       });
     });
 
@@ -1572,6 +1609,8 @@ describe('SyncService', () => {
       [404, undefined, 'ASSINATURA'],
       // o PDF do técnico que perdeu a atribuição
       [403, 'ACESSO_NEGADO', 'DOCUMENTO'],
+      // M6: depois de 7 dias, a foto também
+      [403, 'ACESSO_NEGADO', 'FOTO'],
     ] as const)('%i %s (%s): "Esta OS não está mais com você." e Descartar libera o resto da OS', async (status, codigo, tipo) => {
       await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO')));
       await db.anexosOs.put(tipo === 'DOCUMENTO' ? documentoOs('f1', 1) : anexoLocal({ tipo }));

@@ -227,6 +227,43 @@ describe('rebase da OS', () => {
       expect(aceito({ ...r1, revisao: 2 }, r2, 'ADMIN', ADM)).toBe(true);
     });
 
+    it('M4a: sem transição própria desde o envio, a seguinte leva o status do servidor, mesmo atrás do enviado (M2-R3)', () => {
+      // o técnico que perdeu a atribuição: o servidor aceita só as notas e fica em andamento, sem a conclusão enviada
+      const s = servidor('EM_ANDAMENTO', { tecnicoId: 'u-outro' });
+      const concluir = meu('CONCLUIDA', { resumoExecucao: 'Feito' });
+      const nota = { ...concluir, notas: [{ id: 'n1', texto: 'Depois', autorId: null, criadaEm: null }] };
+      expect(rebaseOs(nota, concluir, s, quemNoServidor(s, 'TECNICO', TEC)).status).toBe('EM_ANDAMENTO');
+      // com transição própria depois do envio, a dele (que o servidor confere)
+      expect(rebaseOs(concluir, meu('EM_ANDAMENTO'), servidor('EM_ANDAMENTO')).status).toBe('CONCLUIDA');
+    });
+
+    it('M4b: com a posse, responsavelId que o perfil não altera no status do servidor vai null (= manter), nunca o do aparelho', () => {
+      // a troca do ADMIN numa avulsa em andamento, na fila; o técnico concluiu lá antes de ela chegar
+      const avulsa = (status: StatusOs, extra: Partial<OsDados> = {}) =>
+        meu(status, { propostaId: null, responsavelId: COM, ...extra });
+      const s = servidor('CONCLUIDA', { propostaId: null, propostaNumero: null, propostaCodigoExibido: null });
+      const admin = quemNoServidor(s, 'ADMIN', ADM);
+      const troca = avulsa('EM_ANDAMENTO', { responsavelId: 'u-meu' });
+      const r = rebaseOs(troca, avulsa('EM_ANDAMENTO'), s, admin);
+      expect(r).toMatchObject({ status: 'CONCLUIDA', responsavelId: null });
+      expect(aceito(s, r, 'ADMIN', ADM)).toBe(true);
+      // sem o filtro, a troca iria e o servidor a recusaria (o ADMIN não troca o responsável da OS concluída)
+      expect(() => aceito(s, rebaseOs(troca, avulsa('EM_ANDAMENTO'), s), 'ADMIN', ADM)).toThrow('OS_NAO_EDITAVEL');
+    });
+
+    it('M2P2-R11: revisão = a maior das duas (com a conclusão do servidor quando sobe); o número entra quando falta', () => {
+      const reaberta = servidor('EM_ANDAMENTO', { revisao: 2, concluidaEm: null });
+      const velha = meu('EM_ANDAMENTO', { revisao: 1, numero: null, concluidaEm: '2026-09-30T18:00:00Z' });
+      expect(rebaseOs(velha, velha, reaberta)).toMatchObject({ revisao: 2, numero: 123, concluidaEm: null });
+      // a reabertura pendente aqui já subiu a revisão: fica
+      const pendente = meu('EM_ANDAMENTO', { revisao: 3, concluidaEm: null });
+      expect(rebaseOs(pendente, meu('CONCLUIDA'), servidor('CONCLUIDA', { revisao: 2, concluidaEm: '2026-10-01T10:00:00Z' })))
+        .toMatchObject({ revisao: 3, concluidaEm: null, status: 'EM_ANDAMENTO' });
+      const local = paraOsLocal('o1', 4, velha);
+      expect(rebaseOsLocal(local, velha, reaberta)).toMatchObject({ revisao: 2, numero: 123, concluidaEm: null });
+      expect(rebaseOsLocal({ ...local, revisao: 3 }, velha, reaberta).revisao).toBe(3);
+    });
+
     it('na avulsa, a troca de responsável feita depois fica; a que não mudou segue o servidor', () => {
       const avulsa = (extra: Partial<OsDados> = {}) => meu('ABERTA', { propostaId: null, responsavelId: COM, ...extra });
       const s = servidor('ABERTA', { propostaId: null, responsavelId: 'u-novo' });
@@ -245,7 +282,8 @@ describe('rebase da OS', () => {
       };
       const r = rebaseOsLocal(local, base, servidor('EM_ANDAMENTO'));
       expect(r).toMatchObject({
-        id: 'o1', version: 4, numero: null, iniciadaLocalEm: '2026-10-01T09:00:00Z', status: 'EM_ANDAMENTO',
+        // M2P2-R11: o número do servidor entra no registro que não o tinha
+        id: 'o1', version: 4, numero: 123, iniciadaLocalEm: '2026-10-01T09:00:00Z', status: 'EM_ANDAMENTO',
         dataPrevista: '2026-10-09', descricao: 'Do escritório', enderecoLogradouro: 'Av. Nova', concluiProposta: false,
         resumoExecucao: 'Depois', responsavelId: COM,
       });

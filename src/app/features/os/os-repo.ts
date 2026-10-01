@@ -512,6 +512,14 @@ function semEspaco(e: unknown): boolean {
   return false;
 }
 
+/** O que uma edição do `OsRepo` grava (M2P2-R12): a OS nova, a base da mutação e, só nela, os comandos e os [srv]. */
+interface EdicaoGravada {
+  novo: OsLocal;
+  base: number | null;
+  comandos?: ComandosOs;
+  envio?: Partial<OsLocal>;
+}
+
 /** P4c-R15: o que fica travado com um CONFLITO da OS, e o texto da recusa de cada um. */
 const ANTES_DE = {
   iniciar: 'iniciá-la',
@@ -716,7 +724,7 @@ export class OsRepo {
       campos['clienteId'] = 'A proposta não tem cliente.';
     }
     validacao({ ...campos, ...(await this.validarCampos(null, os)) });
-    await this.gravar(os, null);
+    await this.criar(os);
     return os.id;
   }
 
@@ -748,7 +756,7 @@ export class OsRepo {
     if (!cliente) campos['clienteId'] = 'Cliente não encontrado neste aparelho.';
     else if (nova.enderecoId !== undefined && !endereco) campos['enderecoId'] = 'Endereço não encontrado.';
     validacao({ ...campos, ...(await this.validarCampos(null, os)) });
-    await this.gravar(os, null);
+    await this.criar(os);
     return os.id;
   }
 
@@ -762,30 +770,31 @@ export class OsRepo {
    */
   async salvarCabecalho(id: string, edicao: Partial<EdicaoCabecalhoOs>, versaoCarregada?: number | null): Promise<void> {
     const u = this.usuario();
-    const atual = await this.carregar(id);
-    const novo: OsLocal = {
-      ...atual,
-      ...(edicao.tipo !== undefined ? { tipo: edicao.tipo } : {}),
-      ...(edicao.descricao !== undefined ? { descricao: texto(edicao.descricao) } : {}),
-      ...(edicao.dataPrevista !== undefined ? { dataPrevista: edicao.dataPrevista } : {}),
-      ...(edicao.urgente !== undefined ? { urgente: edicao.urgente } : {}),
-      ...(edicao.tecnicoId !== undefined ? { tecnicoId: edicao.tecnicoId } : {}),
-      ...(edicao.concluiProposta !== undefined ? { concluiProposta: edicao.concluiProposta } : {}),
-      ...(edicao.endereco !== undefined ? camposDoEndereco(edicao.endereco) : {}),
-      ...(edicao.itens !== undefined
-        ? {
-            itens: edicao.itens.map((l, ordem) => ({
-              id: l.id, itemCatalogoId: l.itemCatalogoId, codigo: texto(l.codigo) ?? '', nome: texto(l.nome) ?? '',
-              unidade: texto(l.unidade) ?? '', natureza: l.natureza, quantidadePrevistaMilesimos: l.quantidadePrevistaMilesimos,
-              ordem,
-            })),
-          }
-        : {}),
-    };
-    this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
-    validacao(await this.validarCampos(atual, novo));
-    const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
-    await this.gravar({ ...novo, version }, version);
+    await this.gravar(id, async (atual) => {
+      const novo: OsLocal = {
+        ...atual,
+        ...(edicao.tipo !== undefined ? { tipo: edicao.tipo } : {}),
+        ...(edicao.descricao !== undefined ? { descricao: texto(edicao.descricao) } : {}),
+        ...(edicao.dataPrevista !== undefined ? { dataPrevista: edicao.dataPrevista } : {}),
+        ...(edicao.urgente !== undefined ? { urgente: edicao.urgente } : {}),
+        ...(edicao.tecnicoId !== undefined ? { tecnicoId: edicao.tecnicoId } : {}),
+        ...(edicao.concluiProposta !== undefined ? { concluiProposta: edicao.concluiProposta } : {}),
+        ...(edicao.endereco !== undefined ? camposDoEndereco(edicao.endereco) : {}),
+        ...(edicao.itens !== undefined
+          ? {
+              itens: edicao.itens.map((l, ordem) => ({
+                id: l.id, itemCatalogoId: l.itemCatalogoId, codigo: texto(l.codigo) ?? '', nome: texto(l.nome) ?? '',
+                unidade: texto(l.unidade) ?? '', natureza: l.natureza, quantidadePrevistaMilesimos: l.quantidadePrevistaMilesimos,
+                ordem,
+              })),
+            }
+          : {}),
+      };
+      this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
+      validacao(await this.validarCampos(atual, novo));
+      const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
+      return { novo: { ...novo, version }, base: version };
+    });
   }
 
   /**
@@ -799,24 +808,24 @@ export class OsRepo {
     versaoCarregada?: number | null,
   ): Promise<void> {
     const u = this.usuario();
-    const atual = await this.carregar(id);
-    const tecnicoId = mudanca.tecnicoId !== undefined ? mudanca.tecnicoId : atual.tecnicoId;
-    const responsavelId = mudanca.responsavelId ?? atual.responsavelId;
-    if (tecnicoId === atual.tecnicoId && responsavelId === atual.responsavelId) return;
-    const novo: OsLocal = { ...atual, tecnicoId, responsavelId };
-    this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
-    const campos: Record<string, string> = {};
-    if (responsavelId !== atual.responsavelId) {
-      if (atual.propostaId !== null) {
-        campos['responsavelId'] = 'O responsável segue o da proposta.';
-      } else if (responsavelId === null || !(await this.usuarioAtivo(responsavelId, ['ADMIN', 'COMERCIAL']))) {
-        campos['responsavelId'] = 'Responsável inválido: escolha um administrador ou comercial ativo.';
+    await this.gravar(id, async (atual) => {
+      const tecnicoId = mudanca.tecnicoId !== undefined ? mudanca.tecnicoId : atual.tecnicoId;
+      const responsavelId = mudanca.responsavelId ?? atual.responsavelId;
+      if (tecnicoId === atual.tecnicoId && responsavelId === atual.responsavelId) return null;
+      const novo: OsLocal = { ...atual, tecnicoId, responsavelId };
+      this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
+      const campos: Record<string, string> = {};
+      if (responsavelId !== atual.responsavelId) {
+        if (atual.propostaId !== null) {
+          campos['responsavelId'] = 'O responsável segue o da proposta.';
+        } else if (responsavelId === null || !(await this.usuarioAtivo(responsavelId, ['ADMIN', 'COMERCIAL']))) {
+          campos['responsavelId'] = 'Responsável inválido: escolha um administrador ou comercial ativo.';
+        }
       }
-    }
-    validacao({ ...campos, ...(await this.validarCampos(atual, novo)) });
-    exigirSemConflito(await this.pendenciasDa(id), 'atribuir');
-    const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
-    await this.gravar({ ...novo, version }, version, { semConflito: 'atribuir' });
+      validacao({ ...campos, ...(await this.validarCampos(atual, novo)) });
+      const version = versaoCarregada !== undefined ? versaoCarregada : atual.version;
+      return { novo: { ...novo, version }, base: version };
+    }, { semConflito: 'atribuir' });
   }
 
   // ------------------------------------------------------------------ execução
@@ -827,16 +836,16 @@ export class OsRepo {
    */
   async iniciar(id: string): Promise<void> {
     const u = this.usuario();
-    const atual = await this.carregar(id);
-    if (atual.status !== 'ABERTA') {
-      this.exigirPosse(atual, u);
-      throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Só uma OS aberta pode ser iniciada.');
-    }
-    const novo: OsLocal = { ...atual, status: 'EM_ANDAMENTO', iniciadaLocalEm: new Date().toISOString() };
-    this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
-    validacao(await this.validarCampos(atual, novo));
-    exigirSemConflito(await this.pendenciasDa(id), 'iniciar');
-    await this.gravar(novo, atual.version, { separada: true, semConflito: 'iniciar' });
+    await this.gravar(id, async (atual) => {
+      if (atual.status !== 'ABERTA') {
+        this.exigirPosse(atual, u);
+        throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Só uma OS aberta pode ser iniciada.');
+      }
+      const novo: OsLocal = { ...atual, status: 'EM_ANDAMENTO', iniciadaLocalEm: new Date().toISOString() };
+      this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
+      validacao(await this.validarCampos(atual, novo));
+      return { novo, base: atual.version };
+    }, { separada: true, semConflito: 'iniciar' });
   }
 
   /**
@@ -847,18 +856,19 @@ export class OsRepo {
    */
   async adicionarNota(id: string, textoNota: string): Promise<string> {
     const u = this.usuario();
-    const atual = await this.carregar(id);
     const nota: NotaOsLocal = {
       id: uuidv7(), texto: stripJava(textoNota ?? ''), autorId: null, criadaEm: null, autorLocalId: u.id,
       criadaLocalEm: new Date().toISOString(),
     };
-    const novo: OsLocal = { ...atual, notas: [...atual.notas, nota] };
-    this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
-    const campo = `notas[${novo.notas.length - 1}].texto`;
-    const tamanho = tamanhoTextoOs(nota.texto);
-    if (tamanho === 0) validacao({ [campo]: 'Escreva a nota.' });
-    if (tamanho > MAX_NOTA) validacao({ [campo]: `Máximo de ${MAX_NOTA} caracteres.` });
-    await this.gravar(novo, atual.version);
+    await this.gravar(id, async (atual) => {
+      const novo: OsLocal = { ...atual, notas: [...atual.notas, nota] };
+      this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual)));
+      const campo = `notas[${novo.notas.length - 1}].texto`;
+      const tamanho = tamanhoTextoOs(nota.texto);
+      if (tamanho === 0) validacao({ [campo]: 'Escreva a nota.' });
+      if (tamanho > MAX_NOTA) validacao({ [campo]: `Máximo de ${MAX_NOTA} caracteres.` });
+      return { novo, base: atual.version };
+    });
     return nota.id;
   }
 
@@ -927,13 +937,14 @@ export class OsRepo {
    */
   async recusarAssinatura(id: string, motivo: string): Promise<void> {
     const u = this.usuario();
-    const atual = await this.carregar(id);
-    const novo: OsLocal = { ...atual, assinaturaRecusada: true, motivoRecusa: texto(motivo) };
-    const assinada = await this.temAssinatura(atual);
-    this.exigirMutacao(atual, novo, u, contexto(novo, assinada));
-    if (assinada) throw new ErroOs('ASSINATURA_COLHIDA', 'assinatura', 'A assinatura já foi colhida.');
-    validacao(await this.validarCampos(atual, novo));
-    await this.gravar(novo, atual.version);
+    await this.gravar(id, async (atual) => {
+      const novo: OsLocal = { ...atual, assinaturaRecusada: true, motivoRecusa: texto(motivo) };
+      const assinada = await this.temAssinatura(atual);
+      this.exigirMutacao(atual, novo, u, contexto(novo, assinada));
+      if (assinada) throw new ErroOs('ASSINATURA_COLHIDA', 'assinatura', 'A assinatura já foi colhida.');
+      validacao(await this.validarCampos(atual, novo));
+      return { novo, base: atual.version };
+    });
   }
 
   /**
@@ -1013,18 +1024,18 @@ export class OsRepo {
   /** → CANCELADA (separada), com o motivo (3 a 500): ADMIN e COMERCIAL responsável em ABERTA; só o ADMIN em andamento. */
   async cancelar(id: string, motivo: string): Promise<void> {
     const u = this.usuario();
-    const atual = await this.carregar(id);
-    if (atual.status === 'CANCELADA') {
-      // mesmo status: a transição aceitaria, e a fila levaria uma mutação vazia
-      this.exigirPosse(atual, u);
-      throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Esta OS já está cancelada.');
-    }
-    const motivoLimpo = texto(motivo);
-    const novo: OsLocal = { ...atual, status: 'CANCELADA', motivoCancelamento: motivoLimpo };
-    this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual), motivoLimpo));
-    validacao(await this.validarCampos(atual, novo));
-    exigirSemConflito(await this.pendenciasDa(id), 'cancelar');
-    await this.gravar(novo, atual.version, { separada: true, semConflito: 'cancelar' });
+    await this.gravar(id, async (atual) => {
+      if (atual.status === 'CANCELADA') {
+        // mesmo status: a transição aceitaria, e a fila levaria uma mutação vazia
+        this.exigirPosse(atual, u);
+        throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Esta OS já está cancelada.');
+      }
+      const motivoLimpo = texto(motivo);
+      const novo: OsLocal = { ...atual, status: 'CANCELADA', motivoCancelamento: motivoLimpo };
+      this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual), motivoLimpo));
+      validacao(await this.validarCampos(atual, novo));
+      return { novo, base: atual.version };
+    }, { separada: true, semConflito: 'cancelar' });
   }
 
   /**
@@ -1035,19 +1046,19 @@ export class OsRepo {
    */
   async reabrir(id: string, motivo: string): Promise<void> {
     const u = this.usuario();
-    const atual = await this.carregar(id);
-    if (atual.status !== 'CONCLUIDA') {
-      this.exigirPosse(atual, u);
-      throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Só uma OS concluída pode ser reaberta.');
-    }
-    const motivoLimpo = texto(motivo);
-    const novo: OsLocal = { ...atual, status: 'EM_ANDAMENTO', revisao: (atual.revisao ?? 1) + 1, concluidaEm: null };
-    this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual), motivoLimpo));
-    exigirSemConflito(await this.pendenciasDa(id), 'reabrir');
-    await this.gravar(novo, atual.version, {
-      separada: true, semConflito: 'reabrir', comandos: { motivoReabertura: motivoLimpo },
-      envio: { revisao: atual.revisao, concluidaEm: atual.concluidaEm },
-    });
+    await this.gravar(id, async (atual) => {
+      if (atual.status !== 'CONCLUIDA') {
+        this.exigirPosse(atual, u);
+        throw new ErroOs('TRANSICAO_INVALIDA', 'os', 'Só uma OS concluída pode ser reaberta.');
+      }
+      const motivoLimpo = texto(motivo);
+      const novo: OsLocal = { ...atual, status: 'EM_ANDAMENTO', revisao: (atual.revisao ?? 1) + 1, concluidaEm: null };
+      this.exigirMutacao(atual, novo, u, contexto(novo, await this.temAssinatura(atual), motivoLimpo));
+      return {
+        novo, base: atual.version, comandos: { motivoReabertura: motivoLimpo },
+        envio: { revisao: atual.revisao, concluidaEm: atual.concluidaEm },
+      };
+    }, { separada: true, semConflito: 'reabrir' });
   }
 
   /**
@@ -1064,25 +1075,25 @@ export class OsRepo {
    */
   async aceitarTrabalho(id: string): Promise<void> {
     const u = this.usuario();
-    const atual = await this.carregar(id);
-    if (u.perfil !== 'ADMIN') {
-      throw new ErroOs('ACESSO_NEGADO', 'os', 'Só o administrador aceita o trabalho de uma proposta cancelada.');
-    }
-    if (atual.propostaId === null) throw new ErroOs('PROPOSTA_NAO_CANCELADA', 'os', 'Esta OS não é de uma proposta.');
-    const proposta = await this.db.propostas.get(atual.propostaId);
-    if (!proposta) {
-      throw new ErroOs('NAO_ENCONTRADA', 'os', 'A proposta não está neste aparelho. Sincronize e tente de novo.');
-    }
-    if (proposta.status !== 'CANCELADA') {
-      throw new ErroOs('PROPOSTA_NAO_CANCELADA', 'os', 'Só há trabalho a aceitar com a proposta cancelada.');
-    }
-    if (atual.status === 'CANCELADA') {
-      throw new ErroOs('OS_CANCELADA', 'os', 'Esta OS foi cancelada: não há trabalho dela a aceitar.');
-    }
-    const comandos: ComandosOs = { aceitarTrabalho: true };
-    this.exigirMutacao(atual, atual, u, contexto(atual, await this.temAssinatura(atual)), comandos);
-    exigirSemConflito(await this.pendenciasDa(id), 'aceitarTrabalho');
-    await this.gravar(atual, atual.version, { separada: true, semConflito: 'aceitarTrabalho', comandos });
+    await this.gravar(id, async (atual) => {
+      if (u.perfil !== 'ADMIN') {
+        throw new ErroOs('ACESSO_NEGADO', 'os', 'Só o administrador aceita o trabalho de uma proposta cancelada.');
+      }
+      if (atual.propostaId === null) throw new ErroOs('PROPOSTA_NAO_CANCELADA', 'os', 'Esta OS não é de uma proposta.');
+      const proposta = await this.db.propostas.get(atual.propostaId);
+      if (!proposta) {
+        throw new ErroOs('NAO_ENCONTRADA', 'os', 'A proposta não está neste aparelho. Sincronize e tente de novo.');
+      }
+      if (proposta.status !== 'CANCELADA') {
+        throw new ErroOs('PROPOSTA_NAO_CANCELADA', 'os', 'Só há trabalho a aceitar com a proposta cancelada.');
+      }
+      if (atual.status === 'CANCELADA') {
+        throw new ErroOs('OS_CANCELADA', 'os', 'Esta OS foi cancelada: não há trabalho dela a aceitar.');
+      }
+      const comandos: ComandosOs = { aceitarTrabalho: true };
+      this.exigirMutacao(atual, atual, u, contexto(atual, await this.temAssinatura(atual)), comandos);
+      return { novo: atual, base: atual.version, comandos };
+    }, { separada: true, semConflito: 'aceitarTrabalho' });
   }
 
   /**
@@ -1327,25 +1338,41 @@ export class OsRepo {
   }
 
   /**
-   * Grava o local e enfileira o UPSERT, na mesma transação, com `atualizadoEm` otimista (P4b-R19). `separada`: não
-   * coalesce (transição, comando); `semConflito`: recusa, dentro da transação, se a OS tem um CONFLITO (P4c-R15);
-   * `comandos`: só nesta mutação, nunca no registro; `envio`: campos [srv] que a mutação leva com o valor do servidor
-   * em vez do local (o `reabrir` sobe a revisão só no aparelho).
+   * M2P2-R12: lê a OS, aplica `editar` (que valida e devolve a edição, ou null se nada muda), grava o local e enfileira o
+   * UPSERT, tudo na mesma transação, com `atualizadoEm` otimista (P4b-R19). Assim um rebase da fila que o sync grave
+   * no meio-tempo (o OK de uma mutação anterior) não é desfeito por uma cópia lida antes dele: a edição é sempre sobre o
+   * registro de agora, como o `concluir` faz com o `agora`.
+   * `separada`: não coalesce (transição, comando); `semConflito`: recusa se a OS tem um CONFLITO (P4c-R15). Na edição,
+   * `comandos` vão só nesta mutação, nunca no registro; `envio` são campos [srv] que a mutação leva com o valor do
+   * servidor em vez do local (o `reabrir` sobe a revisão só no aparelho).
    */
   private async gravar(
-    os: OsLocal,
-    baseVersion: number | null,
-    opcoes: { separada?: boolean; semConflito?: AcaoTravada; comandos?: ComandosOs; envio?: Partial<OsLocal> } = {},
+    id: string,
+    editar: (atual: OsLocal) => Promise<EdicaoGravada | null>,
+    opcoes: { separada?: boolean; semConflito?: AcaoTravada } = {},
   ): Promise<void> {
-    const local: OsLocal = { ...os, atualizadoEm: new Date().toISOString() };
-    await this.db.transaction('rw', [this.db.os, this.db.outbox, this.db.pendencias], async () => {
-      if (opcoes.semConflito) exigirSemConflito(await this.pendenciasDa(local.id), opcoes.semConflito);
-      const separada = opcoes.separada || (await this.estouraNotas(local));
-      await this.db.os.put(local);
-      await this.sync.registrar('os', local.id, 'UPSERT', paraEnvio({ ...local, ...opcoes.envio }, opcoes.comandos), baseVersion,
-        separada ? { separada: true } : {});
+    const tabelas = [this.db.os, this.db.outbox, this.db.pendencias, this.db.anexosOs, this.db.usuarios, this.db.itens, this.db.propostas];
+    await this.db.transaction('rw', tabelas, async () => {
+      const e = await editar(await this.carregar(id));
+      if (e) await this.enfileirar(e, opcoes);
     });
     void this.sync.sincronizar();
+  }
+
+  /** A criação (já validada): a OS nova e o UPSERT sem base, numa transação. */
+  private async criar(os: OsLocal): Promise<void> {
+    await this.db.transaction('rw', [this.db.os, this.db.outbox, this.db.pendencias], () => this.enfileirar({ novo: os, base: null }));
+    void this.sync.sincronizar();
+  }
+
+  /** Grava o local e enfileira o UPSERT; roda na transação de quem chama. */
+  private async enfileirar(e: EdicaoGravada, opcoes: { separada?: boolean; semConflito?: AcaoTravada } = {}): Promise<void> {
+    if (opcoes.semConflito) exigirSemConflito(await this.pendenciasDa(e.novo.id), opcoes.semConflito);
+    const local: OsLocal = { ...e.novo, atualizadoEm: new Date().toISOString() };
+    const separada = opcoes.separada || (await this.estouraNotas(local));
+    await this.db.os.put(local);
+    await this.sync.registrar('os', local.id, 'UPSERT', paraEnvio({ ...local, ...e.envio }, e.comandos), e.base,
+      separada ? { separada: true } : {});
   }
 
   /**

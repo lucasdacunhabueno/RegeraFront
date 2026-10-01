@@ -22,7 +22,7 @@ import { codigoProvisorioOsValido } from './codigo-provisorio-os';
 import { ErroOs } from './erro-os';
 import type { FotoPreparada } from './foto-os';
 import {
-  AnexoOsDados, AnexoOsLocal, NotaOsLocal, OsDados, OsLocal, paraAnexoOsServidor, paraOsLocal, StatusOs,
+  AnexoOsDados, AnexoOsLocal, dadosDaOs, NotaOsLocal, OsDados, OsLocal, paraAnexoOsServidor, paraOsLocal, StatusOs,
 } from './os-models';
 import {
   EntradaPdfOs, MINIATURA_FOTO, montarEntradaOs, ordenarParaTecnico, OsRepo, PREPARAR_FOTO,
@@ -1079,6 +1079,54 @@ describe('OsRepo', () => {
       await db.outbox.toCollection().modify({ enviando: true });
       expect((await erroDe(repo.excluir(id2))).codigo).toBe('OS_SINCRONIZANDO');
       expect(await db.os.get(id2)).toBeDefined();
+    });
+  });
+
+  describe('M2P2-R12: a edição é aplicada sobre o registro relido na transação', () => {
+    const ESCRITORIO = { dataPrevista: '2026-10-09', descricao: 'Do escritório', enderecoLogradouro: 'Av. Nova' };
+
+    /**
+     * A fila do técnico: A (em voo) e B (uma nota, que recebe a próxima por coalescência). O OK de A traz o cabeçalho do
+     * escritório (R30), e o `aplicarResultado` rebaseia B e a OS local enquanto a tela grava outra edição.
+     */
+    async function okDuranteAEdicao(editar: () => Promise<unknown>): Promise<void> {
+      const os = await noAparelho('EM_ANDAMENTO', {}, 4);
+      const enviado = { ...dadosDaOs(os), responsavelId: null };
+      const seqA = await db.outbox.add({
+        mutationId: 'a', entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: 4, dados: enviado, separada: true,
+        enviando: true, criadaEm: '',
+      });
+      await db.outbox.add({
+        mutationId: 'b', entidade: 'os', agregadoId: 'o1', op: 'UPSERT', baseVersion: 4, criadaEm: '',
+        dados: { ...enviado, notas: [{ id: 'n1', texto: 'Cheguei', autorId: null, criadaEm: null }] },
+      });
+      await db.os.put({ ...os, notas: [{ id: 'n1', texto: 'Cheguei', autorId: null, criadaEm: null }] });
+      const a = (await db.outbox.get(seqA))!;
+      const aplicar = (sync as unknown as { aplicarResultado(m: MutacaoLocal, r: unknown): Promise<void> }).aplicarResultado;
+      // a edição começa primeiro (no código antigo, ela lê a OS antes do OK e grava depois dele)
+      const edicao = editar();
+      const ok = aplicar.call(sync, a, { mutationId: 'a', status: 'OK', version: 8, dados: osDados('EM_ANDAMENTO', ESCRITORIO) });
+      await Promise.all([edicao, ok]);
+    }
+
+    it.each([
+      ['adicionarNota', () => repo.adicionarNota('o1', 'Mais uma')],
+      ['recusarAssinatura', () => repo.recusarAssinatura('o1', 'Cliente ausente')],
+    ])('%s: a mutação da fila e a OS local ficam com o cabeçalho do escritório', async (_, editar) => {
+      await okDuranteAEdicao(editar);
+      const f = await fila();
+      expect(f.map((m) => m.mutationId)).toHaveLength(1);
+      expect(dadosDe(f[0])).toMatchObject(ESCRITORIO);
+      expect(dadosDe(f[0]).notas.map((n) => n.id)).toContain('n1');
+      expect(await db.os.get('o1')).toMatchObject(ESCRITORIO);
+    });
+
+    it('salvarCabecalho do ADMIN: a validação e a edição usam o registro relido', async () => {
+      usuario.set(ADMIN);
+      await okDuranteAEdicao(() => repo.salvarCabecalho('o1', { urgente: true }));
+      const [b] = await fila();
+      expect(dadosDe(b)).toMatchObject({ ...ESCRITORIO, urgente: true });
+      expect(await db.os.get('o1')).toMatchObject({ ...ESCRITORIO, urgente: true });
     });
   });
 

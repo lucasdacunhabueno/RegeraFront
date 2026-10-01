@@ -83,6 +83,22 @@ function statusRebaseado(meu: ComStatus, base: ComStatus | null, servidor: ComSt
 }
 
 /**
+ * M2P2-R11: a revisão é a maior das duas (a reabertura feita lá, ou a pendente aqui, que o `reabrir` já subiu), e o
+ * número do servidor entra quando o aparelho ainda não o tem. Sem isso, a conclusão seguinte, com a fila ainda cheia,
+ * geraria o PDF da revisão antiga, que o servidor recusa sempre. Quando a revisão sobe pela do servidor, a conclusão da
+ * revisão fechada sai junto (`concluidaEm` do servidor).
+ */
+function revisaoENumero(r: Registro, meu: ComStatus & { numero?: number | null }, servidor: OsDados | OsLocal): void {
+  const minha = meu.revisao ?? null;
+  const dele = servidor.revisao ?? null;
+  if (dele !== null && (minha === null || dele > minha)) {
+    r['revisao'] = dele;
+    r['concluidaEm'] = servidor.concluidaEm ?? null;
+  }
+  if ((meu.numero ?? null) === null && servidor.numero != null) r['numero'] = servidor.numero;
+}
+
+/**
  * "Manter a minha" de uma OS (M2P1-R19): o envio parte do estado do servidor (os [srv] e os campos que o perfil não
  * altera no status do servidor, com a posse do servidor), e só os campos que o perfil altera levam o valor de `meu`.
  * As notas são unidas quando o perfil as acrescenta. `responsavelId` vai null (= manter; R18), salvo a troca do ADMIN
@@ -125,8 +141,8 @@ export function quemNoServidor(servidor: OsDados, perfil: Perfil, usuarioId: str
  * A mutação `meu`, que está na fila atrás da que foi enviada com `base`, sobre o estado `servidor` que o servidor terá
  * quando ela chegar (3 vias): o campo que não mudou entre `base` e `meu` passa a ser o do servidor (o usuário não mexeu
  * nele: um valor velho desfaria em silêncio a mudança de outra pessoa, ou seria recusado se o perfil não o altera); o
- * que mudou fica. Notas unidas, `responsavelId` null continua null (= manter), status pelo `statusRebaseado`. Os [srv]
- * e os comandos ficam os de `meu`.
+ * que mudou fica. Notas unidas, `responsavelId` null continua null (= manter), status pelo `statusRebaseado`, revisão e
+ * número pelo `revisaoENumero`. Os outros [srv] e os comandos ficam os de `meu`.
  *
  * Com `quem` e a posse dele, o que o perfil não altera no status do servidor fica o do servidor, como o servidor faz no
  * R26 e no R30 (ex.: o resumo do técnico numa OS que o escritório cancelou). Sem a posse (o técnico que perdeu a
@@ -144,11 +160,14 @@ export function rebaseOs(meu: OsDados, base: OsDados, servidor: OsDados, quem?: 
   if (meu.responsavelId != null && semMudanca(m, b, 'responsavelId')) r['responsavelId'] = s.responsavelId ?? null;
   r['notas'] = unirNotas(s.notas, meu.notas);
   r['status'] = statusRebaseado(meu, base, s);
+  revisaoENumero(r, meu, s);
   if (quem && temPosse(quem)) {
     const editaveis = new Set<CampoEdicaoOs>(camposEditaveisOs(s.status, quem.perfil, quem.ehResponsavel, quem.ehTecnicoAtribuido));
     for (const campo of CAMPOS) {
       if (campo !== 'responsavelId' && !editaveis.has(campo)) for (const k of CHAVES_DO_CAMPO[campo]) r[k] = deles[k] ?? null;
     }
+    // não é redundante: a troca do ADMIN numa avulsa que chega com a OS já encerrada lá levaria um responsável que ele
+    // não altera mais (OS_NAO_EDITAVEL); null = manter
     if (!editaveis.has('responsavelId')) r['responsavelId'] = null;
     if (!editaveis.has('notas')) r['notas'] = s.notas;
     if (!editaveis.has('aceitarTrabalho')) delete r['aceitarTrabalho'];
@@ -181,7 +200,7 @@ export function rebaseFilaOs(enviado: OsDados, servidor: OsDados, seguintes: rea
  * O registro local com a regra do `rebaseOs` (`base` = a última mutação da OS na fila, como foi gravada; `servidor` =
  * ela rebaseada, ou o resultado do servidor). Na OS de proposta o aparelho envia `responsavelId` null, então ele segue
  * o do servidor quando o servidor o traz. Guarda o que é só do aparelho (o início local, o autor e a data das notas
- * pendentes), a versão e os [srv] do registro.
+ * pendentes), a versão e os [srv] do registro, salvo a revisão e o número (`revisaoENumero`).
  */
 export function rebaseOsLocal(local: OsLocal, base: OsDados, servidor: OsDados): OsLocal {
   const m = dadosDaOs(local) as unknown as Registro;
@@ -199,5 +218,6 @@ export function rebaseOsLocal(local: OsLocal, base: OsDados, servidor: OsDados):
   const minhas = new Map(local.notas.map((n) => [n.id, n] as const));
   r['notas'] = unirNotas(s.notas.map((n) => (n.criadaEm === null ? minhas.get(n.id) ?? n : n)), local.notas);
   r['status'] = statusRebaseado(local, base, s);
+  revisaoENumero(r, local, s);
   return r as unknown as OsLocal;
 }

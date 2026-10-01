@@ -11,7 +11,7 @@ const POR_CODIGO: ReadonlyMap<string, string> = new Map([
   ['TRANSICAO_INVALIDA', 'Esta mudança de status não é possível nesta OS.'],
   ['OS_NAO_EDITAVEL', 'Alguns campos não podem ser alterados nesta OS.'],
   ['VALIDACAO', 'Revise os campos destacados.'],
-  ['STATUS_INVALIDO', 'Fotos e assinatura só com a OS em andamento.'],
+  ['STATUS_INVALIDO', 'A OS não está no status que esta ação exige.'],
   ['LIMITE_FOTOS', 'Esta OS já tem o máximo de 20 fotos.'],
   ['LIMITE_ASSINATURAS', 'Esta OS já tem o máximo de 10 assinaturas.'],
   ['LIMITE_DOCUMENTOS', 'Esta OS já tem o máximo de 20 PDFs.'],

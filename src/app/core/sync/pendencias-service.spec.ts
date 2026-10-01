@@ -7,6 +7,8 @@ import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { AnexoOsLocal, OsDados, paraOsLocal } from '../../features/os/os-models';
+import { OsRepo } from '../../features/os/os-repo';
+import { PdfService } from '../pdf/pdf-service';
 import { paraPropostaLocal, PropostaDados } from '../../features/propostas/proposta-models';
 import { ErroProposta, LinhaRascunho } from '../../features/propostas/propostas-repo';
 import type { UsuarioSessao } from '../auth/auth-models';
@@ -573,6 +575,76 @@ describe('PendenciasService', () => {
           expect(await db.outbox.count()).toBe(0);
           expect(await db.os.get('o1')).toMatchObject({ version: 10, status: 'CONCLUIDA', dataPrevista: '2026-10-09' });
           http.expectNone('/api/sync/push');
+        });
+
+        it('M2P2-R11: com a OS reaberta lá (V1) e uma nota atrás, a OS local passa à revisão 2: o PDF da nova conclusão sai -R2', async () => {
+          usuarioAtual = { id: TEC, nome: 'Téo', email: 'teo@regera.com', perfil: 'TECNICO', ativo: true };
+          const n1 = doAparelho({ resumoExecucao: 'Meu resumo', notas: [nota('n1', 'Cheguei')] });
+          const n2 = doAparelho({ resumoExecucao: 'Meu resumo', notas: [nota('n1', 'Cheguei'), nota('n2', 'Saí')] });
+          await db.os.put(paraOsLocal('o1', 4, { ...n2, responsavelId: 'u1' }));
+          await db.outbox.add(mutOs('m2', 6, n2));
+          // o escritório concluiu e reabriu: revisão 2, e a conclusão anterior saiu
+          const servidor = doServidor({ revisao: 2, concluidaEm: null });
+          const p: Pendencia = {
+            mutationId: 'n', entidade: 'os', agregadoId: 'o1', tipo: 'CONFLITO', criadaEm: '', versionServidor: 9,
+            dadosServidor: servidor, mutacao: mutOs('n', 5, n1),
+          };
+          await db.pendencias.put(p);
+
+          await svc.manterMinha(p);
+
+          const [primeira, segunda] = await db.outbox.orderBy('seq').toArray();
+          expect(primeira.dados).toMatchObject({ revisao: 2, status: 'EM_ANDAMENTO' });
+          expect(segunda.dados).toMatchObject({ revisao: 2, status: 'EM_ANDAMENTO' });
+          expect(await db.os.get('o1')).toMatchObject({ revisao: 2, numero: 123, status: 'EM_ANDAMENTO' });
+
+          // o técnico conclui de novo, ainda com a nota na fila: o PDF é o da revisão 2
+          vi.spyOn(TestBed.inject(PdfService), 'logoDataUrl').mockResolvedValue(null);
+          await TestBed.inject(OsRepo).recusarAssinatura('o1', 'Cliente ausente');
+          const { codigoExibido } = await TestBed.inject(OsRepo).concluir('o1', 'Feito', async () => new Blob(['%PDF-1.7']));
+          expect(codigoExibido).toBe('OS-000123-R2');
+          const pdf = (await db.anexosOs.toArray()).find((a) => a.tipo === 'DOCUMENTO');
+          expect(pdf).toMatchObject({ revisaoOs: 2, codigoExibido: 'OS-000123-R2' });
+        });
+
+        it('M2P2-R11: o número do servidor entra na OS local que ainda não o tinha', async () => {
+          await cenario();
+          await db.os.update('o1', { numero: null });
+          await db.outbox.update(7, { dados: { ...((await db.outbox.get(7))!.dados as OsDados), numero: null } });
+          await svc.manterMinha((await db.pendencias.get('n'))!);
+          expect((await db.os.get('o1'))!.numero).toBe(123);
+          expect(((await db.outbox.get(7))!.dados as OsDados).numero).toBe(123);
+        });
+
+        it('M2: notas que o perfil não acrescenta no status do servidor (ADMIN na cancelada) saem, e o resultado avisa', async () => {
+          const p = await cenario();
+          expect(await svc.manterMinha(p)).toEqual({ notasDescartadas: false });
+
+          await db.outbox.clear();
+          await cenario();
+          usuarioAtual = { id: 'u-adm', nome: 'Ana', email: 'ana@regera.com', perfil: 'ADMIN', ativo: true };
+          const cancelada = { ...(await db.pendencias.get('n'))!, dadosServidor: doServidor({ status: 'CANCELADA' }) };
+          await db.pendencias.put(cancelada);
+          expect(await svc.manterMinha(cancelada)).toEqual({ notasDescartadas: true });
+          expect(((await db.outbox.get(5))!.dados as OsDados).notas.map((x) => x.id)).toEqual(['n0']);
+        });
+
+        it('M3: perdaDaOs diz se a ação levaria notas (e o resumo) que o servidor não tem, além dos anexos', async () => {
+          const p = await cenario();
+          expect(await svc.perdaDaOs(p)).toEqual({ anexos: true, notas: true });
+          await db.anexosOs.clear();
+          await db.outbox.delete(6);
+          expect(await svc.perdaDaOs(p)).toEqual({ anexos: false, notas: true });
+          expect(await svc.descartaEnvio(p)).toBe(true);
+          // as notas que o servidor já tem não contam
+          await db.outbox.clear();
+          const semNova = { ...p, mutacao: { ...p.mutacao, dados: doAparelho({ notas: [{ id: 'n0', texto: 'Do escritório', autorId: 'u-adm', criadaEm: 'x' }] }) } };
+          await db.pendencias.put(semNova);
+          expect(await svc.perdaDaOs(semNova)).toEqual({ anexos: false, notas: false });
+          await db.pendencias.put(p);
+          const jaLa = { ...p, dadosServidor: doServidor({ notas: [{ id: 'n1', texto: 'Cheguei', autorId: TEC, criadaEm: 'y' }] }) };
+          expect(await svc.perdaDaOs(jaLa)).toEqual({ anexos: false, notas: false });
+          expect(await svc.descartaEnvio(jaLa)).toBe(false);
         });
 
         it('a do conflito sem os dados do servidor (excluída lá) ou um DELETE seguem a regra comum', async () => {

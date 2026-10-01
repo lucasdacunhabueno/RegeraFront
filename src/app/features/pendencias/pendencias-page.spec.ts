@@ -1,3 +1,4 @@
+import { HttpErrorResponse } from '@angular/common/http';
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
@@ -16,6 +17,7 @@ import { PropostaLocal } from '../propostas/proposta-models';
 import { PropostasRepo } from '../propostas/propostas-repo';
 import { Pendencia, TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
+import { tipoUploadDe } from '../../core/sync/tipos-upload';
 import { PendenciasPage } from './pendencias-page';
 
 const conflito: Pendencia = {
@@ -78,6 +80,10 @@ interface OpcoesMontar {
   regerar?: ReturnType<typeof vi.fn>;
   /** P4c-R15: "Usar a do servidor" levaria um envio ou PDF feito no aparelho. */
   descartaEnvio?: boolean;
+  /** Na OS: o que a ação levaria (`perdaDaOs`); sem ele, os anexos seguem o `descartaEnvio`. */
+  perdaOs?: { anexos: boolean; notas: boolean };
+  /** M2: o "Manter a minha" tirou notas. */
+  notasDescartadas?: boolean;
 }
 
 function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMIN', o: OpcoesMontar = {}) {
@@ -88,11 +94,12 @@ function montar(itens: Pendencia[], naoSincronizados = 0, perfil: Perfil = 'ADMI
   const pdf = { gerarBlob: vi.fn().mockResolvedValue(new Blob(['%PDF'])) };
   const svc = {
     observar: () => of(itens),
-    manterMinha: vi.fn().mockResolvedValue(undefined),
+    manterMinha: vi.fn().mockResolvedValue({ notasDescartadas: o.notasDescartadas ?? false }),
     usarServidor: vi.fn().mockResolvedValue(undefined),
     descartar: vi.fn().mockResolvedValue(undefined),
     usarExistente: vi.fn().mockResolvedValue('c9'),
     descartaEnvio: vi.fn().mockResolvedValue(o.descartaEnvio ?? false),
+    perdaDaOs: vi.fn().mockResolvedValue(o.perdaOs ?? { anexos: o.descartaEnvio ?? false, notas: false }),
     observarOsDasPendencias: () => of({
       os: new Map((o.os ?? []).map((x) => [x.id, x] as const)), tiposDeAnexo: new Map(o.anexos ?? []),
     }),
@@ -634,7 +641,7 @@ describe('PendenciasPage', () => {
       });
       botao(el, 'Usar a do servidor').click();
       await vi.waitFor(() => expect(svc.usarServidor).toHaveBeenCalledWith(c));
-      expect(svc.descartaEnvio).toHaveBeenCalledWith(c);
+      expect(svc.perdaDaOs).toHaveBeenCalledWith(c);
       // nada de ação de proposta numa OS
       expect(botao(el, 'Corrigir e reenviar')).toBeUndefined();
       expect(el.querySelector('[data-testid="abrir-proposta"]')).toBeNull();
@@ -674,17 +681,25 @@ describe('PendenciasPage', () => {
     });
 
     it.each([
-      ['OS_CONCLUIDA_POR_OUTRO', 'Esta OS foi concluída pelo escritório.'],
-      ['ACESSO_NEGADO', 'Esta OS não está mais com você.'],
-      ['HTTP_404', 'Esta OS não está mais com você.'],
-    ])('PDF recusado com %s: "%s" e Descartar (direto: descarta só o PDF)', async (codigo, mensagem) => {
-      const p = uploadOs('d1', { codigo, mensagem });
+      [403, 'OS_CONCLUIDA_POR_OUTRO', 'Esta OS foi concluída pelo escritório.'],
+      [403, 'ACESSO_NEGADO', 'Esta OS não está mais com você.'],
+      [404, undefined, 'Esta OS não está mais com você.'],
+    ])('PDF recusado com %i %s: "%s" e Descartar (direto: descarta só o PDF)', async (status, codigo, mensagem) => {
+      // M6: o erro da pendência sai do mapeamento real do upload (`tipos-upload`), como o SyncService o grava
+      const resposta = new HttpErrorResponse({ status, error: codigo ? { codigo, detail: 'x' } : {} });
+      const pdf = {
+        id: 'd1', osId: 'o1', tipo: 'DOCUMENTO', sha256: 'a'.repeat(64), legenda: null, momento: null, tiradaEm: null,
+        assinanteNome: null, assinantePapel: null, revisaoOs: 1, codigoExibido: 'OS-000123', bytes: null, miniatura: null,
+        enviado: false, arquivoId: null,
+      } as const;
+      const p = uploadOs('d1', tipoUploadDe(TIPO_UPLOAD_ANEXO_OS)!.erro(resposta, { ...pdf }));
       const { el, svc } = montar([p], 0, 'TECNICO', { os: [osLocal({ status: 'CONCLUIDA' })], anexos: [['d1', 'DOCUMENTO']] });
       expect(el.querySelector('li p:nth-of-type(2)')?.textContent?.trim()).toBe(mensagem);
       expect(botao(el, 'Manter a minha')).toBeUndefined();
       botao(el, 'Descartar').click();
       await vi.waitFor(() => expect(svc.descartar).toHaveBeenCalledWith(p));
       expect(svc.descartaEnvio).not.toHaveBeenCalled();
+      expect(svc.perdaDaOs).not.toHaveBeenCalled();
     });
 
     it('o push da OS recusado com ACESSO_NEGADO para o técnico (passados os 7 dias): "Esta OS não está mais com você."', () => {
@@ -716,6 +731,36 @@ describe('PendenciasPage', () => {
       expect(svc[acao]).not.toHaveBeenCalled();
       [...d.querySelectorAll('button')].find((b) => b.textContent?.trim() === confirmar)!.click();
       await vi.waitFor(() => expect(svc[acao]).toHaveBeenCalledWith(p));
+    });
+
+    it.each([
+      [{ anexos: false, notas: true }, 'Isto descarta as notas e o resumo desta OS que ainda não foram enviados deste aparelho.'],
+      [{ anexos: true, notas: true },
+        'Isto descarta as notas, o resumo, as fotos, a assinatura e o PDF desta OS que ainda não foram enviados deste aparelho.'],
+    ])('M3: o aviso diz o que sai (%o)', async (perdaOs, aviso) => {
+      const { el, fixture } = montar([pendenciaOs()], 0, 'TECNICO', { os: [osLocal()], perdaOs });
+      botao(el, 'Usar a do servidor').click();
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(dialogo(el)).not.toBeNull();
+      });
+      expect(document.getElementById(dialogo(el)!.getAttribute('aria-describedby')!)?.textContent?.trim()).toBe(aviso);
+    });
+
+    it('M2: o "Manter a minha" que tirou notas avisa; sem isso, nada', async () => {
+      const c = pendenciaOs();
+      const { el, fixture } = montar([c], 0, 'ADMIN', { os: [osLocal()], notasDescartadas: true });
+      const mostrar = vi.spyOn(TestBed.inject(Toasts), 'mostrar');
+      botao(el, 'Manter a minha').click();
+      await vi.waitFor(() => expect(mostrar).toHaveBeenCalledWith('As notas não puderam ser acrescentadas: a OS está encerrada.'));
+      await fixture.whenStable();
+      TestBed.resetTestingModule();
+      const sem = montar([c], 0, 'ADMIN', { os: [osLocal()] });
+      const mostrar2 = vi.spyOn(TestBed.inject(Toasts), 'mostrar');
+      botao(sem.el, 'Manter a minha').click();
+      await vi.waitFor(() => expect(sem.svc.manterMinha).toHaveBeenCalled());
+      await sem.fixture.whenStable();
+      expect(mostrar2).not.toHaveBeenCalled();
     });
 
     it('sem anexo a perder: Descartar da criação recusada vai direto', async () => {
