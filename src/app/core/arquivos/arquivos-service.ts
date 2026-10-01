@@ -35,6 +35,11 @@ function base64(bytes: ArrayBuffer): string {
   return btoa(binario);
 }
 
+/** `data:<mime>;base64,...` dos bytes, para o pdfmake (que não carrega URLs). */
+export function paraDataUrl(bytes: ArrayBuffer, mime: string): string {
+  return `data:${mime};base64,${base64(bytes)}`;
+}
+
 /** `baixarSemCache` recusou sem fazer o pedido: sem internet ou sem sessão (a mensagem já é para o usuário). */
 export class ErroDownload extends Error {
   constructor(
@@ -106,7 +111,7 @@ export class ArquivosService {
     try {
       const cache = await this.lerOuBaixar(id);
       if (!cache || geracao !== this.geracao) return null;
-      return `data:${cache.mime};base64,${base64(cache.bytes)}`;
+      return paraDataUrl(cache.bytes, cache.mime);
     } catch {
       return null;
     }

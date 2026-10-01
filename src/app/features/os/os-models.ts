@@ -148,12 +148,18 @@ export interface ItemOsLocal {
   ordem: number | null;
 }
 
-/** `autorId` e `criadaEm` são do servidor: null até a nota ser aceita, e nunca preenchidos no aparelho. */
+/**
+ * `autorId` e `criadaEm` são do servidor: null até a nota ser aceita, e nunca preenchidos no aparelho. Para a tela
+ * mostrar a nota pendente com quem a escreveu e quando, o aparelho guarda `autorLocalId` e `criadaLocalEm`, que só
+ * existem no Dexie: nunca vão para a rede (`dadosDaOs`) e somem quando o estado do servidor substitui o registro.
+ */
 export interface NotaOsLocal {
   id: string;
   texto: string;
   autorId: string | null;
   criadaEm: string | null;
+  autorLocalId?: string | null;
+  criadaLocalEm?: string | null;
 }
 
 export interface HistoricoOsLocal {
@@ -387,7 +393,8 @@ export function dadosDaOs(os: OsLocal, comandos: ComandosOs = {}): OsDados {
       quantidadePrevista: Number(deMilesimos(BigInt(i.quantidadePrevistaMilesimos))),
       ordem: i.ordem,
     })),
-    notas: os.notas.map((n) => ({ ...n })),
+    // só os campos do contrato: o autor e a data locais da nota pendente ficam no aparelho
+    notas: os.notas.map((n) => ({ id: n.id, texto: n.texto, autorId: n.autorId, criadaEm: n.criadaEm })),
     anexos: os.anexos.map((a) => ({ ...a })),
     historico: os.historico.map((h) => ({ ...h })),
     atualizadoEm: os.atualizadoEm,

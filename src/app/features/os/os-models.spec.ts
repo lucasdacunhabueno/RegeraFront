@@ -476,6 +476,13 @@ describe('os-models', () => {
       expect(dadosDaOs(os).notas).toEqual([{ id: 'n9', texto: 'Nova', autorId: null, criadaEm: null }]);
     });
 
+    it('o autor e a data locais da nota pendente ficam no aparelho: nunca vão para a rede', () => {
+      const os = paraOsLocal(ID, 1, dadosCompletos());
+      os.notas = [{ id: 'n9', texto: 'Nova', autorId: null, criadaEm: null, autorLocalId: 'u1', criadaLocalEm: '2026-10-01T12:00:00Z' }];
+      const rede = JSON.parse(JSON.stringify(dadosDaOs(os))) as OsDados;
+      expect(rede.notas).toEqual([{ id: 'n9', texto: 'Nova', autorId: null, criadaEm: null }]);
+    });
+
     it('comandos de entrada (motivoReabertura, aceitarTrabalho) não ficam no registro local; saem só quando passados', () => {
       const d = { ...dadosCompletos(), motivoReabertura: 'Faltou testar', aceitarTrabalho: true };
       const os = paraOsLocal(ID, 1, d);

@@ -262,8 +262,10 @@ const ANEXO_OS: TipoUpload<AnexoOsLocal, RespostaAnexoOs> = {
       version: versao,
       anexos: [...(local as OsLocal).anexos.filter((x) => x.id !== anexo.id), anexo],
     };
-    if (anexo.tipo === 'ASSINATURA') {
-      // como o servidor (M2P1-R10): a assinatura aceita passa a ser esta, e a recusa sai
+    // como o servidor (M2P1-R10): a assinatura aceita passa a ser esta, e a recusa sai. M2P1-R26 (M6): a do técnico com a
+    // OS encerrada é só evidência, e o servidor não muda a aceita; o aparelho não a espelha. Com a OS concluída no
+    // aparelho e o concluir ainda na fila, também não espelha: o OK do concluir traz o estado do servidor
+    if (anexo.tipo === 'ASSINATURA' && (local as OsLocal).status === 'EM_ANDAMENTO') {
       Object.assign(mudancas, {
         assinaturaAnexoId: anexo.id, assinanteNome: anexo.assinanteNome, assinantePapel: anexo.assinantePapel,
         assinadaEm: anexo.tiradaEm, assinaturaRecusada: false, motivoRecusa: null,

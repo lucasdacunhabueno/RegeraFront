@@ -1312,6 +1312,35 @@ describe('SyncService', () => {
       expect(await db.anexosOs.get('s1')).toMatchObject({ enviado: true, arquivoId: 'as1', bytes: null });
     });
 
+    it.each(['CONCLUIDA', 'CANCELADA'] as const)(
+      'M2P1-R26 (M6): assinatura aceita com a OS %s no aparelho é evidência; a assinatura aceita local não muda',
+      async (status) => {
+        await db.os.put(paraOsLocal('o1', 3, os(status, { assinaturaRecusada: true, motivoRecusa: 'Ausente' })));
+        await db.anexosOs.put(anexoLocal({
+          id: 's1', tipo: 'ASSINATURA', legenda: null, momento: null, tiradaEm: '2026-10-01T13:00:00Z',
+          assinanteNome: 'Maria', assinantePapel: null, bytes: PNG, miniatura: PNG,
+        }));
+        await sync.registrarUploadAnexoOs('o1', 's1');
+
+        const p = sync.sincronizar();
+        (await upload()).flush({
+          anexo: anexoServidor({ id: 's1', tipo: 'ASSINATURA', arquivoId: 'as1', legenda: null, momento: null, assinanteNome: 'Maria' }),
+          versaoOs: 4,
+        }, { status: 201, statusText: 'Created' });
+        await pullVazio();
+        await p;
+
+        expect(await db.os.get('o1')).toMatchObject({
+          version: 4, assinaturaAnexoId: null, assinanteNome: null, assinaturaRecusada: true, motivoRecusa: 'Ausente',
+          anexos: [{ id: 's1', tipo: 'ASSINATURA' }],
+        });
+        const s1 = (await db.anexosOs.get('s1'))!;
+        expect(s1).toMatchObject({ enviado: true, bytes: null });
+        // a miniatura da assinatura é o próprio PNG: o PDF de uma reemissão offline ainda a tem
+        expect(new Uint8Array(s1.miniatura!)).toEqual(new Uint8Array(PNG));
+      },
+    );
+
     it('PDF depois do concluir: metadados do documento; mantém os bytes da revisão atual e tira os das anteriores', async () => {
       await db.os.put(paraOsLocal('o1', 6, os('EM_ANDAMENTO', { revisao: 2 })));
       const outro = new TextEncoder().encode('%PDF-1.7 outro').buffer as ArrayBuffer;
