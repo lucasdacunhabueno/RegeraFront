@@ -817,6 +817,19 @@ describe('SyncService', () => {
       expect(await db.documentos.get('d1')).toMatchObject({ enviado: false });
     });
 
+    it('upload sem rede pelo service worker (o 504 dele) propaga como no push: termina sem-rede, sem o pull', async () => {
+      await db.documentos.put(docLocal());
+      await sync.registrarUpload('p1', 'd1');
+
+      const p = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne(URL_UPLOAD))).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+      expect(await p).toBe('sem-rede');
+      http.expectNone((r) => r.url === '/api/sync/pull');
+      expect(await fila()).toHaveLength(1);
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.documentos.get('d1')).toMatchObject({ enviado: false });
+    });
+
     it.each([408, 429])('upload com %i é transitório: fica na outbox, sem pendência', async (status) => {
       await db.documentos.put(docLocal());
       await sync.registrarUpload('p1', 'd1');

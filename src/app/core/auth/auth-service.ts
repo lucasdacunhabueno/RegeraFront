@@ -48,6 +48,8 @@ export class AuthService {
     const resp = await firstValueFrom(this.http.post<RespostaSessao>('/api/auth/login', { email, senha }));
     const anterior = await this.db.lerMeta<UsuarioSessao>(CHAVE_SESSAO);
     if (anterior && anterior.id !== resp.usuario.id) {
+      // N-FW1: como no logout, os rascunhos da OS (sessionStorage) do anterior também saem
+      limparRascunhosOs();
       await this.db.limparTudo();
     }
     await this.aplicar(resp);

@@ -427,8 +427,9 @@ export class SyncService {
 
   /**
    * Upload (multipart: `arquivo` e `metadados`) do tipo da mutação (`tipos-upload.ts`), fora do lote do push. false =
-   * falha transitória (5xx, 408, 429): fica na fila para a próxima sincronização. Erro de rede e 401 sem renovação
-   * propagam, como no push; as outras recusas viram pendência REJEITADO (com "Descartar"), que segura o agregado.
+   * falha transitória (5xx, 408, 429): fica na fila para a próxima sincronização. Erro de rede (`falhaDeRede`, inclusive
+   * o 504 do service worker) e 401 sem renovação propagam, como no push; as outras recusas viram pendência REJEITADO
+   * (com "Descartar"), que segura o agregado.
    */
   private async enviarUpload(m: MutacaoLocal): Promise<boolean> {
     const tipo = tipoUploadDe(m.entidade)!;
@@ -446,7 +447,7 @@ export class SyncService {
     try {
       resp = await firstValueFrom(this.http.post<unknown>(tipo.url(m.agregadoId), corpo));
     } catch (e) {
-      if (!(e instanceof HttpErrorResponse) || e.status === 0 || e.status === 401) throw e;
+      if (!(e instanceof HttpErrorResponse) || falhaDeRede(e) || e.status === 401) throw e;
       if (e.status >= 500 || e.status === 408 || e.status === 429) {
         await this.liberar(m);
         return false;

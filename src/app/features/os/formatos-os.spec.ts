@@ -67,9 +67,16 @@ describe('formatos-os', () => {
     });
 
     it('T4 fix (I1 da T5): a OS criada aqui, as alterações do cabeçalho e a troca de técnico (as do escritório, no fim)', () => {
-      expect(textoPerdaOs(['atribuicao', 'cabecalho', 'notas', 'criacao'])).toBe(
+      expect(textoPerdaOs(['trocaTecnico', 'cabecalho', 'notas', 'criacao'])).toBe(
         'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: a OS criada neste aparelho, as notas, '
         + 'as alterações do cabeçalho e a troca de técnico.');
+    });
+
+    it('R2: a troca de responsável tem o nome dela, depois da de técnico', () => {
+      expect(textoPerdaOs(['trocaResponsavel'])).toBe(
+        'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: a troca de responsável.');
+      expect(textoPerdaOs(['trocaResponsavel', 'trocaTecnico'])).toBe(
+        'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: a troca de técnico e a troca de responsável.');
     });
   });
 

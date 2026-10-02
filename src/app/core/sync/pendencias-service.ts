@@ -5,6 +5,7 @@ import { firstValueFrom, Observable } from 'rxjs';
 import { AuthService } from '../auth/auth-service';
 import { observar } from '../db/observar';
 import { RegeraDb } from '../db/regera-db';
+import { falhaDeRede } from '../http/erro-api';
 import { ORDEM_PERDA_OS, type ItemPerdaOs } from '../../features/os/formatos-os';
 import type { OsDados, OsLocal, StatusOs, TipoAnexoOs } from '../../features/os/os-models';
 import { manterMinhaOs, quemNoServidor, rebaseFilaOs, rebaseOsLocal } from '../../features/os/rebase-os';
@@ -82,7 +83,8 @@ function chaveDasLinhas(d: OsDados): string {
  * recusada (a primeira sem versão) leva a OS inteira.
  * - `cabecalho`: tipo, descrição, data, urgência, endereço ou linhas; e, numa edição comum (não separada), "Esta OS
  *   conclui a proposta?" (M2 da revisão final: o escritório a marcando de novo, ou desmarcando);
- * - `atribuicao`: o técnico ou o responsável (o null que o aparelho manda na OS de proposta não conta como troca).
+ * - `trocaTecnico` e `trocaResponsavel` (R2), cada um com o seu item: o null que o aparelho manda no responsável da OS
+ *   de proposta não conta como troca.
  */
 function perdaDoCabecalho(mutacoes: readonly MutacaoLocal[]): Set<ItemPerdaOs> {
   const r = new Set<ItemPerdaOs>();
@@ -97,8 +99,8 @@ function perdaDoCabecalho(mutacoes: readonly MutacaoLocal[]): Set<ItemPerdaOs> {
     if (campoMudou || chaveDasLinhas(d) !== chaveDasLinhas(antes) || concluiMudou) {
       r.add('cabecalho');
     }
-    const responsavel = d.responsavelId != null && antes.responsavelId != null && d.responsavelId !== antes.responsavelId;
-    if ((d.tecnicoId ?? null) !== (antes.tecnicoId ?? null) || responsavel) r.add('atribuicao');
+    if ((d.tecnicoId ?? null) !== (antes.tecnicoId ?? null)) r.add('trocaTecnico');
+    if (d.responsavelId != null && antes.responsavelId != null && d.responsavelId !== antes.responsavelId) r.add('trocaResponsavel');
     antes = d;
   }
   return r;
@@ -287,7 +289,7 @@ export class PendenciasService {
     try {
       atual = await this.buscarNoServidor(p, p.agregadoId);
     } catch (e) {
-      if (!(e instanceof HttpErrorResponse && e.status === 0)) throw e;
+      if (!falhaDeRede(e)) throw e;
       fresco = false;
       atual = p.dadosServidor == null ? null : { dados: p.dadosServidor, version: p.versionServidor ?? null, deleted: false } as unknown as Mudanca;
     }

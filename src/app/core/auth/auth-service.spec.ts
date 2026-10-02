@@ -54,6 +54,28 @@ describe('AuthService', () => {
     expect(await db.lerMeta('cursor')).toBeUndefined();
   });
 
+  it('N-FW1: login de outro usuário apaga também os rascunhos da OS desta aba', async () => {
+    await db.gravarMeta('sessao', { ...ANA, id: 'outro' });
+    gravarRascunhoOs('outro', 'o1', 'resumo', 'Quadro trocado');
+
+    const p = auth.login('ana@regera.test', 'x');
+    http.expectOne('/api/auth/login').flush(RESPOSTA);
+    await p;
+
+    expect(lerRascunhoOs('outro', 'o1')).toEqual({});
+  });
+
+  it('N-FW1: o login do mesmo usuário mantém os rascunhos da OS', async () => {
+    await db.gravarMeta('sessao', ANA);
+    gravarRascunhoOs(ANA.id, 'o1', 'nota', 'Falta o disjuntor');
+
+    const p = auth.login('ana@regera.test', 'x');
+    http.expectOne('/api/auth/login').flush(RESPOSTA);
+    await p;
+
+    expect(lerRascunhoOs(ANA.id, 'o1')).toEqual({ nota: 'Falta o disjuntor' });
+  });
+
   it('iniciar sem internet mantém a sessão local', async () => {
     await db.gravarMeta('sessao', ANA);
 

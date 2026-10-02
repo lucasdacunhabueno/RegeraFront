@@ -348,6 +348,7 @@ export interface OsServidor {
   resumoExecucao?: string;
   assinaturaRecusada: boolean;
   motivoRecusa?: string;
+  motivoCancelamento?: string;
   assinanteNome?: string;
   notas: { id: string; texto: string; autorId?: string }[];
   anexos: { id: string; tipo: 'FOTO' | 'ASSINATURA' | 'DOCUMENTO'; arquivoId: string; codigoExibido?: string; autorId?: string }[];

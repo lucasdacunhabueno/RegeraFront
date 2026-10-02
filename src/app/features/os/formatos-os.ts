@@ -243,11 +243,11 @@ export function mensagemErroOs(e: unknown): string {
  */
 export type ItemPerdaOs =
   | 'criacao' | 'inicio' | 'notas' | 'fotos' | 'assinatura' | 'recusa' | 'precisaVoltar' | 'conclusao' | 'resumo' | 'pdf'
-  | 'cancelamento' | 'reabertura' | 'cabecalho' | 'atribuicao';
+  | 'cancelamento' | 'reabertura' | 'cabecalho' | 'trocaTecnico' | 'trocaResponsavel';
 
 /**
  * A criação primeiro (ela leva a OS inteira); depois a ordem do trabalho de campo (a da fila: iniciar, notas, fotos,
- * assinatura, concluir, PDF) e, no fim, o escritório (cancelar, reabrir, o cabeçalho e o técnico).
+ * assinatura, concluir, PDF) e, no fim, o escritório (cancelar, reabrir, o cabeçalho, o técnico e o responsável).
  */
 const ROTULO_PERDA: Readonly<Record<ItemPerdaOs, string>> = {
   criacao: 'a OS criada neste aparelho',
@@ -263,7 +263,8 @@ const ROTULO_PERDA: Readonly<Record<ItemPerdaOs, string>> = {
   cancelamento: 'o cancelamento',
   reabertura: 'a reabertura',
   cabecalho: 'as alterações do cabeçalho',
-  atribuicao: 'a troca de técnico',
+  trocaTecnico: 'a troca de técnico',
+  trocaResponsavel: 'a troca de responsável',
 };
 /** A ordem canônica dos itens (a do `ROTULO_PERDA`). */
 export const ORDEM_PERDA_OS: readonly ItemPerdaOs[] = Object.keys(ROTULO_PERDA) as ItemPerdaOs[];

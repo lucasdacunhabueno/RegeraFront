@@ -137,6 +137,19 @@ describe('PendenciasService', () => {
     expect(await db.outbox.count()).toBe(0);
   });
 
+  it('usar a do servidor sem rede pelo service worker (o 504 dele) também cai para os dados guardados', async () => {
+    await db.clientes.put(paraClienteLocal('c1', 1, dados('Minha')));
+    const p = pendencia({ tipo: 'CONFLITO', versionServidor: 4, dadosServidor: dados('Servidor') });
+    await db.pendencias.put(p);
+
+    const promessa = svc.usarServidor(p);
+    (await vi.waitFor(() => http.expectOne(urlServidor))).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+    await promessa;
+
+    expect(await db.clientes.get('c1')).toMatchObject({ nome: 'Servidor', version: 4 });
+    expect(await db.pendencias.count()).toBe(0);
+  });
+
   it('descartar criação rejeitada apaga o registro local sem consultar o servidor', async () => {
     await db.clientes.put(paraClienteLocal('c1', null, dados('Nova')));
     const p = pendencia({ tipo: 'REJEITADO', erro: { codigo: 'VALIDACAO', mensagem: 'x' } });
@@ -744,15 +757,25 @@ describe('PendenciasService', () => {
             expect(await svc.perdaDaOs(p)).toEqual([]);
             // a reatribuição feita depois da recusa (a edição fica retida atrás dela)
             await db.outbox.add(mutOs('a1', 6, doAparelho({ tecnicoId: 'u-tec2' })));
-            expect(await svc.perdaDaOs(p)).toEqual(['atribuicao']);
+            expect(await svc.perdaDaOs(p)).toEqual(['trocaTecnico']);
             expect(await svc.descartaEnvio(p)).toBe(true);
             // e a data, a descrição, o endereço ou as linhas
             await db.outbox.add(mutOs('a2', 7, doAparelho({ tecnicoId: 'u-tec2', dataPrevista: '2026-10-20' })));
-            expect(await svc.perdaDaOs(p)).toEqual(['cabecalho', 'atribuicao']);
+            expect(await svc.perdaDaOs(p)).toEqual(['cabecalho', 'trocaTecnico']);
             await db.outbox.clear();
             const linhas = doAparelho().itens.map((l) => ({ ...l, quantidadePrevista: 5 }));
             await db.outbox.add(mutOs('a3', 6, doAparelho({ itens: linhas })));
             expect(await svc.perdaDaOs(p)).toEqual(['cabecalho']);
+          });
+
+          it('R2: a troca de responsável atrás da recusa é nomeada como tal, separada da de técnico', async () => {
+            const p = rejeitadaSemServidor(doAparelho({ responsavelId: 'u1' }));
+            await db.pendencias.put(p);
+            await db.outbox.add(mutOs('r1', 6, doAparelho({ responsavelId: 'u2' })));
+            expect(await svc.perdaDaOs(p)).toEqual(['trocaResponsavel']);
+            expect(await svc.descartaEnvio(p)).toBe(true);
+            await db.outbox.add(mutOs('r2', 7, doAparelho({ responsavelId: 'u2', tecnicoId: 'u-tec2' })));
+            expect(await svc.perdaDaOs(p)).toEqual(['trocaTecnico', 'trocaResponsavel']);
           });
 
           it('I1 (T5): o cabeçalho da própria mutação em conflito, diferente do servidor (mudado lá), não conta como perda daqui', async () => {
