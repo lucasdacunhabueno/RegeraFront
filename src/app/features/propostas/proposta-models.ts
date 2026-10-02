@@ -218,7 +218,10 @@ export function paraPropostaLocal(id: string, version: number | null, d: Propost
   };
 }
 
-/** Para a rede: decimais como `number` exatos (o texto mais curto do double é o próprio decimal). Sem `origem` ([srv]). */
+/**
+ * Para a rede: decimais como `number` exatos (o texto mais curto do double é o próprio decimal). Sem `origem` ([srv]);
+ * o adaptador da proposta a acrescenta na regravação local do "Manter a minha".
+ */
 export function dadosDaProposta(p: PropostaLocal): PropostaDados {
   return {
     codigoProvisorio: p.codigoProvisorio,

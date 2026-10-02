@@ -106,6 +106,7 @@ const POR_CODIGO: ReadonlyMap<string, string> = new Map([
   ['RESOLVA_A_PENDENCIA', 'Resolva a pendência desta proposta antes de editá-la.'],
   ['VALIDACAO', 'Revise os campos destacados.'],
   ['ACESSO_NEGADO', 'Você não tem permissão para esta ação.'],
+  ['PROPOSTA_SIGEM', 'Proposta importada do SIGEM não tem PDF.'],
 ]);
 
 const GENERICA = 'Não foi possível concluir. Tente de novo.';

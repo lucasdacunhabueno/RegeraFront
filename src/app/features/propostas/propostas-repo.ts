@@ -308,6 +308,9 @@ export function linhaDoCatalogo(tipo: TipoProposta, quantasLinhas: number, itemC
 
 const CODIGO_INVALIDO = 'CODIGO_EXIBIDO_INVALIDO';
 
+/** O texto do `PROPOSTA_SIGEM` do servidor (SO-R6). */
+const SIGEM_SEM_PDF = 'Proposta importada do SIGEM não tem PDF.';
+
 /** Por que "Gerar PDF novamente" vale (P4b-R13), ou null. */
 export type MotivoRegerar = 'CODIGO_EXIBIDO_INVALIDO' | 'SEM_DOCUMENTO';
 
@@ -1044,10 +1047,12 @@ export class PropostasRepo {
   }
 
   /**
-   * Recusa com um CONFLITO da proposta (`RESOLVA_A_PENDENCIA`, P4c-R15) e quando `motivoParaRegerar` não vale para `p`
-   * (`DOCUMENTO_EM_DIA`); devolve as pendências dela.
+   * Recusa a importada do SIGEM (`PROPOSTA_SIGEM`, o mesmo texto do servidor), com um CONFLITO da proposta
+   * (`RESOLVA_A_PENDENCIA`, P4c-R15) e quando `motivoParaRegerar` não vale para `p` (`DOCUMENTO_EM_DIA`); devolve as
+   * pendências dela.
    */
   private async exigirMotivoParaRegerar(p: PropostaLocal): Promise<Pendencia[]> {
+    if (importadaDoSigem(p)) throw new ErroProposta('PROPOSTA_SIGEM', 'proposta', SIGEM_SEM_PDF);
     const pendencias = await this.pendenciasDa(p.id);
     exigirSemConflito(pendencias, 'regerar');
     const locais = await this.db.documentos.where('propostaId').equals(p.id).toArray();

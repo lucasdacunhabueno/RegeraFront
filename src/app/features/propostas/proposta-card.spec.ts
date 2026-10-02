@@ -109,7 +109,11 @@ describe('PropostaCard', () => {
     const p = proposta({ status: 'FINALIZADA', origem: 'SIGEM' });
     const el = montar({ proposta: p, selos: selosDaProposta(p, { pendente: true, naoSincronizada: false, hoje: '2026-10-01' }) });
     const selos = [...el.querySelectorAll('[data-selo]')];
-    expect(selos.map((s) => [s.getAttribute('data-selo'), s.textContent?.trim()])).toEqual([['sigem', 'SIGEM'], ['pendencia', 'Pendência']]);
+    // o leitor de tela ouve "Importada do SIGEM" (é a procedência, não um aviso); a tela mostra só "SIGEM"
+    expect(selos.map((s) => [s.getAttribute('data-selo'), s.textContent?.replace(/\s+/g, ' ').trim()]))
+      .toEqual([['sigem', 'Importada do SIGEM'], ['pendencia', 'Pendência']]);
+    expect(selos[0].querySelector('.sr-only')?.textContent).toBe('Importada do ');
+    expect(selos[1].querySelector('.sr-only')).toBeNull();
     expect(ESTILO_SELO.sigem.cor).toBe('bg-slate-100 text-slate-700');
     for (const c of ESTILO_SELO.sigem.cor.split(' ')) expect(selos[0].classList).toContain(c);
     const icone = selos[0].querySelector('svg')!;

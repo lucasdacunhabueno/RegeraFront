@@ -681,8 +681,9 @@ describe('PropostaDetalhePage', () => {
       const docs = texto(el.querySelector<HTMLElement>('[data-testid=documentos]')!);
       expect(docs).toContain('Importada do SIGEM: sem PDF.');
       expect(docs).not.toContain('Nenhum PDF ainda.');
-      expect([...el.querySelectorAll('[data-testid=resumo] [data-selo]')].map((s) => [s.getAttribute('data-selo'), s.textContent?.trim()]))
-        .toEqual([['sigem', 'SIGEM']]);
+      const selos = [...el.querySelectorAll('[data-testid=resumo] [data-selo]')];
+      expect(selos.map((s) => [s.getAttribute('data-selo'), texto(s as HTMLElement).trim()])).toEqual([['sigem', 'Importada do SIGEM']]);
+      expect(selos[0].querySelector('.sr-only')?.textContent).toBe('Importada do ');
     });
 
     it('APROVADA: segue o fluxo (Iniciar execução, Cancelar, Duplicar), só sem a prévia', async () => {

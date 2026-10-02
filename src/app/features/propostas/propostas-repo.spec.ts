@@ -20,6 +20,7 @@ import { ID_EMPRESA, paraEmpresaLocal } from '../empresa/empresa-models';
 import { blocosIniciais, paraTemplateLocal } from '../templates/template-models';
 import { calcular } from './calculo';
 import { codigoProvisorioValido } from './codigo-provisorio';
+import { mensagemErroProposta } from './formatos-proposta';
 import {
   dadosDaProposta, DocumentoLocal, ItemPropostaLocal, PropostaDados, PropostaLocal, StatusProposta,
 } from './proposta-models';
@@ -1099,7 +1100,7 @@ describe('PropostasRepo', () => {
       expect(motivoParaRegerar({ ...base, status: 'CANCELADA', revisao: 1 }, [], [])).toBeNull();
     });
 
-    it('SIGEM: a proposta importada nunca tem PDF a regerar (motivoParaRegerar nulo; regerarDocumento recusa sem gerar)', async () => {
+    it('SIGEM: a proposta importada nunca tem PDF a regerar (motivoParaRegerar nulo; regerarDocumento recusa com PROPOSTA_SIGEM sem gerar)', async () => {
       const sigem = {
         status: 'FINALIZADA' as StatusProposta, revisao: 1, documentos: [], origem: 'SIGEM' as const,
         historico: [{ statusDe: null, statusPara: 'FINALIZADA' as StatusProposta, usuarioId: ADMIN.id, em: '2026-10-01T10:00:00Z', observacao: null }],
@@ -1112,7 +1113,13 @@ describe('PropostasRepo', () => {
       await existente('FINALIZADA', { numero: 12, origem: 'SIGEM', responsavelId: ADMIN.id, historico: sigem.historico });
       usuario.set(ADMIN);
       const gerar = vi.fn<(e: EntradaPdf) => Promise<Blob>>(async () => new Blob([ABC], { type: 'application/pdf' }));
-      expect((await erroDe(repo.regerarDocumento('p1', gerar))).codigo).toBe('DOCUMENTO_EM_DIA');
+      const e = await erroDe(repo.regerarDocumento('p1', gerar));
+      expect(e.codigo).toBe('PROPOSTA_SIGEM');
+      expect(e.message).toBe('Proposta importada do SIGEM não tem PDF.');
+      expect(mensagemErroProposta(e)).toBe('Proposta importada do SIGEM não tem PDF.');
+      // também com um CONFLITO da proposta: a origem é o motivo definitivo
+      await db.pendencias.put({ ...pendencia('proposta', 'p1'), tipo: 'CONFLITO' });
+      expect((await erroDe(repo.regerarDocumento('p1', gerar))).codigo).toBe('PROPOSTA_SIGEM');
       expect(gerar).not.toHaveBeenCalled();
       expect(await db.documentos.count()).toBe(0);
       expect(await fila()).toEqual([]);

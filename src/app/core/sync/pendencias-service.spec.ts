@@ -326,6 +326,25 @@ describe('PendenciasService', () => {
       expect((await db.outbox.toArray())[0]).toMatchObject({ mutationId: 'mp1', dados: { clienteId: 'c1' } });
     });
 
+    it('"Manter a minha" num CONFLITO de proposta do SIGEM: a cópia local continua SIGEM; a fila não leva a origem', async () => {
+      const minha: PropostaDados = { ...prop('c1'), status: 'EM_EXECUCAO', numero: 12 };
+      await db.propostas.put(paraPropostaLocal('p1', 3, { ...minha, origem: 'SIGEM' }));
+      const p = pendencia({
+        tipo: 'CONFLITO', entidade: 'proposta', agregadoId: 'p1', versionServidor: 5,
+        dadosServidor: { ...prop('c1'), status: 'APROVADA', numero: 12, origem: 'SIGEM' },
+        mutacao: { ...mutProposta('m1', 'p1', 'c1'), baseVersion: 3, dados: minha },
+      });
+      await db.pendencias.put(p);
+
+      await svc.manterMinha(p);
+
+      expect(await db.propostas.get('p1')).toMatchObject({ version: 5, status: 'EM_EXECUCAO', origem: 'SIGEM' });
+      const fila = await db.outbox.toArray();
+      expect(fila).toHaveLength(1);
+      expect(fila[0]).toMatchObject({ entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: 5, dados: { status: 'EM_EXECUCAO' } });
+      expect('origem' in (fila[0].dados as object)).toBe(false);
+    });
+
     it('descartar upload rejeitado apaga o PDF não enviado e libera a proposta, sem tocar nela', async () => {
       await db.propostas.put(paraPropostaLocal('p1', 3, prop('c1')));
       await db.documentos.put({

@@ -207,7 +207,7 @@ interface LinhaItem {
               @for (s of selos(); track s.tipo) {
                 <li [attr.data-selo]="s.tipo" [attr.class]="'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ' + estilo(s).cor">
                   <svg [lucideIcon]="estilo(s).icone" [size]="12" aria-hidden="true"></svg>
-                  {{ s.rotulo }}
+                  @if (s.tipo === 'sigem') {<span class="sr-only">Importada do </span>}{{ s.rotulo }}
                 </li>
               }
             </ul>
