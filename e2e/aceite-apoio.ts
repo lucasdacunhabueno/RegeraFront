@@ -278,15 +278,90 @@ export class Api {
     return logoArquivoId;
   }
 
-  /** Cliente PF criado direto no servidor (o carimbo do teste no nome). Devolve o id. */
-  async criarClientePf(nome: string, cpf: string): Promise<string> {
+  /**
+   * Cliente PF criado direto no servidor (o carimbo do teste no nome). Devolve o id. M2: com `telefone` e `endereco`
+   * (o endereço principal), que o técnico vê na OS (Q14).
+   */
+  async criarClientePf(nome: string, cpf: string, extra: { telefone?: string; endereco?: EnderecoE2E } = {}): Promise<string> {
     const id = randomUUID();
     await this.pushOk('cliente', id, null, {
       tipo: 'PF', documento: cpf, nome, nomeFantasia: null, inscricaoEstadual: null, inscricaoMunicipal: null, email: null,
-      telefone: null, whatsapp: null, contatoNome: null, observacoes: null, enderecos: [],
+      telefone: extra.telefone ?? null, whatsapp: null, contatoNome: null, observacoes: null,
+      enderecos: extra.endereco ? [{ tipo: 'PRINCIPAL', complemento: null, ...extra.endereco }] : [],
     });
     return id;
   }
+
+  /**
+   * M2: proposta VENDA já APROVADA, pelo push do sync como o comercial dono do token (o responsável): o rascunho com
+   * cliente, template e um item, depois ENVIADA e APROVADA, cada transição sobre a versão anterior. Devolve o id.
+   */
+  async criarPropostaAprovada(responsavelId: string, clienteId: string, templateId: string, item: ItemE2E): Promise<string> {
+    const id = randomUUID();
+    const hoje = new Date().toLocaleDateString('sv-SE', { timeZone: 'America/Sao_Paulo' });
+    const dados = {
+      codigoProvisorio: codigoProvisorioAleatorio(), tipo: 'VENDA', status: 'RASCUNHO', clienteId, templateId, responsavelId,
+      tecnicoId: null, dataEmissao: hoje, validadeAte: null, condicoesPagamento: null, prazoExecucao: null, observacoes: null,
+      descontoGeralPercentual: 0,
+      itens: [{ id: randomUUID(), itemCatalogoId: item.id, quantidade: 2, precoUnitario: item.dados.precoVenda, descontoPercentual: 0, meses: null }],
+    };
+    let versao = await this.pushOk('proposta', id, null, dados);
+    versao = await this.pushOk('proposta', id, versao, { ...dados, status: 'ENVIADA' });
+    await this.pushOk('proposta', id, versao, { ...dados, status: 'APROVADA' });
+    return id;
+  }
+
+  /** M2: OS avulsa ABERTA criada direto no servidor (como o ADMIN ou o comercial do token), já com o técnico. */
+  async criarOsAvulsa(clienteId: string, tecnicoId: string | null, descricao: string): Promise<string> {
+    const id = randomUUID();
+    await this.pushOk('os', id, null, {
+      codigoProvisorio: codigoProvisorioOsAleatorio(), propostaId: null, clienteId, tipo: 'SERVICO', status: 'ABERTA',
+      tecnicoId, dataPrevista: null, urgente: false, concluiProposta: true, descricao, assinaturaRecusada: false,
+      itens: [], notas: [],
+    });
+    return id;
+  }
+
+  async os(id: string): Promise<OsServidor | undefined> {
+    return (await this.agregado('os', id))?.dados as OsServidor | undefined;
+  }
+}
+
+export interface EnderecoE2E {
+  cep: string;
+  logradouro: string;
+  numero: string;
+  bairro: string;
+  cidade: string;
+  uf: string;
+}
+
+export interface OsServidor {
+  codigoProvisorio: string;
+  numero?: number;
+  status: string;
+  propostaId?: string;
+  clienteId: string;
+  tecnicoId?: string;
+  responsavelId?: string;
+  concluiProposta: boolean;
+  resumoExecucao?: string;
+  assinaturaRecusada: boolean;
+  motivoRecusa?: string;
+  assinanteNome?: string;
+  notas: { id: string; texto: string; autorId?: string }[];
+  anexos: { id: string; tipo: 'FOTO' | 'ASSINATURA' | 'DOCUMENTO'; arquivoId: string; codigoExibido?: string }[];
+  historico: { statusDe?: string; statusPara: string }[];
+}
+
+/** `OSP-` + 6 caracteres do base32 de Crockford (o código provisório da OS). */
+export function codigoProvisorioOsAleatorio(): string {
+  return codigoProvisorioAleatorio().replace(/^PROV-/, 'OSP-');
+}
+
+/** O código que a tela e o PDF mostram para a OS numerada: `OS-000123`. */
+export function codigoOs(numero: number): string {
+  return `OS-${String(numero).padStart(6, '0')}`;
 }
 
 /** PNG 8x8 (metade azul, metade transparente). */
@@ -306,7 +381,7 @@ export function novoContextoDesktop(browser: Browser): Promise<BrowserContext> {
   });
 }
 
-/** Login pela tela; o admin e o comercial caem no kanban, o técnico nas propostas dele. */
+/** Login pela tela; o admin e o comercial caem no kanban, o técnico em "Minhas OS" (M2-P3). */
 export async function entrar(page: Page, email: string, senha: string, destino = /\/kanban$/): Promise<void> {
   await page.goto('/login');
   await page.getByLabel('E-mail').fill(email);
@@ -447,6 +522,73 @@ export function registrosNoAparelho<T = Record<string, unknown>>(page: Page, tab
       }),
     { tabela, campo, valor },
   );
+}
+
+/**
+ * M2, a "câmera" do teste: um JPEG de verdade (largura × altura, preenchido com `cor` e uma faixa diagonal), gerado
+ * pelo canvas da própria página e devolvido como Buffer para o `setFiles` do seletor de arquivo.
+ */
+export async function jpegDeTeste(page: Page, cor: string, largura = 1200, altura = 900): Promise<Buffer> {
+  const bytes = await page.evaluate(
+    async ({ cor, largura, altura }) => {
+      const canvas = document.createElement('canvas');
+      canvas.width = largura;
+      canvas.height = altura;
+      const ctx = canvas.getContext('2d')!;
+      ctx.fillStyle = cor;
+      ctx.fillRect(0, 0, largura, altura);
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 40;
+      ctx.beginPath();
+      ctx.moveTo(0, 0);
+      ctx.lineTo(largura, altura);
+      ctx.stroke();
+      const blob = await new Promise<Blob>((resolve, reject) =>
+        canvas.toBlob((b) => (b ? resolve(b) : reject(new Error('toBlob falhou'))), 'image/jpeg', 0.9),
+      );
+      return Array.from(new Uint8Array(await blob.arrayBuffer()));
+    },
+    { cor, largura, altura },
+  );
+  return Buffer.from(bytes);
+}
+
+/**
+ * M2: "Tirar foto" pelo botão da tela (o toque abre o seletor do `<input capture>`), entregando o JPEG ao seletor; espera
+ * o contador da galeria chegar a `esperadas`.
+ */
+export async function tirarFoto(page: Page, jpeg: Buffer, nome: string, esperadas: number): Promise<void> {
+  const seletor = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Tirar foto' }).click();
+  await (await seletor).setFiles({ name: nome, mimeType: 'image/jpeg', buffer: jpeg });
+  await expect(page.getByTestId('contador-fotos')).toHaveText(`${esperadas}/20`, { timeout: 30_000 });
+}
+
+/**
+ * M2: a assinatura em tela cheia: desenha dois traços com o ponteiro no quadro (o canvas), preenche o nome e confirma;
+ * espera a tela fechar.
+ */
+export async function assinarNaTela(page: Page, nome: string): Promise<void> {
+  await page.getByRole('button', { name: 'Colher assinatura' }).click();
+  const dialogo = page.getByRole('dialog', { name: 'Assinatura' });
+  await expect(dialogo).toBeVisible();
+  const confirmar = dialogo.getByRole('button', { name: 'Confirmar' });
+  // quadro vazio não confirma
+  await expect(confirmar).toBeDisabled();
+  const quadro = dialogo.getByRole('img', { name: 'Quadro da assinatura' });
+  const caixa = (await quadro.boundingBox())!;
+  const traco = async (pontos: [number, number][]) => {
+    await page.mouse.move(caixa.x + caixa.width * pontos[0][0], caixa.y + caixa.height * pontos[0][1]);
+    await page.mouse.down();
+    for (const [x, y] of pontos.slice(1)) await page.mouse.move(caixa.x + caixa.width * x, caixa.y + caixa.height * y, { steps: 8 });
+    await page.mouse.up();
+  };
+  await traco([[0.15, 0.6], [0.3, 0.3], [0.45, 0.65], [0.6, 0.35], [0.75, 0.6]]);
+  await traco([[0.2, 0.75], [0.8, 0.72]]);
+  await expect(confirmar).toBeEnabled();
+  await dialogo.getByLabel('Nome de quem assina').fill(nome);
+  await confirmar.click();
+  await expect(dialogo).toHaveCount(0, { timeout: 30_000 });
 }
 
 /** O texto visível da página inteira (para afirmar que algo NÃO aparece, como "R$" para o técnico). */
