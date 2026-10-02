@@ -85,10 +85,15 @@ export class PendenciasService {
   }
 
   /**
-   * Para os títulos e as ações da tela: as OS do aparelho que têm pendência (dela ou de um anexo dela) e o tipo de cada
-   * anexo com upload pendente. Lê só os registros citados: os bytes das outras fotos não são carregados.
+   * Para os títulos e as ações da tela: as OS do aparelho que têm pendência (dela ou de um anexo dela), o tipo de cada
+   * anexo com upload pendente e a revisão de cada PDF deles (sem ela, a 1: o "Gerar PDF novamente" só troca o da
+   * revisão atual). Lê só os registros citados: os bytes das outras fotos não são carregados.
    */
-  observarOsDasPendencias(): Observable<{ os: ReadonlyMap<string, OsLocal>; tiposDeAnexo: ReadonlyMap<string, TipoAnexoOs> }> {
+  observarOsDasPendencias(): Observable<{
+    os: ReadonlyMap<string, OsLocal>;
+    tiposDeAnexo: ReadonlyMap<string, TipoAnexoOs>;
+    revisoesDosPdfs: ReadonlyMap<string, number>;
+  }> {
     return observar(async () => {
       const daOs = (await this.db.pendencias.toArray()).filter((p) => p.entidade === 'os' || p.entidade === TIPO_UPLOAD_ANEXO_OS);
       const ids = [...new Set(daOs.map((p) => p.agregadoId))];
@@ -101,6 +106,7 @@ export class PendenciasService {
       return {
         os: new Map(os.map((x) => [x.id, x] as const)),
         tiposDeAnexo: new Map(anexos.map((a) => [a.id, a.tipo] as const)),
+        revisoesDosPdfs: new Map(anexos.filter((a) => a.tipo === 'DOCUMENTO').map((a) => [a.id, a.revisaoOs ?? 1] as const)),
       };
     });
   }

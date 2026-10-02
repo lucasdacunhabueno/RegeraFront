@@ -782,6 +782,23 @@ describe('PendenciasService', () => {
         expect([...contexto.os.keys()]).toEqual(['o1']);
         expect(contexto.os.get('o1')?.numero).toBe(123);
         expect([...contexto.tiposDeAnexo.entries()]).toEqual([['s1', 'ASSINATURA']]);
+        expect([...contexto.revisoesDosPdfs.entries()]).toEqual([]);
+      });
+
+      it('observarOsDasPendencias: a revisão de cada PDF com upload pendente (sem revisão, a 1): o "Gerar PDF novamente"', async () => {
+        await db.os.put(paraOsLocal('o1', 3, { ...osDados, numero: 123, revisao: 2, itens: [], notas: [] }));
+        await gravarAnexos([
+          { ...anexo('d1', 'o1', false), tipo: 'DOCUMENTO', revisaoOs: 1, codigoExibido: 'OS-000123' },
+          { ...anexo('d2', 'o1', false), tipo: 'DOCUMENTO', revisaoOs: 2, codigoExibido: 'OS-000123-R2' },
+          { ...anexo('d3', 'o1', false), tipo: 'DOCUMENTO' },
+          anexo('f1', 'o1', false),
+        ]);
+        await db.pendencias.bulkPut(['d1', 'd2', 'd3', 'f1'].map((id) => ({
+          mutationId: `up-${id}`, entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO' as const, criadaEm: '',
+          erro: { codigo: 'CODIGO_EXIBIDO_INVALIDO', mensagem: 'x' }, mutacao: uploadOs(`up-${id}`, id),
+        })));
+        const contexto = await firstValueFrom(svc.observarOsDasPendencias());
+        expect([...contexto.revisoesDosPdfs.entries()].sort()).toEqual([['d1', 1], ['d2', 2], ['d3', 1]]);
       });
 
       describe('M2P2-R13: a pendência que libera a OS a relê do servidor', () => {

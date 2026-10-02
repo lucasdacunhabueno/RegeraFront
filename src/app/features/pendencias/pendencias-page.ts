@@ -14,7 +14,8 @@ import { MENSAGEM_OS_NAO_ESTA_COM_VOCE } from '../../core/sync/tipos-upload';
 import { Toasts } from '../../shared/ui/toasts';
 import { mensagemErroOs, rotuloCampoOs, textoPerdaOs } from '../os/formatos-os';
 import { codigoOsExibido, OsDados, OsLocal, TipoAnexoOs } from '../os/os-models';
-import { compartilharArquivo, ResultadoCompartilhar } from '../propostas/compartilhar';
+import { OsRepo } from '../os/os-repo';
+import { arquivoPdf, compartilharArquivo, ResultadoCompartilhar } from '../propostas/compartilhar';
 import { DialogoMotivo } from '../propostas/dialogo-motivo';
 import { mensagemErroProposta, rotuloCodigo } from '../propostas/formatos-proposta';
 import { PdfPronto } from '../propostas/pdf-pronto';
@@ -32,6 +33,24 @@ const ROTULO_ANEXO_OS: Readonly<Record<TipoAnexoOs, string>> = { FOTO: 'Foto', A
 
 /** P4c-R15: o texto da confirmação quando a ação levaria o que foi feito neste aparelho e ainda não foi enviado. */
 const AVISO_PROPOSTA = 'Isto descarta o envio e o PDF gerado neste aparelho.';
+
+/**
+ * M2P2-R18: as recusas do PDF da OS que "Gerar PDF novamente" resolve (as mesmas da tela da OS), com o texto da
+ * pendência quando dá para gerar: o código impresso mudou (o `OSP-` trocado, a numeração que chegou) ou o arquivo
+ * sumiu do aparelho.
+ */
+const RECUSAS_PDF_OS_QUE_SE_REGERAM: Readonly<Record<string, string>> = {
+  CODIGO_EXIBIDO_INVALIDO: 'O código da OS mudou depois que o PDF foi gerado. Gere o PDF novamente.',
+  ANEXO_AUSENTE: 'O arquivo deste PDF não está mais neste aparelho. Gere o PDF novamente.',
+};
+
+/**
+ * O PDF da OS reaberta (ou encerrada de outro jeito) no servidor depois da conclusão daqui (M2P1-R30 V1): gerar de novo
+ * não resolve, porque a cópia do aparelho ainda é a da revisão recusada. O Descartar relê a OS (M2P2-R13), e quem a
+ * executa a conclui de novo pela tela dela.
+ */
+const RECUSAS_PDF_OS_REABERTA: ReadonlySet<string> = new Set(['REVISAO_INVALIDA', 'STATUS_INVALIDO']);
+const CONCLUIR_DE_NOVO = 'Depois, abra a OS: se ela voltou para em andamento, conclua de novo.';
 
 /** M2P1-R19: o "Manter a minha" tirou notas que o perfil não acrescenta na OS encerrada no servidor. */
 const NOTAS_DESCARTADAS = 'As notas não puderam ser acrescentadas: a OS está encerrada.';
@@ -111,7 +130,7 @@ interface Confirmacao {
               }
               @if (podeRegerar(p)) {
                 @if (comConflito(p)) {
-                  <!-- P4c-R15: como no detalhe, o PDF novo espera o CONFLITO da proposta -->
+                  <!-- P4c-R15: como no detalhe e na tela da OS, o PDF novo espera o CONFLITO da proposta ou da OS -->
                   <p [id]="'dica-conflito-' + p.mutationId" class="w-full text-sm text-amber-800">Resolva a pendência primeiro.</p>
                 }
                 <button type="button" data-testid="regerar" (click)="regerar(p)" [disabled]="ocupada(p) || comConflito(p)"
@@ -183,6 +202,7 @@ export class PendenciasPage {
   }
 
   private readonly propostasRepo = inject(PropostasRepo);
+  private readonly osRepo = inject(OsRepo);
   private readonly pdf = inject(PdfService);
   /** As propostas do aparelho por id: o código exibido e o status dos títulos e das ações. */
   private readonly propostas = toSignal(
@@ -233,12 +253,15 @@ export class PendenciasPage {
     }
   }
 
-  /** As OS com pendência (dela ou de um anexo dela) neste aparelho e o tipo dos anexos: os títulos e o "Abrir OS". */
+  /**
+   * As OS com pendência (dela ou de um anexo dela) neste aparelho, o tipo dos anexos e a revisão dos PDFs: os títulos,
+   * o "Abrir OS" e o "Gerar PDF novamente".
+   */
   private readonly contextoOs = toSignal(this.servico.observarOsDasPendencias(), {
-    initialValue: { os: new Map<string, OsLocal>(), tiposDeAnexo: new Map<string, TipoAnexoOs>() },
+    initialValue: { os: new Map<string, OsLocal>(), tiposDeAnexo: new Map<string, TipoAnexoOs>(), revisoesDosPdfs: new Map<string, number>() },
   });
 
-  /** A OS da pendência (dela ou de um anexo dela) neste aparelho: com ela, "Abrir OS" (a tela é do M2-P3). */
+  /** A OS da pendência (dela ou de um anexo dela) neste aparelho: com ela, "Abrir OS" (`/os/:id`). */
   protected osLocal(p: Pendencia): OsLocal | undefined {
     if (p.entidade !== 'os' && p.entidade !== TIPO_UPLOAD_ANEXO_OS) return undefined;
     return this.contextoOs().os.get(p.agregadoId);
@@ -286,15 +309,50 @@ export class PendenciasPage {
   }
 
   /**
-   * O upload recusado por `CODIGO_EXIBIDO_INVALIDO` de uma proposta que já saiu do rascunho: dá para gerar o PDF de novo.
-   * M5: a regra é a do `motivoParaRegerar` (a mesma do detalhe e do `regerarDocumento`), com só esta pendência.
+   * "Gerar PDF novamente":
+   * - na proposta, o upload recusado por `CODIGO_EXIBIDO_INVALIDO` de uma proposta que já saiu do rascunho. M5: a
+   *   regra é a do `motivoParaRegerar` (a mesma do detalhe e do `regerarDocumento`), com só esta pendência;
+   * - na OS, `podeRegerarOs`.
    */
   protected podeRegerar(p: Pendencia): boolean {
+    if (p.entidade === TIPO_UPLOAD_ANEXO_OS) return this.podeRegerarOs(p);
     const local = this.propostas().get(p.agregadoId);
     return !!local && motivoParaRegerar(local, [], [p]) === 'CODIGO_EXIBIDO_INVALIDO' && this.podeMexer(p);
   }
 
-  /** P4c-R15: a proposta da pendência tem um CONFLITO (o PDF novo espera, como no detalhe). */
+  /** Executa a OS no aparelho (a tela dela conclui e gera o PDF): o ADMIN ou o técnico atribuído. */
+  private executaOs(p: Pendencia): boolean {
+    const os = this.osLocal(p);
+    const u = this.auth.usuario();
+    return !!os && !!u && (u.perfil === 'ADMIN' || (u.perfil === 'TECNICO' && os.tecnicoId === u.id));
+  }
+
+  /**
+   * O PDF da OS recusado que o `OsRepo.regerarPdf` troca (M2P2-R18), as regras dele vistas daqui: a recusa é das que
+   * gerar de novo resolve (`RECUSAS_PDF_OS_QUE_SE_REGERAM`); a OS está CONCLUIDA no aparelho; o PDF é da revisão atual
+   * (o de outra revisão fica, com a pendência dele); quem vê é o ADMIN ou o técnico atribuído. O TECNICO nunca, se o
+   * servidor disse que outro usuário concluiu a OS (`OS_CONCLUIDA_POR_OUTRO`, M2P1-R28/R29: o PDF dele voltaria 403).
+   */
+  private podeRegerarOs(p: Pendencia): boolean {
+    if (p.tipo !== 'REJEITADO' || p.entidade !== TIPO_UPLOAD_ANEXO_OS) return false;
+    if (!Object.hasOwn(RECUSAS_PDF_OS_QUE_SE_REGERAM, p.erro?.codigo ?? '')) return false;
+    const os = this.osLocal(p);
+    const anexoId = (p.mutacao.dados as DadosUploadAnexoOs | null)?.anexoId;
+    // só os PDFs têm revisão no contexto
+    const revisao = anexoId ? this.contextoOs().revisoesDosPdfs.get(anexoId) : undefined;
+    if (!os || os.status !== 'CONCLUIDA' || revisao !== (os.revisao ?? 1) || !this.executaOs(p)) return false;
+    const porOutro = this.itens().some((x) => x.agregadoId === p.agregadoId && x.erro?.codigo === 'OS_CONCLUIDA_POR_OUTRO');
+    return !(porOutro && this.auth.usuario()?.perfil === 'TECNICO');
+  }
+
+  /** O PDF da OS reaberta no servidor (`RECUSAS_PDF_OS_REABERTA`), para quem a executa: a pendência diz o que fazer. */
+  private pdfDaOsReaberta(p: Pendencia): boolean {
+    if (p.tipo !== 'REJEITADO' || p.entidade !== TIPO_UPLOAD_ANEXO_OS || !RECUSAS_PDF_OS_REABERTA.has(p.erro?.codigo ?? '')) return false;
+    const anexoId = (p.mutacao.dados as DadosUploadAnexoOs | null)?.anexoId;
+    return !!anexoId && this.contextoOs().revisoesDosPdfs.has(anexoId) && this.executaOs(p);
+  }
+
+  /** P4c-R15: a proposta ou a OS da pendência tem um CONFLITO (o PDF novo espera, como no detalhe e na tela da OS). */
   protected comConflito(p: Pendencia): boolean {
     return this.itens().some((x) => x.agregadoId === p.agregadoId && x.tipo === 'CONFLITO');
   }
@@ -326,6 +384,8 @@ export class PendenciasPage {
         ? 'Este PDF é de uma revisão que já foi substituída. Descarte esta pendência.'
         : `${p.erro?.mensagem ?? 'O código impresso no PDF não é o da proposta.'} Descarte esta pendência.`;
     }
+    if (this.podeRegerarOs(p)) return RECUSAS_PDF_OS_QUE_SE_REGERAM[p.erro?.codigo ?? ''];
+    if (this.pdfDaOsReaberta(p)) return `${p.erro?.mensagem ?? ''} ${CONCLUIR_DE_NOVO}`.trim();
     // M2-R3/R22: o envio do técnico que perdeu a atribuição há mais de 7 dias; o upload recusado já vem com o texto
     if (p.entidade === 'os' && p.erro?.codigo === 'ACESSO_NEGADO' && this.auth.usuario()?.perfil === 'TECNICO') {
       return MENSAGEM_OS_NAO_ESTA_COM_VOCE;
@@ -370,13 +430,33 @@ export class PendenciasPage {
     void this.router.navigate(['/propostas', p.agregadoId, 'corrigir']);
   }
 
-  /** "Gerar PDF novamente": o mesmo caminho do detalhe (`regerarPdf`), depois compartilhar ou o painel "PDF pronto". */
+  /**
+   * "Gerar PDF novamente", depois compartilhar ou o painel "PDF pronto": na proposta, o mesmo caminho do detalhe
+   * (`regerarPdf`); na OS, o da tela dela (`OsRepo.regerarPdf` com o PDF da OS), e os erros pela `mensagemErroOs`.
+   */
   protected regerar(p: Pendencia): Promise<void> {
+    if (p.entidade !== TIPO_UPLOAD_ANEXO_OS) {
+      return this.regerarCom(p, 'Gerando o PDF da proposta…', mensagemErroProposta,
+        () => regerarPdf(this.propostasRepo, this.pdf, p.agregadoId));
+    }
+    return this.regerarCom(p, 'Gerando o PDF da OS…', mensagemErroOs, async () => {
+      const { blob, codigoExibido } = await this.osRepo.regerarPdf(p.agregadoId, (e) => this.pdf.gerarBlobOs(e));
+      // o nome é o código impresso nele, como no upload e na tela da OS
+      return { arquivo: arquivoPdf(blob, `${codigoExibido}.pdf`), blob };
+    });
+  }
+
+  private regerarCom(
+    p: Pendencia,
+    gerando: string,
+    mensagemErro: (e: unknown) => string,
+    gerar: () => Promise<{ arquivo: File; blob: Blob }>,
+  ): Promise<void> {
     return this.agir(p, async () => {
       this.regerandoIds.update((s) => new Set(s).add(p.mutationId));
       try {
-        this.anuncio.set('Gerando o PDF da proposta…');
-        const { arquivo, blob } = await regerarPdf(this.propostasRepo, this.pdf, p.agregadoId);
+        this.anuncio.set(gerando);
+        const { arquivo, blob } = await gerar();
         this.toasts.mostrar('PDF gerado de novo. Ele vai para o servidor na próxima sincronização.');
         this.anuncio.set('PDF gerado de novo.');
         // a pendência sai da lista: o foco vai ao título (o botão que o tinha deixou de existir)
@@ -386,7 +466,7 @@ export class PendenciasPage {
         else this.aposCompartilhar(r, arquivo);
       } catch (e) {
         this.anuncio.set('');
-        this.toasts.erro(mensagemErroProposta(e));
+        this.toasts.erro(mensagemErro(e));
       } finally {
         this.regerandoIds.update((s) => {
           const resto = new Set(s);
