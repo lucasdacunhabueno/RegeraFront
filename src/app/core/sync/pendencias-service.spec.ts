@@ -674,11 +674,42 @@ describe('PendenciasService', () => {
             expect(await svc.perdaDaOs({ ...p, dadosServidor: doServidor({ assinaturaRecusada: true, motivoRecusa: 'Cliente ausente' }) })).toEqual([]);
           });
 
-          it('o "Precisa voltar" (concluiProposta desmarcado aqui); desmarcado também no servidor, não', async () => {
-            const p = conflitoCom(doAparelho({ concluiProposta: false }));
+          it('o "Precisa voltar" (concluiProposta desmarcado na conclusão separada); desmarcado também no servidor, não', async () => {
+            const p = conflitoCom(doAparelho({ status: 'CONCLUIDA', concluiProposta: false }), {}, { separada: true });
             await db.pendencias.put(p);
-            expect(await svc.perdaDaOs(p)).toEqual(['precisaVoltar']);
-            expect(await svc.perdaDaOs({ ...p, dadosServidor: doServidor({ concluiProposta: false }) })).toEqual([]);
+            expect(await svc.perdaDaOs(p)).toEqual(['precisaVoltar', 'conclusao']);
+            expect(await svc.perdaDaOs({ ...p, dadosServidor: doServidor({ status: 'CONCLUIDA', concluiProposta: false }) })).toEqual([]);
+          });
+
+          it('M2 (final B): "Esta OS conclui a proposta?" marcado de novo atrás de uma recusa VALIDACAO conta como cabeçalho', async () => {
+            // o ADMIN gerou a OS sem concluir a proposta; uma edição anterior voltou VALIDACAO (sem os dados do servidor)
+            const p = rejeitadaSemServidor(doAparelho({ status: 'ABERTA', concluiProposta: false, tecnicoId: 'u-tec-off' }));
+            await db.pendencias.put(p);
+            expect(await svc.perdaDaOs(p)).toEqual([]);
+            await db.outbox.add(mutOs('a1', 6, doAparelho({ status: 'ABERTA', concluiProposta: true, tecnicoId: 'u-tec-off' })));
+            expect(await svc.perdaDaOs(p)).toEqual(['cabecalho']);
+            expect(await svc.descartaEnvio(p)).toBe(true);
+          });
+
+          it('M2 (final B): o escritório desmarcando na OS aberta é cabeçalho, não o "Precisa voltar" do técnico', async () => {
+            const p = conflitoCom(doAparelho({ status: 'ABERTA', tecnicoId: 'u-tec2' }), { dadosServidor: doServidor({ status: 'ABERTA' }) });
+            await db.pendencias.put(p);
+            await db.outbox.add(mutOs('a1', 6, doAparelho({ status: 'ABERTA', tecnicoId: 'u-tec2', concluiProposta: false })));
+            expect(await svc.perdaDaOs(p)).toEqual(['cabecalho']);
+            // a da própria pendência segue a regra do cabeçalho: não é comparada com o servidor (M2P1-R30)
+            await db.outbox.clear();
+            const propria = conflitoCom(doAparelho({ status: 'ABERTA', concluiProposta: false }), { dadosServidor: doServidor({ status: 'ABERTA' }) });
+            expect(await svc.perdaDaOs(propria)).toEqual([]);
+          });
+
+          it('NR4: a cadeia vai na ordem da fila (seq), não na da leitura: a criação mais antiga, noutra pendência, conta', async () => {
+            const criacao: Pendencia = {
+              mutationId: 'cr', entidade: 'os', agregadoId: 'o1', tipo: 'REJEITADO', criadaEm: '', erro: { codigo: 'VALIDACAO', mensagem: 'x' },
+              mutacao: mutOs('cr', 3, doAparelho({ status: 'ABERTA' }), { baseVersion: null }),
+            };
+            const p = rejeitadaSemServidor(doAparelho({ status: 'ABERTA' }));
+            await db.pendencias.bulkPut([p, criacao]);
+            expect(await svc.perdaDaOs(p)).toEqual(['criacao']);
           });
 
           it('um iniciar sozinho, recusado (sem o estado do servidor): o início', async () => {

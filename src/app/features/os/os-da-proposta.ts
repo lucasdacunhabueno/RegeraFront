@@ -43,11 +43,15 @@ interface Linha {
       @if (podeGerar() && bloqueado()) {
         <p id="dica-pendencia-gerar-os" class="text-sm text-amber-800">Resolva a pendência primeiro.</p>
       }
-      @if (lista() === undefined) {
-        <p class="text-sm text-slate-500">Carregando…</p>
-      } @else if (linhas().length === 0) {
-        <p class="text-sm text-slate-500">Nenhuma OS para esta proposta.</p>
-      } @else {
+      <!-- N3: a região de status fica sempre na tela (o leitor de tela só anuncia a região que já existia) -->
+      <div role="status" class="text-sm text-slate-500">
+        @if (lista() === undefined) {
+          <p>Carregando…</p>
+        } @else if (linhas().length === 0) {
+          <p>Nenhuma OS para esta proposta.</p>
+        }
+      </div>
+      @if (linhas().length > 0) {
         <ul class="space-y-3">
           @for (l of linhas(); track l.os.id) {
             <li class="rounded-xl border border-slate-200">

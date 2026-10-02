@@ -419,7 +419,9 @@ describe('ClienteFormPage', () => {
       expect(secao(el)!.textContent).toContain('Ordens de serviço');
       expect(secao(el)!.textContent).toContain('OS-000123');
       expect(secao(el)!.textContent).not.toContain('OS-000009');
-      expect(secao(el)!.querySelector('a')?.getAttribute('href')).toBe('/os/o1');
+      expect(secao(el)!.querySelector('app-os-card a')?.getAttribute('href')).toBe('/os/o1');
+      // N2 (final B): o atalho da OS avulsa já com este cliente
+      expect(secao(el)!.querySelector('[data-testid=nova-os]')?.getAttribute('href')).toBe('/os/nova?clienteId=id1');
       const propostas = el.querySelector('[data-testid="propostas-do-cliente"]')!;
       expect(propostas.compareDocumentPosition(secao(el)!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
       expect(fixture.componentInstance.temAlteracoes()).toBe(false);

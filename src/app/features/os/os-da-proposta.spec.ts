@@ -118,6 +118,18 @@ describe('OsDaProposta', () => {
     expect(el.textContent).toContain('Nenhuma OS para esta proposta.');
   });
 
+  it('N3 (final B): o carregando e o vazio numa região de status fixa (o leitor de tela anuncia a mudança)', async () => {
+    const { fixture, el, lista$ } = await montar();
+    const regiao = el.querySelector('section [role=status]')!;
+    expect(regiao.textContent?.trim()).toBe('Nenhuma OS para esta proposta.');
+    lista$.next([os('a', 'ABERTA')]);
+    await ate(fixture, () => expect(codigos(el)).toEqual(['OSP-A00000']));
+    expect(el.querySelector('section [role=status]')).toBe(regiao);
+    expect(regiao.textContent?.trim()).toBe('');
+    lista$.next([]);
+    await ate(fixture, () => expect(regiao.textContent?.trim()).toBe('Nenhuma OS para esta proposta.'));
+  });
+
   it('a lista acompanha o repositório (a OS gerada ou sincronizada aparece)', async () => {
     const { fixture, el, lista$ } = await montar();
     lista$.next([os('a', 'ABERTA')]);

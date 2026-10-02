@@ -171,7 +171,7 @@ function enderecoPadrao(c: ClienteLocal): number | null {
                   <label [for]="'endereco-os-' + $index" class="flex min-h-12 cursor-pointer items-start gap-3 rounded-lg border px-3 py-2"
                          [class.border-blue-600]="enderecoIdx() === $index" [class.border-slate-200]="enderecoIdx() !== $index">
                     <input [id]="'endereco-os-' + $index" type="radio" name="endereco-os" [value]="$index" [checked]="enderecoIdx() === $index"
-                           (change)="escolherEndereco(c, $index)" class="mt-1 size-5 shrink-0" />
+                           (change)="enderecoEscolhidoNaTela(c, $index)" class="mt-1 size-5 shrink-0" />
                     <span class="min-w-0 text-sm">
                       <span class="block font-medium">{{ rotuloEndereco(e) }}</span>
                       <span class="block text-slate-600">{{ linhaEndereco(e) || 'Endereço incompleto' }}</span>
@@ -515,6 +515,12 @@ export class OsFormPage implements ComAlteracoes {
   protected escolherEndereco(c: ClienteLocal, idx: number | null): void {
     this.enderecoIdx.set(idx);
     this.enderecoEscolhido = idx === null || !c.enderecos[idx] ? null : instantaneo(c.enderecos[idx]);
+  }
+
+  /** NR2: o usuário escolheu o endereço (o rádio): o aviso de endereço ("mudaram", recusa) sai. */
+  protected enderecoEscolhidoNaTela(c: ClienteLocal, idx: number): void {
+    this.escolherEndereco(c, idx);
+    this.limparErro('enderecoId');
   }
 
   protected trocarCliente(): void {

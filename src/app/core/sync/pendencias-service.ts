@@ -39,7 +39,8 @@ function perdaDaTransicao(d: OsDados): ItemPerdaOs | null {
  * comparada com o servidor e com a anterior da fila:
  * - a transição (`iniciar`, `concluir`, cancelar, reabrir): uma mutação separada que muda o status;
  * - o resumo e a recusa da assinatura: o valor dela, preenchido e diferente do servidor;
- * - o "Precisa voltar": `concluiProposta` desmarcado, com o servidor marcado.
+ * - o "Precisa voltar": `concluiProposta` desmarcado na conclusão separada (onde vai a escolha do técnico, Q21), com o
+ *   servidor marcado. O escritório mudando a caixa numa edição comum é cabeçalho (`perdaDoCabecalho`).
  * Sem o estado do servidor (a recusa de uma mutação, que não o traz), vale o que a fila leva: a primeira separada é uma
  * transição, o resumo e a recusa preenchidos contam, e o "Precisa voltar" conta na conclusão desmarcada.
  */
@@ -55,7 +56,8 @@ function perdaDasMutacoes(mutacoes: readonly MutacaoLocal[], servidor: OsDados |
     if (d.assinaturaRecusada && !(servidor?.assinaturaRecusada && (servidor.motivoRecusa ?? null) === (d.motivoRecusa ?? null))) {
       r.add('recusa');
     }
-    if (d.concluiProposta === false && (conclui ?? transicao === 'conclusao')) r.add('precisaVoltar');
+    const conclusao = m.separada && d.status === 'CONCLUIDA';
+    if (conclusao && d.concluiProposta === false && (conclui ?? transicao === 'conclusao')) r.add('precisaVoltar');
     status = d.status;
     conclui = d.concluiProposta !== false;
   }
@@ -78,7 +80,8 @@ function chaveDasLinhas(d: OsDados): string {
  * levariam: cada mutação seguinte da OS comparada com a anterior (a primeira, com a da pendência). A da pendência não é
  * comparada com o servidor: o cabeçalho dela pode diferir só porque outro usuário o mudou lá (M2P1-R30). E a criação
  * recusada (a primeira sem versão) leva a OS inteira.
- * - `cabecalho`: tipo, descrição, data, urgência, endereço ou linhas;
+ * - `cabecalho`: tipo, descrição, data, urgência, endereço ou linhas; e, numa edição comum (não separada), "Esta OS
+ *   conclui a proposta?" (M2 da revisão final: o escritório a marcando de novo, ou desmarcando);
  * - `atribuicao`: o técnico ou o responsável (o null que o aparelho manda na OS de proposta não conta como troca).
  */
 function perdaDoCabecalho(mutacoes: readonly MutacaoLocal[]): Set<ItemPerdaOs> {
@@ -89,7 +92,9 @@ function perdaDoCabecalho(mutacoes: readonly MutacaoLocal[]): Set<ItemPerdaOs> {
   let antes = primeira.dados as OsDados;
   for (const m of resto) {
     const d = m.dados as OsDados;
-    if (CAMPOS_CABECALHO_OS.some((c) => (d[c] ?? null) !== (antes[c] ?? null)) || chaveDasLinhas(d) !== chaveDasLinhas(antes)) {
+    const concluiMudou = !m.separada && (d.concluiProposta !== false) !== (antes.concluiProposta !== false);
+    const campoMudou = CAMPOS_CABECALHO_OS.some((c) => (d[c] ?? null) !== (antes[c] ?? null));
+    if (campoMudou || chaveDasLinhas(d) !== chaveDasLinhas(antes) || concluiMudou) {
       r.add('cabecalho');
     }
     const responsavel = d.responsavelId != null && antes.responsavelId != null && d.responsavelId !== antes.responsavelId;
@@ -97,6 +102,14 @@ function perdaDoCabecalho(mutacoes: readonly MutacaoLocal[]): Set<ItemPerdaOs> {
     antes = d;
   }
   return r;
+}
+
+/**
+ * NR4: a ordem da fila. A mutação de uma pendência guarda o `seq` original; sem ele (dos dois lados), vale `criadaEm`.
+ */
+function naOrdemDaFila(a: MutacaoLocal, b: MutacaoLocal): number {
+  if (a.seq !== undefined && b.seq !== undefined) return a.seq - b.seq;
+  return a.criadaEm.localeCompare(b.criadaEm);
 }
 
 /** Os ids das notas das mutações que o servidor ainda não tem (sem a data dele e fora das notas de `servidor`). */
@@ -250,7 +263,8 @@ export class PendenciasService {
       return nova;
     });
     const servidor = p.dadosServidor as OsDados | null | undefined;
-    const daOs = mutacoes.filter((m) => m.entidade === 'os' && !!m.dados);
+    // NR4: na ordem da fila (a pendência e as retidas atrás dela, mais as de outras pendências da OS)
+    const daOs = mutacoes.filter((m) => m.entidade === 'os' && !!m.dados).sort(naOrdemDaFila);
     const r = perdaDasMutacoes(daOs, servidor);
     for (const item of perdaDoCabecalho(daOs)) r.add(item);
     if (notasNovas(daOs.map((m) => m.dados as OsDados), servidor).length > 0) r.add('notas');

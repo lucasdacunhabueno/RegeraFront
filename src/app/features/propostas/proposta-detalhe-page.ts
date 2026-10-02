@@ -91,9 +91,10 @@ interface LinhaItem {
  *   COMERCIAL responsável).
  * - Pendências (§11.5): faixa com o link para Pendências; "Corrigir e reenviar" na recusa corrigível (P4c-R4) e
  *   "Gerar PDF novamente" no `CODIGO_EXIBIDO_INVALIDO` ou sem o PDF da revisão (P4b-R13).
- * O técnico (§10) vê só código, cliente (nome, endereço, telefone), tipo, status, técnico, validade, prazo e os itens
- * sem valores: nada de dinheiro, pagamento, documentos, histórico nem ações. Qualquer perfil fora de ADMIN e COMERCIAL
- * cai nessa visão restrita.
+ * Desde o M2P3-R1 a rota barra o técnico (`/propostas/:id` é só de ADMIN e COMERCIAL; ele vê o trabalho pela OS). A
+ * visão restrita (`restrito()`) é só a segunda trava: qualquer perfil fora de ADMIN e COMERCIAL que chegasse aqui veria
+ * só código, cliente (nome, endereço, telefone), tipo, status, técnico, validade, prazo e os itens sem valores: nada de
+ * dinheiro, pagamento, documentos, histórico nem ações.
  */
 @Component({
   selector: 'app-proposta-detalhe-page',

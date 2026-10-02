@@ -1,7 +1,10 @@
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { Observable, of, Subject } from 'rxjs';
 import { vi } from 'vitest';
+import type { Perfil } from '../../core/auth/auth-models';
+import { AuthService } from '../../core/auth/auth-service';
 import type { EstadoSync } from '../os/os-repo';
 import { OsRepo } from '../os/os-repo';
 import { OsDados, OsLocal, paraOsLocal } from '../os/os-models';
@@ -19,7 +22,7 @@ const os = (id: string, extra: Partial<OsDados> = {}): OsLocal =>
     enderecoBairro: 'Sé', enderecoCidade: 'São Paulo', assinaturaRecusada: false, itens: [], notas: [], ...extra,
   });
 
-function montar(o: { lista?: Observable<OsLocal[]>; estado?: EstadoSync } = {}) {
+function montar(o: { lista?: Observable<OsLocal[]>; estado?: EstadoSync; perfil?: Perfil } = {}) {
   const repo = {
     observarDoCliente: vi.fn(() => o.lista ?? of<OsLocal[]>([])),
     observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() }),
@@ -27,6 +30,7 @@ function montar(o: { lista?: Observable<OsLocal[]>; estado?: EstadoSync } = {}) 
   TestBed.configureTestingModule({
     providers: [
       provideRouter([]),
+      { provide: AuthService, useValue: { usuario: signal({ id: 'u1', nome: 'Ana', email: 'ana@regera.com', perfil: o.perfil ?? 'COMERCIAL', ativo: true }) } },
       { provide: OsRepo, useValue: repo },
       { provide: PropostasRepo, useValue: { observarUsuarios: () => of([{ id: 'u-tec', nome: 'Téo Técnico', perfil: 'TECNICO' }]) } },
     ],
@@ -47,6 +51,19 @@ describe('OsDoCliente', () => {
     vi.setSystemTime(AGORA);
   });
   afterEach(() => vi.useRealTimers());
+
+  it.each(['ADMIN', 'COMERCIAL'] as Perfil[])('N2 (final B): %s tem "Nova OS" já com o cliente (/os/nova?clienteId=), como "Nova proposta"', (perfil) => {
+    const { el } = montar({ perfil });
+    const link = el.querySelector<HTMLAnchorElement>('[data-testid=nova-os]')!;
+    expect(link.textContent?.trim()).toBe('Nova OS');
+    expect(link.getAttribute('href')).toBe('/os/nova?clienteId=c1');
+    expect(link.className).toMatch(/\bmin-h-12\b/);
+  });
+
+  it('N2 (final B): o técnico não tem "Nova OS" (ele não cria OS)', () => {
+    const { el } = montar({ perfil: 'TECNICO' });
+    expect(el.querySelector('[data-testid=nova-os]')).toBeNull();
+  });
 
   it('as OS do cliente (observarDoCliente) na ordem do repositório, com cliente, técnico, status e o link para /os/:id', () => {
     const lista = [

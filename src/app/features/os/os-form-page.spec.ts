@@ -312,6 +312,10 @@ describe('OsFormPage', () => {
       clientes$.next([{ ...PADARIA, enderecos: [cobranca, principal] }, MERCADO]);
       await ate(fixture, () => expect(el.querySelector('#erro-endereco-os')!.textContent).toContain('Os endereços do cliente mudaram'));
       expect(el.querySelectorAll<HTMLInputElement>('input[name=endereco-os]')[1].checked).toBe(true);
+      // NR2: o usuário conferiu e escolheu um endereço: o aviso sai
+      marcar(fixture, el.querySelectorAll<HTMLInputElement>('input[name=endereco-os]')[0], true);
+      await ate(fixture, () => expect(el.querySelector('#erro-endereco-os')).toBeNull());
+      expect(el.querySelector('fieldset')!.getAttribute('aria-describedby')).toBeNull();
     });
 
     it('alterações não salvas: o guard pergunta; depois de criar, não', async () => {

@@ -1,5 +1,7 @@
 import { Component, computed, effect, inject, input, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
+import { RouterLink } from '@angular/router';
+import { AuthService } from '../../core/auth/auth-service';
 import { SeloOs, selosDaOs } from '../os/formatos-os';
 import { OsCard } from '../os/os-card';
 import { OsLocal } from '../os/os-models';
@@ -16,14 +18,21 @@ interface Linha {
 /**
  * "Ordens de serviço" (tela de edição do cliente, M2-P3): as OS do cliente que o perfil vê (`observarDoCliente`), da
  * mais recente à mais antiga, inclusive as encerradas (é o histórico dele), com os selos e o técnico como na lista de
- * OS do escritório. A tela do cliente é só de ADMIN e COMERCIAL (rota). Fica fora do `<form>`, como as propostas.
+ * OS do escritório, e o atalho "Nova OS" já com o cliente (`/os/nova?clienteId=`, a OS avulsa: corretiva, garantia),
+ * como o "Nova proposta". A tela do cliente é só de ADMIN e COMERCIAL (rota). Fica fora do `<form>`, como as propostas.
  */
 @Component({
   selector: 'app-os-do-cliente',
-  imports: [OsCard],
+  imports: [RouterLink, OsCard],
   template: `
     <section data-testid="os-do-cliente" aria-labelledby="os-cliente-titulo" class="mt-4 space-y-3 rounded-xl bg-white p-4">
-      <h2 id="os-cliente-titulo" class="font-semibold">Ordens de serviço</h2>
+      <div class="flex items-center justify-between gap-3">
+        <h2 id="os-cliente-titulo" class="font-semibold">Ordens de serviço</h2>
+        @if (podeCriar()) {
+          <a data-testid="nova-os" routerLink="/os/nova" [queryParams]="{ clienteId: clienteId() }"
+             class="inline-flex min-h-12 items-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Nova OS</a>
+        }
+      </div>
       <!-- N4: a região de status fica sempre na tela (o leitor de tela só anuncia a região que já existia) -->
       <div role="status" class="text-sm text-slate-500">
         @if (lista() === undefined) {
@@ -51,6 +60,12 @@ export class OsDoCliente {
   readonly clienteNome = input('');
 
   private readonly repo = inject(OsRepo);
+  private readonly usuario = inject(AuthService).usuario;
+  /** Quem cria a OS avulsa (`criarAvulsa`): ADMIN e COMERCIAL. */
+  protected readonly podeCriar = computed(() => {
+    const p = this.usuario()?.perfil;
+    return p === 'ADMIN' || p === 'COMERCIAL';
+  });
   /** undefined até a primeira leitura (sem isso a seção piscaria o estado vazio). */
   protected readonly lista = signal<OsLocal[] | undefined>(undefined);
   private readonly usuarios = toSignal(inject(PropostasRepo).observarUsuarios(), { initialValue: [] });
