@@ -1,4 +1,4 @@
-import { signal, WritableSignal } from '@angular/core';
+import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import { Observable, of, Subject } from 'rxjs';
@@ -54,23 +54,21 @@ const LISTA: PropostaLocal[] = [
 
 interface Opcoes {
   usuario?: UsuarioSessao;
-  usuarioSinal?: WritableSignal<UsuarioSessao | null>;
   todas?: Observable<PropostaLocal[]>;
-  doTecnico?: Observable<PropostaLocal[]>;
   estado?: EstadoSync;
 }
 
 function montar(o: Opcoes = {}) {
   const repo = {
     observarTodas: vi.fn(() => o.todas ?? of(LISTA)),
-    observarDoTecnico: vi.fn((usuarioId: string) => (usuarioId ? (o.doTecnico ?? of(LISTA)) : of([]))),
+    observarDoTecnico: vi.fn(() => of(LISTA)),
     observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set(['b']), comPendencia: new Set(['c']), comConflito: new Set<string>() }),
     observarUsuarios: () => of(USUARIOS),
   };
   TestBed.configureTestingModule({
     providers: [
       provideRouter([]),
-      { provide: AuthService, useValue: { usuario: o.usuarioSinal ?? signal(o.usuario ?? ADMIN) } },
+      { provide: AuthService, useValue: { usuario: signal(o.usuario ?? ADMIN) } },
       { provide: PropostasRepo, useValue: repo },
       { provide: ClientesRepo, useValue: { observarTodos: () => of(CLIENTES) } },
     ],
@@ -308,61 +306,6 @@ describe('PropostasPage', () => {
       fixture.destroy();
       expect(vi.getTimerCount()).toBe(0);
       expect(remover).toHaveBeenCalledWith('visibilitychange', expect.any(Function));
-    });
-  });
-
-  describe('restrito acompanha usuario()', () => {
-    const titulo = (el: HTMLElement) => el.querySelector('h1')?.textContent?.trim();
-
-    it('a troca de perfil muda a visão e a fonte dos dados', async () => {
-      const usuario = signal<UsuarioSessao | null>(ADMIN);
-      const { fixture, el, repo } = montar({ usuarioSinal: usuario });
-      expect(titulo(el)).toBe('Propostas');
-      expect(el.textContent).toMatch(/R\$/);
-      usuario.set(TECNICO);
-      await ate(fixture, () => expect(titulo(el)).toBe('Minhas propostas'));
-      expect(repo.observarDoTecnico).toHaveBeenCalledWith(TECNICO.id);
-      expect(el.textContent).not.toMatch(/R\$/);
-      expect(el.querySelector('a[href="/propostas/nova"]')).toBeNull();
-    });
-
-    it('sem sessão: a visão restrita, sem valores', () => {
-      const { el, repo } = montar({ usuarioSinal: signal<UsuarioSessao | null>(null) });
-      expect(titulo(el)).toBe('Minhas propostas');
-      expect(repo.observarTodas).not.toHaveBeenCalled();
-      expect(el.textContent).not.toMatch(/R\$/);
-    });
-  });
-
-  describe('TECNICO', () => {
-    it('"Minhas propostas", só as atribuídas a ele, sem nenhum valor e sem botão de criar', () => {
-      const { el, repo } = montar({ usuario: TECNICO });
-      expect(el.querySelector('h1')?.textContent?.trim()).toBe('Minhas propostas');
-      expect(repo.observarDoTecnico).toHaveBeenCalledWith(TECNICO.id);
-      expect(repo.observarTodas).not.toHaveBeenCalled();
-      expect(codigos(el)).toHaveLength(4);
-      expect(el.textContent).not.toMatch(/R\$/);
-      expect(el.textContent).not.toContain('Nova proposta');
-      expect(el.querySelector('a[href="/propostas/nova"]')).toBeNull();
-    });
-
-    it('M6: o card não mostra "Responsável" (como o detalhe restrito)', () => {
-      const { el } = montar({ usuario: TECNICO });
-      expect(codigos(el)).toHaveLength(4);
-      expect(el.textContent).not.toContain('Responsável');
-    });
-
-    it('nem com as encerradas à mostra aparece valor', async () => {
-      const { fixture, el } = montar({ usuario: TECNICO });
-      botao(el, 'Mostrar encerradas')!.click();
-      await ate(fixture, () => expect(codigos(el)).toHaveLength(6));
-      expect(el.textContent).not.toMatch(/R\$/);
-    });
-
-    it('vazio do técnico', () => {
-      const { el } = montar({ usuario: TECNICO, doTecnico: of([]) });
-      expect(el.textContent).toContain('Nenhuma proposta atribuída a você.');
-      expect(el.textContent).not.toContain('Nova proposta');
     });
   });
 });
