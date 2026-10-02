@@ -13,7 +13,7 @@ import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { observar } from '../db/observar';
 import { RegeraDb } from '../db/regera-db';
-import { mensagemDeErro } from '../http/erro-api';
+import { falhaDeRede, mensagemDeErro } from '../http/erro-api';
 import { ADAPTADORES, adaptadorDe } from './adaptadores';
 import {
   Entidade, EntidadeUpload, Mudanca, MutacaoLocal, Operacao, Pendencia, RespostaPull, RespostaPush, ResultadoMutacao,
@@ -43,6 +43,12 @@ const GERA_CODIGO_PROVISORIO: Readonly<Partial<Record<Entidade, () => string>>> 
   os: gerarCodigoProvisorioOs,
 };
 
+/**
+ * Como terminou uma sincronização: `sem-rede` quando um pedido não chegou ao servidor (`falhaDeRede`); `falhou` com
+ * outro erro (o aviso já saiu, menos no 401); `ignorada` sem internet, sem sessão ou com a sessão expirada.
+ */
+export type FimSincronizacao = 'concluida' | 'sem-rede' | 'falhou' | 'ignorada';
+
 /** A marca de releitura (`CHAVE_RELER`) de um agregado. */
 export function marcaDeReleitura(entidade: string, id: string): string {
   return `${entidade}:${id}`;
@@ -62,7 +68,7 @@ export class SyncService {
   private readonly conectividade = inject(ConectividadeService);
   private readonly toasts = inject(Toasts);
   private readonly arquivos = inject(ArquivosService);
-  private emAndamento: Promise<void> | null = null;
+  private emAndamento: Promise<FimSincronizacao> | null = null;
   /** Alguém pediu `sincronizar()` enquanto uma rodada rodava: o que ele quer enviar pode ter ficado de fora. */
   private repetir = false;
   /** A releitura em curso (`relerDesprotegidos`), para a próxima esperar. */
@@ -247,9 +253,9 @@ export class SyncService {
 
   /**
    * Inicia uma sincronização ou, se já houver uma em curso, pede mais uma rodada ao fim dela (o push dela pode já ter
-   * passado da mutação que motivou a chamada) e devolve a promessa do laço inteiro.
+   * passado da mutação que motivou a chamada) e devolve a promessa do laço inteiro, com o fim da última rodada.
    */
-  sincronizar(): Promise<void> {
+  sincronizar(): Promise<FimSincronizacao> {
     if (this.emAndamento) {
       this.repetir = true;
       return this.emAndamento;
@@ -258,15 +264,16 @@ export class SyncService {
     return this.emAndamento;
   }
 
-  private async rodadas(): Promise<void> {
+  private async rodadas(): Promise<FimSincronizacao> {
     this.repetir = false;
-    await this.executar();
+    let fim = await this.executar();
     for (let i = 0; i < MAX_REPETICOES && this.repetir; i++) {
       this.repetir = false;
       if (!this.conectividade.online() || !(await this.temEnvioElegivel())) break;
-      await this.executar();
+      fim = await this.executar();
     }
     this.repetir = false;
+    return fim;
   }
 
   /** Há mutação na outbox de agregado sem pendência (a mesma regra de `enviar`). */
@@ -286,8 +293,8 @@ export class SyncService {
     return (await this.db.outbox.count()) + (await this.db.pendencias.count());
   }
 
-  private async executar(): Promise<void> {
-    if (!this.conectividade.online() || !this.auth.autenticado() || this.auth.sessaoExpirada()) return;
+  private async executar(): Promise<FimSincronizacao> {
+    if (!this.conectividade.online() || !this.auth.autenticado() || this.auth.sessaoExpirada()) return 'ignorada';
     this.sincronizando.set(true);
     try {
       await this.purgarDocumentosDoTecnico();
@@ -300,9 +307,11 @@ export class SyncService {
       const agora = new Date().toISOString();
       this.ultimoSync.set(agora);
       await this.db.gravarMeta(CHAVE_ULTIMO_SYNC, agora);
+      return 'concluida';
     } catch (erro) {
-      const semRede = erro instanceof HttpErrorResponse && (erro.status === 0 || erro.status === 401);
-      if (!semRede) this.toasts.erro(`Falha ao sincronizar: ${mensagemDeErro(erro)}`);
+      if (falhaDeRede(erro)) return 'sem-rede';
+      if (!(erro instanceof HttpErrorResponse && erro.status === 401)) this.toasts.erro(`Falha ao sincronizar: ${mensagemDeErro(erro)}`);
+      return 'falhou';
     } finally {
       this.sincronizando.set(false);
     }

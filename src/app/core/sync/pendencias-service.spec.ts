@@ -51,7 +51,7 @@ describe('PendenciasService', () => {
     svc = TestBed.inject(PendenciasService);
     db = TestBed.inject(RegeraDb);
     http = TestBed.inject(HttpTestingController);
-    vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue();
+    vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue('concluida');
   });
 
   afterEach(async () => {

@@ -233,6 +233,37 @@ describe('SyncService', () => {
     expect(await db.outbox.count()).toBe(0);
   });
 
+  it('push sem rede pelo service worker (o 504 que ele devolve quando o fetch falha) termina sem-rede, sem aviso', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+
+    const p = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne('/api/sync/push'))).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+    expect(await p).toBe('sem-rede');
+    expect(await db.outbox.count()).toBe(1);
+    expect(erro).not.toHaveBeenCalled();
+  });
+
+  it('diz como terminou: concluida, sem-rede (status 0), falhou (com aviso) e ignorada (sem internet)', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    const p1 = sync.sincronizar();
+    await pullVazio();
+    expect(await p1).toBe('concluida');
+
+    const p2 = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).error(new ProgressEvent('error'), { status: 0 });
+    expect(await p2).toBe('sem-rede');
+    expect(erro).not.toHaveBeenCalled();
+
+    const p3 = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush(null, { status: 500, statusText: 'Erro' });
+    expect(await p3).toBe('falhou');
+    expect(erro).toHaveBeenCalledTimes(1);
+
+    online.set(false);
+    expect(await sync.sincronizar()).toBe('ignorada');
+  });
+
   it('erro transitório do servidor (ERRO_INTERNO) mantém a outbox, não cria pendência e reenvia o mesmo mutationId', async () => {
     await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
 
@@ -1357,7 +1388,7 @@ describe('SyncService', () => {
         expect(pend[0].erro?.mensagem).toContain('No servidor, a OS não está concluída');
         expect(await db.outbox.count()).toBe(0);
         expect(await lerAnexo('f1')).toMatchObject({ enviado: true });
-        vi.spyOn(sync, 'sincronizar').mockResolvedValue();
+        vi.spyOn(sync, 'sincronizar').mockResolvedValue('concluida');
         const descarte = TestBed.inject(PendenciasService).descartar(pend[0]);
         // M2P2-R13: com a OS livre, ela é relida do servidor
         (await vi.waitFor(() => http.expectOne('/api/sync/agregado/os/o1')))
@@ -1650,7 +1681,7 @@ describe('SyncService', () => {
       // nada local se perde antes da decisão
       expect(await lerAnexo('f1')).toMatchObject({ enviado: false });
 
-      const sincronizar = vi.spyOn(sync, 'sincronizar').mockResolvedValue();
+      const sincronizar = vi.spyOn(sync, 'sincronizar').mockResolvedValue('concluida');
       await TestBed.inject(PendenciasService).descartar(pend);
       expect(sincronizar).toHaveBeenCalled();
       expect(await db.pendencias.count()).toBe(0);
@@ -1688,7 +1719,7 @@ describe('SyncService', () => {
       it('OS_CONCLUIDA_POR_OUTRO: "Esta OS foi concluída pelo escritório.", e Descartar libera a nota', async () => {
         const pend = await pdfRecusado('OS_CONCLUIDA_POR_OUTRO', os('CONCLUIDA', { numero: 123, resumoExecucao: 'Do escritório' }));
         expect(pend.erro?.mensagem).toBe(CONCLUIDA_PELO_ESCRITORIO);
-        vi.spyOn(sync, 'sincronizar').mockResolvedValue();
+        vi.spyOn(sync, 'sincronizar').mockResolvedValue('concluida');
         await TestBed.inject(PendenciasService).descartar(pend);
         expect(await db.pendencias.count()).toBe(0);
         expect(await lerAnexo('d1')).toBeUndefined();

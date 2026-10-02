@@ -109,7 +109,7 @@ describe('PropostasRepo', () => {
     });
     repo = TestBed.inject(PropostasRepo);
     db = TestBed.inject(RegeraDb);
-    sincronizar = vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue();
+    sincronizar = vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue('concluida');
     await db.empresa.put(paraEmpresaLocal(ID_EMPRESA, 3, {
       razaoSocial: 'Regera Energia Ltda', cnpj: '11222333000181', endereco: 'Rua A, 1', telefone: '1133334444',
       email: 'contato@regera.com', logoArquivoId: 'logo-1', corPrimaria: '#123456', validadePadraoDias: 10,
