@@ -15,6 +15,7 @@ import { DadosUploadAnexoOs, Pendencia, TIPO_UPLOAD_ANEXO_OS } from '../../core/
 import { ErroCampo } from '../../core/util/erro-campo';
 import { CampoRascunhoOs, gravarRascunhoOs, lerRascunhoOs } from '../../core/util/rascunho-os';
 import { formatarTelefone, somenteDigitos } from '../../core/util/formatos';
+import { opcoesDeResponsavel } from '../../core/util/responsaveis';
 import { Toasts } from '../../shared/ui/toasts';
 import { VisorPdf } from '../../shared/ui/visor-pdf';
 import { ClientesRepo } from '../clientes/clientes-repo';
@@ -47,8 +48,6 @@ const FOTO_DURANTE_PDF = 'A foto chegou enquanto o PDF da OS era gerado e não f
 
 const SEM_INTERNET_PDF = 'Sem internet: este PDF não está no aparelho.';
 const FALHA_PDF = 'Não foi possível baixar o PDF. Tente de novo.';
-/** N1: o rótulo do responsável atual que não está na lista de usuários do aparelho. */
-const RESPONSAVEL_FORA_DA_LISTA = 'Responsável atual (não está neste aparelho)';
 const SEM_INTERNET_FOTO = 'Sem internet: esta foto não está no aparelho.';
 const FALHA_FOTO = 'Não foi possível baixar a foto. Tente de novo.';
 
@@ -948,19 +947,8 @@ export class OsExecucaoPage {
       .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
       .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
   });
-  /**
-   * Os responsáveis possíveis: ADMIN e COMERCIAL ativos e, se for o caso, o atual inativo (marcado). O atual que não
-   * está na lista do aparelho vem primeiro, com um rótulo próprio: o select o mostra escolhido, e salvar com ele só fecha.
-   */
-  protected readonly responsaveis = computed(() => {
-    const atual = this.os()?.responsavelId ?? null;
-    const usuarios = this.usuarios();
-    const lista = usuarios
-      .filter((u) => (u.perfil === 'ADMIN' || u.perfil === 'COMERCIAL') && (u.ativo !== false || u.id === atual))
-      .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
-      .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
-    return atual && !usuarios.some((u) => u.id === atual) ? [{ id: atual, rotulo: RESPONSAVEL_FORA_DA_LISTA }, ...lista] : lista;
-  });
+  /** Os responsáveis possíveis (`opcoesDeResponsavel`, a mesma regra na proposta e na OS). */
+  protected readonly responsaveis = computed(() => opcoesDeResponsavel(this.usuarios(), this.os()?.responsavelId ?? null));
   private readonly propostaDaOs = computed(() => this.os()?.propostaId ?? null);
 
   // ---- cabeçalho ----

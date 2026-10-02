@@ -9,6 +9,7 @@ import { dataBr, linhasDeTotais, percentualBr, quantidadeBr } from '../../core/p
 import { PdfService } from '../../core/pdf/pdf-service';
 import { Pendencia, TIPO_UPLOAD_DOCUMENTO } from '../../core/sync/sync-models';
 import { formatarDocumento, formatarTelefone } from '../../core/util/formatos';
+import { opcoesDeResponsavel } from '../../core/util/responsaveis';
 import { Toasts } from '../../shared/ui/toasts';
 import { VisorPdf } from '../../shared/ui/visor-pdf';
 import { ClientesRepo } from '../clientes/clientes-repo';
@@ -62,8 +63,6 @@ const AVISO_TRANSICAO: Readonly<Record<StatusProposta, string>> = {
 
 const SEM_INTERNET = 'Sem internet: este PDF não está no aparelho.';
 const FALHA_DOWNLOAD = 'Não foi possível baixar o PDF. Tente de novo.';
-/** N1: o rótulo do responsável atual que não está na lista de usuários do aparelho. */
-const RESPONSAVEL_FORA_DA_LISTA = 'Responsável atual (não está neste aparelho)';
 
 interface LinhaItem {
   id: string;
@@ -640,19 +639,8 @@ export class PropostaDetalhePage {
     const u = this.usuario();
     return !!p && !!u && !this.restrito() && podeAlterarResponsavel(p.status, u.perfil);
   });
-  /**
-   * Os responsáveis possíveis: ADMIN e COMERCIAL ativos e, se for o caso, o atual inativo (marcado). O atual que não
-   * está na lista do aparelho vem primeiro, com um rótulo próprio: o select o mostra escolhido, e salvar com ele só fecha.
-   */
-  protected readonly responsaveis = computed(() => {
-    const atual = this.proposta()?.responsavelId ?? null;
-    const usuarios = this.usuarios();
-    const lista = usuarios
-      .filter((u) => (u.perfil === 'ADMIN' || u.perfil === 'COMERCIAL') && (u.ativo !== false || u.id === atual))
-      .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
-      .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
-    return atual && !usuarios.some((u) => u.id === atual) ? [{ id: atual, rotulo: RESPONSAVEL_FORA_DA_LISTA }, ...lista] : lista;
-  });
+  /** Os responsáveis possíveis (`opcoesDeResponsavel`, a mesma regra na proposta e na OS). */
+  protected readonly responsaveis = computed(() => opcoesDeResponsavel(this.usuarios(), this.proposta()?.responsavelId ?? null));
 
   protected readonly mostrarCusto = computed(() => this.usuario()?.perfil === 'ADMIN');
   protected readonly comMeses = computed(() => (this.proposta()?.itens ?? []).some((l) => l.meses !== null));
