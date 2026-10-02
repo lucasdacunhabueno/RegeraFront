@@ -5,6 +5,7 @@ import { AuthService } from './core/auth/auth-service';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 
 const wizardProposta = () => import('./features/propostas/wizard-proposta-page').then((m) => m.WizardPropostaPage);
+const osForm = () => import('./features/os/os-form-page').then((m) => m.OsFormPage);
 
 export const routes: Routes = [
   { path: 'login', loadComponent: () => import('./features/login/login-page').then((m) => m.LoginPage) },
@@ -59,8 +60,22 @@ export const routes: Routes = [
       },
       // todos os perfis: a página mostra ao técnico só as dele e ao escritório as que o perfil vê
       { path: 'os', loadComponent: () => import('./features/os/os-lista-page').then((m) => m.OsListaPage) },
-      // a OS: a execução (técnico atribuído e ADMIN) ou só a leitura, conforme o perfil. As rotas específicas da OS
-      // (os/nova, os/:id/editar) entram antes desta
+      // M2-P3: a OS avulsa e o cabeçalho, só do escritório; antes de os/:id ("nova" não é um id). O técnico é
+      // recusado pelo canMatch e cai na raiz (→ /os)
+      {
+        path: 'os/nova',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
+        loadComponent: osForm,
+      },
+      {
+        path: 'os/:id/editar',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
+        loadComponent: osForm,
+      },
+      // a OS: a execução (técnico atribuído e ADMIN), o detalhe com as ações do escritório ou só a leitura, conforme o
+      // perfil
       { path: 'os/:id', loadComponent: () => import('./features/os/os-execucao-page').then((m) => m.OsExecucaoPage) },
       {
         path: 'clientes/novo',

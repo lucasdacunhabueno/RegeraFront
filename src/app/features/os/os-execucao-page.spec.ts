@@ -2,7 +2,7 @@ import { provideHttpClient } from '@angular/common/http';
 import { provideHttpClientTesting } from '@angular/common/http/testing';
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
-import { provideRouter } from '@angular/router';
+import { provideRouter, Router } from '@angular/router';
 import { BehaviorSubject, of } from 'rxjs';
 import { vi } from 'vitest';
 import { ArquivosService } from '../../core/arquivos/arquivos-service';
@@ -16,6 +16,7 @@ import { SyncService } from '../../core/sync/sync-service';
 import { Toasts } from '../../shared/ui/toasts';
 import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import type { PropostaLocal, StatusProposta } from '../propostas/proposta-models';
 import { PropostasRepo } from '../propostas/propostas-repo';
 import { AssinaturaCanvas } from './assinatura-canvas';
 import { ErroOs } from './erro-os';
@@ -26,6 +27,7 @@ import { motivoParaRegerarOs, OsExecucaoPage } from './os-execucao-page';
 
 const ADMIN: UsuarioSessao = { id: 'u-adm', nome: 'Ana Admin', email: 'ana@regera.com', perfil: 'ADMIN', ativo: true };
 const COMERCIAL: UsuarioSessao = { id: 'u-com', nome: 'Carla Comercial', email: 'carla@regera.com', perfil: 'COMERCIAL', ativo: true };
+const OUTRO_COMERCIAL: UsuarioSessao = { id: 'u-com2', nome: 'Caio Comercial', email: 'caio@regera.com', perfil: 'COMERCIAL', ativo: true };
 const TECNICO: UsuarioSessao = { id: 'u-tec', nome: 'Téo Técnico', email: 'teo@regera.com', perfil: 'TECNICO', ativo: true };
 const OUTRO_TECNICO: UsuarioSessao = { id: 'u-tec2', nome: 'Rui Reparo', email: 'rui@regera.com', perfil: 'TECNICO', ativo: true };
 
@@ -34,6 +36,7 @@ const USUARIOS: UsuarioResumo[] = [
   { id: COMERCIAL.id, nome: COMERCIAL.nome, perfil: 'COMERCIAL' },
   { id: TECNICO.id, nome: TECNICO.nome, perfil: 'TECNICO' },
   { id: OUTRO_TECNICO.id, nome: OUTRO_TECNICO.nome, perfil: 'TECNICO' },
+  { id: 'u-tec-off', nome: 'Tito Inativo', perfil: 'TECNICO', ativo: false },
 ];
 
 /** 2026-10-02 01:30 UTC ainda é 2026-10-01 em São Paulo. */
@@ -103,6 +106,8 @@ interface Opcoes {
   estado?: EstadoSync;
   online?: boolean;
   clientes?: ClienteLocal[];
+  /** O status da proposta da OS no aparelho (padrão EM_EXECUCAO); null = a proposta não está no aparelho. */
+  propostaStatus?: StatusProposta | null;
 }
 
 const SEM_ESTADO: EstadoSync = { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() };
@@ -130,6 +135,17 @@ async function montar(o: Opcoes = {}) {
       async (_id, gerar) => ({ blob: await gerar({} as EntradaPdfOs), codigoExibido: 'OS-000123' }),
     ),
     blobDoAnexo: vi.fn<(id: string) => Promise<Blob | null>>(async () => pdfBlob),
+    // M2-P3 T4: as ações do escritório
+    atribuir: vi.fn<(id: string, m: { tecnicoId?: string | null }, v?: number | null) => Promise<void>>(async () => undefined),
+    cancelar: vi.fn<(id: string, motivo: string) => Promise<void>>(async () => undefined),
+    reabrir: vi.fn<(id: string, motivo: string) => Promise<void>>(async () => undefined),
+    aceitarTrabalho: vi.fn<(id: string) => Promise<void>>(async () => undefined),
+    excluir: vi.fn<(id: string) => Promise<void>>(async () => undefined),
+  };
+  const statusProposta = o.propostaStatus === undefined ? 'EM_EXECUCAO' : o.propostaStatus;
+  const propostas = {
+    observarUsuarios: () => of(USUARIOS),
+    observarProposta: vi.fn((id: string) => of(statusProposta === null ? undefined : ({ id, status: statusProposta } as PropostaLocal))),
   };
   const pdf = { gerarBlobOs: vi.fn<(e: EntradaPdfOs) => Promise<Blob>>(async () => gerado) };
   const remoto = new Blob(['%PDF-remoto'], { type: 'application/pdf' });
@@ -141,7 +157,7 @@ async function montar(o: Opcoes = {}) {
       { provide: AuthService, useValue: { usuario: signal(o.usuario ?? TECNICO) } },
       { provide: OsRepo, useValue: repo },
       { provide: ClientesRepo, useValue: { observarTodos: () => of(o.clientes ?? [CLIENTE]) } },
-      { provide: PropostasRepo, useValue: { observarUsuarios: () => of(USUARIOS) } },
+      { provide: PropostasRepo, useValue: propostas },
       { provide: PdfService, useValue: pdf },
       { provide: ArquivosService, useValue: arquivos },
       { provide: ConectividadeService, useValue: { online } },
@@ -149,12 +165,13 @@ async function montar(o: Opcoes = {}) {
   });
   const toast = vi.spyOn(TestBed.inject(Toasts), 'mostrar');
   const toastErro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+  const navegar = vi.spyOn(TestBed.inject(Router), 'navigate').mockResolvedValue(true);
   const fixture = TestBed.createComponent(OsExecucaoPage);
   fixture.componentRef.setInput('id', 'o1');
   fixture.detectChanges();
   const el = fixture.nativeElement as HTMLElement;
   await ate(fixture, () => expect(el.querySelector('[data-testid=carregando]')).toBeNull());
-  return { fixture, el, repo, pdf, arquivos, online, toast, toastErro, pdfBlob, gerado, remoto };
+  return { fixture, el, repo, propostas, pdf, arquivos, online, toast, toastErro, navegar, pdfBlob, gerado, remoto };
 }
 
 async function ate(fixture: ComponentFixture<unknown>, verificar: () => void) {
@@ -318,11 +335,12 @@ describe('OsExecucaoPage', () => {
     const casos: Linha[] = [
       ['técnico atribuído', 'ABERTA', TECNICO, { ...nada, iniciar: true, nota: true, fotoDepoisDeIniciar: true }],
       ['ADMIN', 'ABERTA', ADMIN, { ...nada, iniciar: true, nota: true, fotoDepoisDeIniciar: true }],
-      ['COMERCIAL (só lê)', 'ABERTA', COMERCIAL, nada],
+      // T4: o COMERCIAL responsável acrescenta notas em ABERTA e EM_ANDAMENTO (a matriz); o resto ele só lê
+      ['COMERCIAL responsável', 'ABERTA', COMERCIAL, { ...nada, nota: true }],
       ['outro técnico (só lê)', 'ABERTA', OUTRO_TECNICO, nada],
       ['técnico atribuído', 'EM_ANDAMENTO', TECNICO, { ...nada, nota: true, foto: true, concluir: true, assinatura: true }],
       ['ADMIN', 'EM_ANDAMENTO', ADMIN, { ...nada, nota: true, foto: true, concluir: true, assinatura: true }],
-      ['COMERCIAL (só lê)', 'EM_ANDAMENTO', COMERCIAL, nada],
+      ['COMERCIAL responsável', 'EM_ANDAMENTO', COMERCIAL, { ...nada, nota: true }],
       ['outro técnico (só lê)', 'EM_ANDAMENTO', OUTRO_TECNICO, nada],
       // M2P1-R26: a evidência depois do encerramento (nota: ADMIN e técnico; foto: só o técnico)
       ['técnico atribuído', 'CONCLUIDA', TECNICO, { ...nada, nota: true, foto: true }],
@@ -1193,6 +1211,271 @@ describe('OsExecucaoPage', () => {
       }
       for (const campo of el.querySelectorAll<HTMLElement>('textarea, input:not([type=file]):not([type=checkbox])')) {
         expect(el.querySelector(`label[for="${campo.id}"]`)).not.toBeNull();
+      }
+    });
+  });
+
+  // ------------------------------------------------------------------ escritório (T4)
+
+  describe('escritório: ações por status e perfil (T4)', () => {
+    const acoesEscritorio = (el: HTMLElement) => ({
+      editar: !!el.querySelector('a[href="/os/o1/editar"]'),
+      atribuir: !!(botao(el, 'Atribuir técnico') ?? botao(el, 'Trocar técnico')),
+      cancelar: !!botao(el, 'Cancelar OS'),
+      reabrir: !!botao(el, 'Reabrir'),
+      aceitar: !!botao(el, 'Aceitar o trabalho'),
+      excluir: !!botao(el, 'Excluir OS'),
+    });
+    const nada = { editar: false, atribuir: false, cancelar: false, reabrir: false, aceitar: false, excluir: false };
+    type Linha = [string, StatusOs, UsuarioSessao, Partial<OsDados>, StatusProposta, typeof nada];
+    const sem = { tecnicoId: null };
+    const casos: Linha[] = [
+      ['ADMIN', 'ABERTA', ADMIN, {}, 'APROVADA', { ...nada, editar: true, atribuir: true, cancelar: true }],
+      // excluir só sem técnico (com técnico, cancela-se: ele pode estar trabalhando offline)
+      ['ADMIN, sem técnico', 'ABERTA', ADMIN, sem, 'APROVADA', { ...nada, editar: true, atribuir: true, cancelar: true, excluir: true }],
+      ['COMERCIAL responsável', 'ABERTA', COMERCIAL, {}, 'APROVADA', { ...nada, editar: true, atribuir: true, cancelar: true }],
+      ['COMERCIAL responsável, sem técnico', 'ABERTA', COMERCIAL, sem, 'APROVADA', { ...nada, editar: true, atribuir: true, cancelar: true, excluir: true }],
+      ['ADMIN', 'EM_ANDAMENTO', ADMIN, {}, 'EM_EXECUCAO', { ...nada, editar: true, atribuir: true, cancelar: true }],
+      // em andamento, o COMERCIAL não cancela (só o ADMIN)
+      ['COMERCIAL responsável', 'EM_ANDAMENTO', COMERCIAL, {}, 'EM_EXECUCAO', { ...nada, editar: true, atribuir: true }],
+      ['ADMIN', 'CONCLUIDA', ADMIN, {}, 'EM_EXECUCAO', { ...nada, reabrir: true }],
+      ['COMERCIAL responsável', 'CONCLUIDA', COMERCIAL, {}, 'EM_EXECUCAO', nada],
+      ['ADMIN', 'CANCELADA', ADMIN, {}, 'APROVADA', nada],
+      ['COMERCIAL responsável', 'CANCELADA', COMERCIAL, {}, 'APROVADA', nada],
+      ['técnico atribuído', 'ABERTA', TECNICO, sem, 'APROVADA', nada],
+      ['técnico atribuído', 'EM_ANDAMENTO', TECNICO, {}, 'CANCELADA', nada],
+      ['técnico atribuído', 'CONCLUIDA', TECNICO, {}, 'CANCELADA', nada],
+      // M2-R4: "Aceitar o trabalho" para o ADMIN com a proposta cancelada e a OS não cancelada
+      ['ADMIN, proposta cancelada', 'ABERTA', ADMIN, {}, 'CANCELADA', { ...nada, editar: true, atribuir: true, cancelar: true, aceitar: true }],
+      ['ADMIN, proposta cancelada', 'EM_ANDAMENTO', ADMIN, {}, 'CANCELADA', { ...nada, editar: true, atribuir: true, cancelar: true, aceitar: true }],
+      ['ADMIN, proposta cancelada', 'CONCLUIDA', ADMIN, {}, 'CANCELADA', { ...nada, reabrir: true, aceitar: true }],
+      ['ADMIN, proposta cancelada', 'CANCELADA', ADMIN, {}, 'CANCELADA', nada],
+      ['COMERCIAL, proposta cancelada', 'EM_ANDAMENTO', COMERCIAL, {}, 'CANCELADA', { ...nada, editar: true, atribuir: true }],
+      // a recusada não tem aceite (o servidor só reabre a cancelada)
+      ['ADMIN, proposta recusada', 'EM_ANDAMENTO', ADMIN, {}, 'RECUSADA', { ...nada, editar: true, atribuir: true, cancelar: true }],
+      // a avulsa não tem proposta a reabrir
+      ['ADMIN, OS avulsa', 'EM_ANDAMENTO', ADMIN, { propostaId: null, propostaCodigoExibido: null }, 'CANCELADA',
+        { ...nada, editar: true, atribuir: true, cancelar: true }],
+    ];
+
+    it.each(casos)('%s em %s', async (_quem, status, usuario, extra, propostaStatus, esperado) => {
+      const { el } = await montar({ usuario, os: osLocal(status, extra), propostaStatus });
+      expect(acoesEscritorio(el)).toEqual(esperado);
+    });
+
+    it('a proposta fora do aparelho: sem "Aceitar o trabalho"', async () => {
+      const { el } = await montar({ usuario: ADMIN, os: osLocal('EM_ANDAMENTO'), propostaStatus: null });
+      expect(botao(el, 'Aceitar o trabalho')).toBeUndefined();
+    });
+
+    it('o COMERCIAL não vê a OS de outro comercial', async () => {
+      const { el } = await montar({ usuario: OUTRO_COMERCIAL, os: osLocal('ABERTA') });
+      expect(texto(el)).toContain('OS não encontrada neste aparelho.');
+      expect(texto(el)).not.toContain('Instalar o quadro');
+      expect(el.querySelector('[data-testid=acoes-os]')).toBeNull();
+    });
+
+    it('M2-R4: a faixa da proposta cancelada, para o escritório', async () => {
+      let { el } = await montar({ usuario: ADMIN, os: osLocal('EM_ANDAMENTO'), propostaStatus: 'CANCELADA' });
+      expect(el.querySelector('[data-testid=proposta-cancelada]')!.textContent).toContain('A proposta desta OS foi cancelada');
+      TestBed.resetTestingModule();
+      ({ el } = await montar({ usuario: COMERCIAL, os: osLocal('EM_ANDAMENTO'), propostaStatus: 'CANCELADA' }));
+      expect(el.querySelector('[data-testid=proposta-cancelada]')!.textContent).toContain('Só o administrador aceita o trabalho');
+      TestBed.resetTestingModule();
+      ({ el } = await montar({ usuario: TECNICO, os: osLocal('EM_ANDAMENTO'), propostaStatus: 'CANCELADA' }));
+      expect(el.querySelector('[data-testid=proposta-cancelada]')).toBeNull();
+    });
+  });
+
+  describe('escritório: executar as ações (T4)', () => {
+    const botaoEm = (raiz: Element, texto: string) =>
+      [...raiz.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === texto)!;
+
+    it('Cancelar OS: o motivo no diálogo, cancelar no repositório, aviso e foco no título', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: COMERCIAL, os: osLocal('ABERTA') });
+      botao(el, 'Cancelar OS')!.click();
+      fixture.detectChanges();
+      const dialogo = el.querySelector<HTMLElement>('[role=dialog]')!;
+      expect(dialogo.textContent).toContain('Cancelar OS');
+      digitar(fixture, dialogo.querySelector('textarea')!, 'Cliente desistiu');
+      botaoEm(dialogo, 'Cancelar OS').click();
+      await vi.waitFor(() => expect(repo.cancelar).toHaveBeenCalledExactlyOnceWith('o1', 'Cliente desistiu'));
+      await ate(fixture, () => expect(el.querySelector('[role=dialog]')).toBeNull());
+      expect(toast).toHaveBeenCalledWith('OS cancelada.');
+      await ate(fixture, () => expect(document.activeElement).toBe(el.querySelector('h1')));
+    });
+
+    it('Cancelar OS: motivo curto não confirma; a recusa do repositório fica no toast e o diálogo continua', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ usuario: ADMIN, os: osLocal('EM_ANDAMENTO') });
+      botao(el, 'Cancelar OS')!.click();
+      fixture.detectChanges();
+      const dialogo = el.querySelector<HTMLElement>('[role=dialog]')!;
+      digitar(fixture, dialogo.querySelector('textarea')!, 'x');
+      botaoEm(dialogo, 'Cancelar OS').click();
+      expect(repo.cancelar).not.toHaveBeenCalled();
+      repo.cancelar.mockRejectedValueOnce(new ErroOs('RESOLVA_A_PENDENCIA', 'os', 'Resolva a pendência desta OS antes de cancelá-la.'));
+      digitar(fixture, dialogo.querySelector('textarea')!, 'Cliente desistiu');
+      botaoEm(dialogo, 'Cancelar OS').click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Resolva a pendência desta OS antes de cancelá-la.'));
+      fixture.detectChanges();
+      expect(el.querySelector('[role=dialog]')).not.toBeNull();
+    });
+
+    it('Reabrir (ADMIN): o motivo e reabrir no repositório', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, os: osLocal('CONCLUIDA') });
+      botao(el, 'Reabrir')!.click();
+      fixture.detectChanges();
+      const dialogo = el.querySelector<HTMLElement>('[role=dialog]')!;
+      expect(dialogo.textContent).toContain('nova revisão');
+      digitar(fixture, dialogo.querySelector('textarea')!, 'Faltou o aterramento');
+      botaoEm(dialogo, 'Reabrir').click();
+      await vi.waitFor(() => expect(repo.reabrir).toHaveBeenCalledExactlyOnceWith('o1', 'Faltou o aterramento'));
+      await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('OS reaberta.'));
+    });
+
+    it('Aceitar o trabalho (M2-R4): pede confirmação e chama aceitarTrabalho', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, os: osLocal('CONCLUIDA'), propostaStatus: 'CANCELADA' });
+      botao(el, 'Aceitar o trabalho')!.click();
+      fixture.detectChanges();
+      const dialogo = el.querySelector<HTMLElement>('[role=alertdialog]')!;
+      expect(dialogo.textContent).toContain('reabre a proposta');
+      expect(dialogo.querySelector('textarea')).toBeNull();
+      expect(repo.aceitarTrabalho).not.toHaveBeenCalled();
+      botaoEm(dialogo, 'Aceitar o trabalho').click();
+      await vi.waitFor(() => expect(repo.aceitarTrabalho).toHaveBeenCalledExactlyOnceWith('o1'));
+      await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('Trabalho aceito. A proposta será reaberta ao sincronizar.'));
+    });
+
+    it('Aceitar o trabalho: Voltar não aceita; a recusa local (PROPOSTA_NAO_CANCELADA) vira toast', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ usuario: ADMIN, os: osLocal('EM_ANDAMENTO'), propostaStatus: 'CANCELADA' });
+      botao(el, 'Aceitar o trabalho')!.click();
+      fixture.detectChanges();
+      botao(el, 'Voltar')!.click();
+      fixture.detectChanges();
+      expect(repo.aceitarTrabalho).not.toHaveBeenCalled();
+      repo.aceitarTrabalho.mockRejectedValueOnce(new ErroOs('PROPOSTA_NAO_CANCELADA', 'os', ''));
+      botao(el, 'Aceitar o trabalho')!.click();
+      fixture.detectChanges();
+      botaoEm(el.querySelector('[role=alertdialog]')!, 'Aceitar o trabalho').click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Só há trabalho a aceitar quando a proposta desta OS está cancelada.'));
+    });
+
+    it('Excluir OS: confirmação, excluir e volta para a proposta', async () => {
+      const { fixture, el, repo, navegar, toast } = await montar({ usuario: COMERCIAL, os: osLocal('ABERTA', { tecnicoId: null }) });
+      botao(el, 'Excluir OS')!.click();
+      fixture.detectChanges();
+      const dialogo = el.querySelector<HTMLElement>('[role=alertdialog]')!;
+      expect(dialogo.textContent).toContain('Não dá para desfazer');
+      botaoEm(dialogo, 'Excluir').click();
+      await vi.waitFor(() => expect(repo.excluir).toHaveBeenCalledExactlyOnceWith('o1'));
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/propostas', 'p1']));
+      expect(toast).toHaveBeenCalledWith('OS excluída.');
+    });
+
+    it('Excluir a OS avulsa volta para a lista de OS', async () => {
+      const { fixture, el, navegar } = await montar({
+        usuario: ADMIN, os: osLocal('ABERTA', { tecnicoId: null, propostaId: null, propostaCodigoExibido: null }),
+      });
+      botao(el, 'Excluir OS')!.click();
+      fixture.detectChanges();
+      botaoEm(el.querySelector('[role=alertdialog]')!, 'Excluir').click();
+      await vi.waitFor(() => expect(navegar).toHaveBeenCalledWith(['/os']));
+    });
+
+    it('Excluir OS: OS_SINCRONIZANDO fica no toast, sem navegar', async () => {
+      const { fixture, el, repo, navegar, toastErro } = await montar({ usuario: ADMIN, os: osLocal('ABERTA', { tecnicoId: null }) });
+      repo.excluir.mockRejectedValueOnce(new ErroOs('OS_SINCRONIZANDO', 'os', 'A OS está sendo sincronizada. Tente de novo em instantes.'));
+      botao(el, 'Excluir OS')!.click();
+      fixture.detectChanges();
+      botaoEm(el.querySelector('[role=alertdialog]')!, 'Excluir').click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('A OS está sendo sincronizada. Tente de novo em instantes.'));
+      expect(navegar).not.toHaveBeenCalled();
+    });
+
+    it('Atribuir técnico: os técnicos ativos, "Nenhum" na aberta; salvar chama atribuir', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: COMERCIAL, os: osLocal('ABERTA') });
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      const select = el.querySelector<HTMLSelectElement>('#tecnico-atribuir-os')!;
+      expect(el.querySelector('label[for=tecnico-atribuir-os]')).not.toBeNull();
+      expect([...select.options].map((x) => x.textContent?.trim())).toEqual(['Nenhum', 'Rui Reparo', 'Téo Técnico']);
+      expect(select.value).toBe(TECNICO.id);
+      select.value = OUTRO_TECNICO.id;
+      select.dispatchEvent(new Event('change'));
+      botao(el, 'Salvar técnico')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledExactlyOnceWith('o1', { tecnicoId: OUTRO_TECNICO.id }));
+      await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('Técnico atualizado.'));
+      await ate(fixture, () => expect(el.querySelector('#tecnico-atribuir-os')).toBeNull());
+    });
+
+    it('Atribuir técnico em andamento: sem "Nenhum" (precisa de técnico); Cancelar fecha sem gravar', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN, os: osLocal('EM_ANDAMENTO') });
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      const opcoes = [...el.querySelectorAll<HTMLOptionElement>('#tecnico-atribuir-os option')].map((x) => x.textContent?.trim());
+      expect(opcoes).toEqual(['Rui Reparo', 'Téo Técnico']);
+      botao(el, 'Cancelar')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#tecnico-atribuir-os')).toBeNull();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+    });
+
+    it('Atribuir técnico: a recusa do repositório vira toast pelo mensagemErroOs', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ usuario: ADMIN, os: osLocal('ABERTA') });
+      repo.atribuir.mockRejectedValueOnce(ErroOs.de({ codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { tecnicoId: 'Técnico inválido: escolha um técnico ativo.' } }));
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      botao(el, 'Salvar técnico')!.click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Técnico inválido: escolha um técnico ativo.'));
+    });
+
+    it('trava do CONFLITO: atribuir, cancelar, reabrir e aceitar desabilitados com "Resolva a pendência primeiro"; editar e excluir não', async () => {
+      let { el } = await montar({ usuario: ADMIN, os: osLocal('ABERTA', { tecnicoId: null }), pendencias: [conflito()], propostaStatus: 'CANCELADA' });
+      for (const rotulo of ['Atribuir técnico', 'Cancelar OS', 'Aceitar o trabalho']) {
+        const b = botao(el, rotulo)!;
+        expect(b.disabled, rotulo).toBe(true);
+        expect(el.querySelector(`#${b.getAttribute('aria-describedby')}`)!.textContent).toContain('Resolva a pendência primeiro.');
+      }
+      expect(botao(el, 'Excluir OS')!.disabled).toBe(false);
+      expect(el.querySelector('a[href="/os/o1/editar"]')).not.toBeNull();
+      TestBed.resetTestingModule();
+      ({ el } = await montar({ usuario: ADMIN, os: osLocal('CONCLUIDA'), pendencias: [conflito()] }));
+      expect(botao(el, 'Reabrir')!.disabled).toBe(true);
+    });
+
+    it('o resultado de uma ação de outra OS não escreve nesta (a rota trocou de OS no meio)', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, os: osLocal('CONCLUIDA'), propostaStatus: 'CANCELADA' });
+      let liberar!: () => void;
+      repo.aceitarTrabalho.mockImplementationOnce(() => new Promise<void>((r) => (liberar = r)));
+      botao(el, 'Aceitar o trabalho')!.click();
+      fixture.detectChanges();
+      botaoEm(el.querySelector('[role=alertdialog]')!, 'Aceitar o trabalho').click();
+      await vi.waitFor(() => expect(repo.aceitarTrabalho).toHaveBeenCalled());
+      fixture.componentRef.setInput('id', 'o2');
+      fixture.detectChanges();
+      liberar();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(toast).not.toHaveBeenCalledWith('Trabalho aceito. A proposta será reaberta ao sincronizar.');
+    });
+  });
+
+  describe('notas do COMERCIAL (T4)', () => {
+    it('o COMERCIAL responsável acrescenta nota na OS aberta; o resto continua só leitura', async () => {
+      const { fixture, el, repo } = await montar({ usuario: COMERCIAL, os: osLocal('ABERTA') });
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!, 'Cliente pediu para ligar antes');
+      botao(el, 'Adicionar')!.click();
+      await vi.waitFor(() => expect(repo.adicionarNota).toHaveBeenCalledWith('o1', 'Cliente pediu para ligar antes'));
+      expect(botao(el, 'Tirar foto')).toBeUndefined();
+      expect(botao(el, 'Concluir e gerar PDF')).toBeUndefined();
+      expect(botao(el, 'Iniciar OS')).toBeUndefined();
+    });
+
+    it('o COMERCIAL não acrescenta nota na OS concluída nem na cancelada', async () => {
+      for (const status of ['CONCLUIDA', 'CANCELADA'] as StatusOs[]) {
+        TestBed.resetTestingModule();
+        const { el } = await montar({ usuario: COMERCIAL, os: osLocal(status) });
+        expect(el.querySelector('textarea[name=nota]'), status).toBeNull();
       }
     });
   });

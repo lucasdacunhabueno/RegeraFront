@@ -3,6 +3,7 @@ import { normalizarDocumento } from '../../core/util/documentos';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { normalizarBusca } from '../../core/util/formatos';
 import type { ClienteLocal } from '../clientes/cliente-models';
+import type { StatusProposta } from '../propostas/proposta-models';
 import { hojeEmSaoPaulo, somarDias } from '../propostas/propostas-repo';
 import { codigoOsExibido, OsLocal, StatusOs } from './os-models';
 
@@ -77,6 +78,45 @@ export function selosDaOs(
   if (os.urgente && !osEncerrada(os.status)) selos.push({ tipo: 'urgente', rotulo: 'Urgente' });
   if (atrasadaOs(os, estado.hoje)) selos.push({ tipo: 'atrasada', rotulo: 'Atrasada' });
   if (estado.naoSincronizada) selos.push({ tipo: 'nao-sincronizada', rotulo: 'Não sincronizada' });
+  return selos;
+}
+
+// --- selos da OS no card da proposta e no kanban ---
+
+export interface SeloOsProposta {
+  tipo: 'trabalho-proposta-cancelada' | 'os-em-andamento' | 'os-concluida' | 'retorno-pendente' | 'os-cancelada';
+  rotulo: string;
+}
+
+/**
+ * Os selos que as OS da proposta (as do aparelho) dão ao card dela, um de cada tipo, nesta ordem:
+ * - "Trabalho em proposta cancelada" (M2-R4): a proposta foi cancelada e uma OS dela está em andamento ou concluída.
+ *   Só o ADMIN aceita o trabalho, na tela da OS. A recusada não entra: o servidor só reabre a cancelada;
+ * - "OS em andamento" e "OS concluída": alguma OS nesse status;
+ * - "Retorno pendente" (Q21): com a proposta aprovada ou em execução, uma OS concluída que não conclui a proposta,
+ *   nenhuma outra aberta ou em andamento, e nenhuma concluída que a conclua (essa finalizaria a proposta, Q17);
+ * - "OS cancelada" (Q11): com a proposta aprovada ou em execução, uma OS cancelada e nenhuma aberta ou em andamento.
+ *   A proposta não se move sozinha e o comercial decide; com outra OS em curso, ele já decidiu.
+ * A OS só aberta não dá selo: o trabalho ainda não começou.
+ */
+export function selosOsDaProposta(
+  status: StatusProposta,
+  oss: readonly Pick<OsLocal, 'status' | 'concluiProposta'>[],
+): SeloOsProposta[] {
+  const tem = (s: StatusOs) => oss.some((o) => o.status === s);
+  const emCurso = tem('ABERTA') || tem('EM_ANDAMENTO');
+  const emExecucao = status === 'APROVADA' || status === 'EM_EXECUCAO';
+  const selos: SeloOsProposta[] = [];
+  if (status === 'CANCELADA' && (tem('EM_ANDAMENTO') || tem('CONCLUIDA'))) {
+    selos.push({ tipo: 'trabalho-proposta-cancelada', rotulo: 'Trabalho em proposta cancelada' });
+  }
+  if (tem('EM_ANDAMENTO')) selos.push({ tipo: 'os-em-andamento', rotulo: 'OS em andamento' });
+  if (tem('CONCLUIDA')) selos.push({ tipo: 'os-concluida', rotulo: 'OS concluída' });
+  const concluidas = oss.filter((o) => o.status === 'CONCLUIDA');
+  if (emExecucao && !emCurso && concluidas.some((o) => !o.concluiProposta) && !concluidas.some((o) => o.concluiProposta)) {
+    selos.push({ tipo: 'retorno-pendente', rotulo: 'Retorno pendente' });
+  }
+  if (emExecucao && !emCurso && tem('CANCELADA')) selos.push({ tipo: 'os-cancelada', rotulo: 'OS cancelada' });
   return selos;
 }
 

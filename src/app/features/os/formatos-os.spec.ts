@@ -3,7 +3,7 @@ import { ErroOs } from './erro-os';
 import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import {
   atrasadaOs, CODIGOS_ERRO_OS, concluidaRecente, correspondeABuscaOs, criacaoOs, localDaOs, mensagemErroOs, osEncerrada, rotuloCampoOs,
-  selosDaOs, textoPerdaOs,
+  selosDaOs, selosOsDaProposta, textoPerdaOs,
 } from './formatos-os';
 import { OsDados, OsLocal, paraOsLocal, StatusOs } from './os-models';
 
@@ -259,6 +259,82 @@ describe('formatos-os', () => {
       expect(correspondeABuscaOs(os, semDocumento, '114447')).toBe(false);
       expect(correspondeABuscaOs(os, semDocumento, 'padaria')).toBe(true);
       expect(correspondeABuscaOs(os, semDocumento, '123')).toBe(true);
+    });
+  });
+
+  describe('selosOsDaProposta (card da proposta e kanban)', () => {
+    let seq = 0;
+    const os = (status: StatusOs, extra: Partial<OsLocal> = {}): OsLocal => ({
+      ...paraOsLocal(`o${++seq}`, 1, {
+        codigoProvisorio: 'OSP-AAAAAA', propostaId: 'p1', clienteId: 'c1', tipo: 'SERVICO', status, urgente: false,
+        concluiProposta: true, assinaturaRecusada: false, itens: [], notas: [],
+      } as OsDados),
+      ...extra,
+    });
+    const tipos = (status: Parameters<typeof selosOsDaProposta>[0], lista: OsLocal[]) =>
+      selosOsDaProposta(status, lista).map((s) => s.tipo);
+
+    it('sem OS, nenhum selo', () => {
+      expect(selosOsDaProposta('APROVADA', [])).toEqual([]);
+    });
+
+    it('OS aberta: nenhum selo (o trabalho ainda não começou)', () => {
+      expect(tipos('APROVADA', [os('ABERTA')])).toEqual([]);
+    });
+
+    it('"OS em andamento", "OS concluída", com os rótulos', () => {
+      expect(selosOsDaProposta('EM_EXECUCAO', [os('EM_ANDAMENTO')])).toEqual([{ tipo: 'os-em-andamento', rotulo: 'OS em andamento' }]);
+      expect(selosOsDaProposta('FINALIZADA', [os('CONCLUIDA')])).toEqual([{ tipo: 'os-concluida', rotulo: 'OS concluída' }]);
+    });
+
+    it('"OS cancelada" (Q11): a proposta não se move e o comercial decide; some quando outra OS está em curso', () => {
+      expect(selosOsDaProposta('APROVADA', [os('CANCELADA')])).toEqual([{ tipo: 'os-cancelada', rotulo: 'OS cancelada' }]);
+      expect(tipos('EM_EXECUCAO', [os('CANCELADA')])).toEqual(['os-cancelada']);
+      // o comercial já decidiu: gerou outra OS
+      expect(tipos('APROVADA', [os('CANCELADA'), os('ABERTA')])).toEqual([]);
+      expect(tipos('EM_EXECUCAO', [os('CANCELADA'), os('EM_ANDAMENTO')])).toEqual(['os-em-andamento']);
+      // proposta encerrada: não há o que decidir
+      expect(tipos('FINALIZADA', [os('CANCELADA'), os('CONCLUIDA')])).toEqual(['os-concluida']);
+      expect(tipos('CANCELADA', [os('CANCELADA')])).toEqual([]);
+    });
+
+    it('"Retorno pendente" (Q21): concluída sem concluir a proposta e nenhuma outra aberta ou em andamento', () => {
+      expect(selosOsDaProposta('EM_EXECUCAO', [os('CONCLUIDA', { concluiProposta: false })])).toEqual([
+        { tipo: 'os-concluida', rotulo: 'OS concluída' },
+        { tipo: 'retorno-pendente', rotulo: 'Retorno pendente' },
+      ]);
+      // o retorno já foi gerado (aberta) ou está em curso
+      expect(tipos('EM_EXECUCAO', [os('CONCLUIDA', { concluiProposta: false }), os('ABERTA')])).toEqual(['os-concluida']);
+      expect(tipos('EM_EXECUCAO', [os('CONCLUIDA', { concluiProposta: false }), os('EM_ANDAMENTO')]))
+        .toEqual(['os-em-andamento', 'os-concluida']);
+      // a OS de retorno cancelada não resolve o retorno
+      expect(tipos('EM_EXECUCAO', [os('CONCLUIDA', { concluiProposta: false }), os('CANCELADA')]))
+        .toEqual(['os-concluida', 'retorno-pendente', 'os-cancelada']);
+    });
+
+    it('"Retorno pendente" some quando uma OS que conclui a proposta já concluiu, ou a proposta saiu da execução', () => {
+      // a OS marcada concluiu: o servidor finaliza a proposta (Q17), não há retorno
+      expect(tipos('EM_EXECUCAO', [os('CONCLUIDA', { concluiProposta: false }), os('CONCLUIDA')])).toEqual(['os-concluida']);
+      expect(tipos('FINALIZADA', [os('CONCLUIDA', { concluiProposta: false })])).toEqual(['os-concluida']);
+      expect(tipos('CANCELADA', [os('CONCLUIDA', { concluiProposta: false })])).not.toContain('retorno-pendente');
+    });
+
+    it('"Trabalho em proposta cancelada" (M2-R4): proposta cancelada com OS em andamento ou concluída', () => {
+      expect(selosOsDaProposta('CANCELADA', [os('EM_ANDAMENTO')])).toEqual([
+        { tipo: 'trabalho-proposta-cancelada', rotulo: 'Trabalho em proposta cancelada' },
+        { tipo: 'os-em-andamento', rotulo: 'OS em andamento' },
+      ]);
+      expect(tipos('CANCELADA', [os('CONCLUIDA')])).toEqual(['trabalho-proposta-cancelada', 'os-concluida']);
+      // sem trabalho: a OS só aberta ou cancelada
+      expect(tipos('CANCELADA', [os('ABERTA')])).toEqual([]);
+      expect(tipos('CANCELADA', [os('CANCELADA')])).toEqual([]);
+      // a recusada não tem aceite (o servidor só reabre a cancelada)
+      expect(tipos('RECUSADA', [os('EM_ANDAMENTO')])).toEqual(['os-em-andamento']);
+    });
+
+    it('um selo de cada tipo, mesmo com várias OS no mesmo status', () => {
+      expect(tipos('EM_EXECUCAO', [os('EM_ANDAMENTO'), os('EM_ANDAMENTO'), os('CONCLUIDA'), os('CONCLUIDA')]))
+        .toEqual(['os-em-andamento', 'os-concluida']);
     });
   });
 });

@@ -1,6 +1,10 @@
 import { Component, computed, input } from '@angular/core';
-import { LucideClock, LucideDynamicIcon, LucideIcon, LucideRefreshCw, LucideTriangleAlert } from '@lucide/angular';
+import {
+  LucideBan, LucideCircleCheck, LucideClock, LucideDynamicIcon, LucideIcon, LucideRefreshCw, LucideRotateCcw, LucideTriangleAlert,
+  LucideWrench,
+} from '@lucide/angular';
 import { RouterLink } from '@angular/router';
+import type { SeloOsProposta } from '../os/formatos-os';
 import { moedaCentavos, rotuloCodigo, rotuloTipo, Selo } from './formatos-proposta';
 import { PropostaLocal, STATUS_PROPOSTA } from './proposta-models';
 
@@ -11,9 +15,19 @@ export const ESTILO_SELO: Readonly<Record<Selo['tipo'], { cor: string; icone: Lu
   pendencia: { cor: 'bg-red-100 text-red-800', icone: LucideTriangleAlert },
 };
 
+/** M2-P3: cor e ícone dos selos que as OS da proposta dão ao card (`selosOsDaProposta`), nas cores do status da OS. */
+export const ESTILO_SELO_OS_PROPOSTA: Readonly<Record<SeloOsProposta['tipo'], { cor: string; icone: LucideIcon }>> = {
+  'trabalho-proposta-cancelada': { cor: 'bg-red-100 text-red-800', icone: LucideTriangleAlert },
+  'os-em-andamento': { cor: 'bg-amber-100 text-amber-800', icone: LucideWrench },
+  'os-concluida': { cor: 'bg-emerald-100 text-emerald-800', icone: LucideCircleCheck },
+  'retorno-pendente': { cor: 'bg-orange-100 text-orange-800', icone: LucideRotateCcw },
+  'os-cancelada': { cor: 'bg-zinc-200 text-zinc-700', icone: LucideBan },
+};
+
 /**
  * Card de uma proposta (lista, kanban e detalhe do cliente). Só exibe: quem usa resolve os nomes e os selos
- * (`selosDaProposta`). O card inteiro é o link para o detalhe. Com `mostrarValores` false (TECNICO) não sai nenhum
+ * (`selosDaProposta`) e, no M2-P3, os selos das OS dela (`selosOsDaProposta`, depois dos da proposta). O card inteiro é o
+ * link para o detalhe. Com `mostrarValores` false (TECNICO) não sai nenhum
  * valor em dinheiro. As cores vão por `[attr.class]` e não por `[class]`: o `[class]` traz o runtime de classMap
  * do Angular para o bundle inicial (~1,5 kB).
  */
@@ -39,11 +53,17 @@ export const ESTILO_SELO: Readonly<Record<Selo['tipo'], { cor: string; icone: Lu
       @if (responsavelNome(); as nome) {
         <p class="mt-1 truncate text-sm text-slate-500">Responsável: {{ nome }}</p>
       }
-      @if (selos().length > 0) {
+      @if (selos().length > 0 || selosOs().length > 0) {
         <ul class="mt-2 flex flex-wrap gap-1.5" aria-label="Avisos">
           @for (s of selos(); track s.tipo) {
             <li [attr.data-selo]="s.tipo" [attr.class]="'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ' + estilo(s).cor">
               <svg [lucideIcon]="estilo(s).icone" [size]="12" aria-hidden="true"></svg>
+              {{ s.rotulo }}
+            </li>
+          }
+          @for (s of selosOs(); track s.tipo) {
+            <li [attr.data-selo]="s.tipo" [attr.class]="'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ' + estiloOs(s).cor">
+              <svg [lucideIcon]="estiloOs(s).icone" [size]="12" aria-hidden="true"></svg>
               {{ s.rotulo }}
             </li>
           }
@@ -59,6 +79,8 @@ export class PropostaCard {
   /** false para o TECNICO: o card não mostra o total. */
   readonly mostrarValores = input.required<boolean>();
   readonly selos = input<Selo[]>([]);
+  /** M2-P3: os selos das OS da proposta (opcional: quem não passa, como a lista de propostas antes da T5, não os mostra). */
+  readonly selosOs = input<SeloOsProposta[]>([]);
   /** false no kanban: a coluna já diz o status. */
   readonly mostrarStatus = input(true);
 
@@ -72,5 +94,9 @@ export class PropostaCard {
 
   protected estilo(s: Selo) {
     return ESTILO_SELO[s.tipo];
+  }
+
+  protected estiloOs(s: SeloOsProposta) {
+    return ESTILO_SELO_OS_PROPOSTA[s.tipo];
   }
 }

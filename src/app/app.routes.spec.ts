@@ -8,6 +8,7 @@ import { routes } from './app.routes';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 import { KanbanPage } from './features/kanban/kanban-page';
 import { OsExecucaoPage } from './features/os/os-execucao-page';
+import { OsFormPage } from './features/os/os-form-page';
 import { OsListaPage } from './features/os/os-lista-page';
 import { PropostaDetalhePage } from './features/propostas/proposta-detalhe-page';
 import { PropostasPage } from './features/propostas/propostas-page';
@@ -75,8 +76,21 @@ describe('app.routes', () => {
     expect(generica).toBeGreaterThan(ordem.indexOf('os'));
     for (const especifica of ['os/nova', 'os/:id/editar']) {
       const i = ordem.indexOf(especifica);
-      if (i > -1) expect(i).toBeLessThan(generica);
+      expect(i).toBeGreaterThan(-1);
+      expect(i).toBeLessThan(generica);
     }
+  });
+
+  it.each(['os/nova', 'os/:id/editar'])('M2-P3: %s é o formulário da OS, lazy, só do ADMIN e do COMERCIAL, com aviso ao sair', async (path) => {
+    const r = rota(path)!;
+    expect(r.component).toBeUndefined();
+    expect(await (r.loadComponent as () => Promise<unknown>)()).toBe(OsFormPage);
+    expect(r.canDeactivate).toContain(alteracoesGuard);
+    expect(r.canMatch?.length).toBe(1);
+    expect(passaNo(path, 'ADMIN')).toBe(true);
+    expect(passaNo(path, 'COMERCIAL')).toBe(true);
+    expect(passaNo(path, 'TECNICO')).toBeInstanceOf(UrlTree);
+    expect(passaNo(path, null)).toBeInstanceOf(UrlTree);
   });
 
   it.each(['propostas/nova', 'propostas/:id/editar'])('%s: wizard lazy em modo rascunho, ADMIN e COMERCIAL, com aviso ao sair', async (path) => {
@@ -212,6 +226,17 @@ describe('app.routes', () => {
       for (const perfil of ['TECNICO', 'ADMIN', 'COMERCIAL'] as Perfil[]) {
         expect(await navegar(perfil, `/os/${id}`)).toBe(`/os/${id}`);
       }
+    });
+
+    it('M2-P3: /os/nova e /os/:id/editar abrem para o escritório; o técnico cai em Minhas OS (e "nova" não vira um id)', async () => {
+      const id = '0198a1b2-0000-7000-8000-000000000001';
+      for (const perfil of ['ADMIN', 'COMERCIAL'] as Perfil[]) {
+        expect(await navegar(perfil, '/os/nova')).toBe('/os/nova');
+        expect(await navegar(perfil, `/os/${id}/editar`)).toBe(`/os/${id}/editar`);
+      }
+      // o canMatch recusa e a rota seguinte (os/:id) não pega "nova": o técnico vai para a raiz → /os
+      expect(await navegar('TECNICO', '/os/nova')).toBe('/os');
+      expect(await navegar('TECNICO', `/os/${id}/editar`)).toBe('/os');
     });
   });
 });

@@ -1,6 +1,6 @@
 import { afterNextRender, Component, computed, effect, ElementRef, inject, Injector, input, signal, viewChild } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
-import { RouterLink } from '@angular/router';
+import { Router, RouterLink } from '@angular/router';
 import { LucideCamera, LucideDynamicIcon, LucideMapPin, LucidePhone } from '@lucide/angular';
 import { ArquivosService, ErroDownload } from '../../core/arquivos/arquivos-service';
 import { AuthService } from '../../core/auth/auth-service';
@@ -19,7 +19,7 @@ import { arquivoPdf, compartilharArquivo, ResultadoCompartilhar } from '../propo
 import { DialogoMotivo } from '../propostas/dialogo-motivo';
 import { hojeReativo } from '../propostas/hoje-reativo';
 import { PdfPronto } from '../propostas/pdf-pronto';
-import { stripJava } from '../propostas/proposta-models';
+import { stripJava, type StatusProposta } from '../propostas/proposta-models';
 import { PropostasRepo } from '../propostas/propostas-repo';
 import { AssinaturaTela } from './assinatura-tela';
 import { ErroOs } from './erro-os';
@@ -27,8 +27,9 @@ import { mensagemErroOs, rotuloCampoOs, SeloOs, selosDaOs } from './formatos-os'
 import { GaleriaOs, MAX_FOTOS_OS, MOMENTOS, ROTULO_MOMENTO } from './galeria-os';
 import { ESTILO_SELO_OS } from './os-card';
 import {
-  camposEditaveisOs, codigoOsExibido, MomentoFoto, OsLocal, podeExecutar, RESUMO_MAX_OS, RESUMO_MIN_OS, rotuloStatusOs,
-  rotuloTipoOs, STATUS_OS, StatusOs, tamanhoTextoOs, textoOsValido, transicoesPermitidasOs, MOTIVO_MAX_OS, MOTIVO_MIN_OS,
+  camposEditaveisOs, codigoOsExibido, MomentoFoto, OsLocal, podeEditarCabecalho, podeExecutar, RESUMO_MAX_OS, RESUMO_MIN_OS,
+  rotuloStatusOs, rotuloTipoOs, STATUS_OS, StatusOs, tamanhoTextoOs, textoOsValido, transicoesPermitidasOs, MOTIVO_MAX_OS,
+  MOTIVO_MIN_OS,
 } from './os-models';
 import {
   AnexoOsVisivel, AssinaturaColhida, enderecoDaOs, EstadoSync, linhaDoEndereco, OsRepo,
@@ -109,9 +110,21 @@ interface AssinaturaVista {
   miniatura: Blob | null;
 }
 
+/** Os diálogos das ações do escritório (T4). */
+type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
+
 /**
  * A OS (`/os/:id`, spec M2 §9), a mesma página para todos os perfis (M2P3-R2): o técnico atribuído e o ADMIN executam;
- * o COMERCIAL (e o técnico que não é o atribuído) só lê. A T4 acrescenta aqui as ações do escritório.
+ * o COMERCIAL (e o técnico que não é o atribuído) só lê, salvo as notas do COMERCIAL responsável em ABERTA e
+ * EM_ANDAMENTO (a matriz, `camposEditaveisOs`). O COMERCIAL não abre a OS de outro (a mesma regra do `observarTodas`).
+ *
+ * - Escritório (T4, ADMIN e COMERCIAL responsável), conforme `transicoesPermitidasOs` e `camposEditaveisOs`: "Editar"
+ *   (`/os/:id/editar`, o cabeçalho), "Atribuir/Trocar técnico" (ABERTA e EM_ANDAMENTO; em andamento sem "Nenhum"),
+ *   "Cancelar OS" com o motivo (ADMIN; o COMERCIAL só em ABERTA), "Reabrir" com o motivo (ADMIN, CONCLUIDA), "Aceitar
+ *   o trabalho" com confirmação (M2-R4: ADMIN, a proposta CANCELADA e a OS não cancelada) e "Excluir OS" (ABERTA sem
+ *   técnico). Com a proposta cancelada, uma faixa avisa. A trava do CONFLITO (P4c-R15) vale para atribuir, cancelar,
+ *   reabrir e aceitar, como no repositório; o cabeçalho e a exclusão seguem. Cada ação guarda o id da OS no começo e
+ *   não escreve na tela se a rota trocou de OS no meio.
  *
  * - Cabeçalho: código, status, tipo e selos; o cliente (nome e telefone com `tel:`, nunca o CPF/CNPJ), o endereço
  *   *snapshot* com o link do mapa (nova aba), a data prevista e a proposta; no escritório, o técnico e o responsável.
@@ -213,6 +226,73 @@ interface AssinaturaVista {
           <section data-testid="cancelada" aria-labelledby="cancelada-titulo" class="space-y-1 rounded-xl bg-white p-4 text-sm">
             <h2 id="cancelada-titulo" class="font-semibold">OS cancelada</h2>
             <p class="whitespace-pre-line text-slate-700">{{ o.motivoCancelamento ?? 'Sem motivo informado.' }}</p>
+          </section>
+        }
+
+        @if (escritorio() && (temAcoesEscritorio() || propostaCancelada())) {
+          <section data-testid="acoes-os" aria-labelledby="acoes-os-titulo" class="space-y-3 rounded-xl bg-white p-4">
+            <h2 id="acoes-os-titulo" class="sr-only">Ações do escritório</h2>
+            @if (propostaCancelada()) {
+              <p data-testid="proposta-cancelada" class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
+                A proposta desta OS foi cancelada.
+                {{ admin() ? 'Aceite o trabalho para reabrir a proposta.' : 'Só o administrador aceita o trabalho, reabrindo a proposta.' }}
+              </p>
+            }
+            @if (conflito() && temAcaoTravada()) {
+              <p id="dica-pendencia-escritorio" class="text-sm text-amber-800">Resolva a pendência primeiro.</p>
+            }
+            <div class="flex flex-wrap gap-2">
+              @if (podeEditar()) {
+                <a [routerLink]="['/os', o.id, 'editar']"
+                   class="inline-flex h-12 items-center rounded-lg border border-slate-300 px-4 font-semibold text-slate-700">Editar</a>
+              }
+              @if (podeAtribuir() && !atribuindo()) {
+                <button #botaoAtribuir type="button" (click)="abrirAtribuir()" [disabled]="ocupado() || conflito()"
+                        [attr.aria-describedby]="conflito() ? 'dica-pendencia-escritorio' : null"
+                        class="h-12 rounded-lg border border-slate-300 px-4 font-semibold text-slate-700 disabled:opacity-60">
+                  {{ o.tecnicoId ? 'Trocar técnico' : 'Atribuir técnico' }}
+                </button>
+              }
+              @if (podeAceitar()) {
+                <button type="button" (click)="abrirDialogo('aceitar', $any($event.currentTarget))" [disabled]="ocupado() || conflito()"
+                        [attr.aria-describedby]="conflito() ? 'dica-pendencia-escritorio' : null"
+                        class="h-12 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60">Aceitar o trabalho</button>
+              }
+              @if (podeReabrir()) {
+                <button type="button" (click)="abrirDialogo('reabrir', $any($event.currentTarget))" [disabled]="ocupado() || conflito()"
+                        [attr.aria-describedby]="conflito() ? 'dica-pendencia-escritorio' : null"
+                        class="h-12 rounded-lg border border-slate-300 px-4 font-semibold text-slate-700 disabled:opacity-60">Reabrir</button>
+              }
+              @if (podeCancelar()) {
+                <button type="button" (click)="abrirDialogo('cancelar', $any($event.currentTarget))" [disabled]="ocupado() || conflito()"
+                        [attr.aria-describedby]="conflito() ? 'dica-pendencia-escritorio' : null"
+                        class="h-12 rounded-lg border border-red-300 px-4 font-semibold text-red-700 disabled:opacity-60">Cancelar OS</button>
+              }
+              @if (podeExcluir()) {
+                <button type="button" (click)="abrirDialogo('excluir', $any($event.currentTarget))" [disabled]="ocupado()"
+                        class="h-12 rounded-lg border border-red-300 px-4 font-semibold text-red-700 disabled:opacity-60">Excluir OS</button>
+              }
+            </div>
+            @if (atribuindo()) {
+              <div class="space-y-2">
+                <label for="tecnico-atribuir-os" class="block text-sm font-medium">Técnico da OS</label>
+                <select #selectTecnico id="tecnico-atribuir-os" (change)="tecnicoEscolhido.set($any($event.target).value)"
+                        class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3 sm:w-72">
+                  @if (o.status === 'ABERTA') {
+                    <option value="" [selected]="!tecnicoEscolhido()">Nenhum</option>
+                  }
+                  @for (t of tecnicos(); track t.id) {
+                    <option [value]="t.id" [selected]="t.id === tecnicoEscolhido()">{{ t.rotulo }}</option>
+                  }
+                </select>
+                <div class="flex gap-2">
+                  <button type="button" (click)="salvarTecnico()" [disabled]="ocupado() || conflito()"
+                          class="h-12 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 sm:flex-none">Salvar técnico</button>
+                  <button type="button" (click)="fecharAtribuir()"
+                          class="h-12 flex-1 rounded-lg border border-slate-300 px-4 font-semibold sm:flex-none">Cancelar</button>
+                </div>
+              </div>
+            }
           </section>
         }
 
@@ -549,6 +629,31 @@ interface AssinaturaVista {
         <app-assinatura-tela [gatilho]="gatilho()" [ocupado]="gravandoAssinatura()" [erro]="erroTelaAssinatura()"
                              (confirmado)="assinar($event)" (cancelado)="assinando.set(false)" />
       }
+      @switch (dialogoEscritorio()) {
+        @case ('cancelar') {
+          <app-dialogo-motivo [gatilho]="gatilho()" titulo="Cancelar OS"
+                              texto="O motivo fica no histórico da OS. A proposta não muda: decida depois se gera outra OS."
+                              rotuloConfirmar="Cancelar OS" rotuloCancelar="Voltar" [perigo]="true" [ocupado]="ocupado()"
+                              (confirmado)="cancelarOs($event)" (cancelado)="dialogoEscritorio.set(null)" />
+        }
+        @case ('reabrir') {
+          <app-dialogo-motivo [gatilho]="gatilho()" titulo="Reabrir OS"
+                              texto="A OS volta para em andamento, com uma nova revisão: o PDF da próxima conclusão sai com o código novo."
+                              rotuloConfirmar="Reabrir" rotuloCancelar="Voltar" [ocupado]="ocupado()"
+                              (confirmado)="reabrirOs($event)" (cancelado)="dialogoEscritorio.set(null)" />
+        }
+        @case ('aceitar') {
+          <app-dialogo-motivo [gatilho]="gatilho()" titulo="Aceitar o trabalho"
+                              texto="A proposta desta OS foi cancelada. Aceitar o trabalho reabre a proposta no servidor: ela volta para em execução, ou para finalizada se todo o trabalho acabou."
+                              rotuloConfirmar="Aceitar o trabalho" rotuloCancelar="Voltar" [pedirMotivo]="false" [ocupado]="ocupado()"
+                              (confirmado)="aceitarTrabalho()" (cancelado)="dialogoEscritorio.set(null)" />
+        }
+        @case ('excluir') {
+          <app-dialogo-motivo [gatilho]="gatilho()" titulo="Excluir OS" texto="A OS sai deste aparelho e do servidor. Não dá para desfazer."
+                              rotuloConfirmar="Excluir" rotuloCancelar="Voltar" [pedirMotivo]="false" [perigo]="true" [ocupado]="ocupado()"
+                              (confirmado)="excluirOs()" (cancelado)="dialogoEscritorio.set(null)" />
+        }
+      }
       @if (recusando()) {
         <app-dialogo-motivo [gatilho]="gatilho()" titulo="Cliente não pôde assinar"
                             texto="O motivo vai no PDF da OS, no lugar da assinatura." rotuloConfirmar="Registrar"
@@ -562,6 +667,8 @@ export class OsExecucaoPage {
   readonly id = input.required<string>();
 
   private readonly repo = inject(OsRepo);
+  private readonly propostas = inject(PropostasRepo);
+  private readonly router = inject(Router);
   private readonly pdf = inject(PdfService);
   private readonly arquivos = inject(ArquivosService);
   private readonly toasts = inject(Toasts);
@@ -578,13 +685,15 @@ export class OsExecucaoPage {
   private readonly botaoConcluir = viewChild<ElementRef<HTMLButtonElement>>('botaoConcluir');
   private readonly tituloFotos = viewChild<ElementRef<HTMLElement>>('tituloFotos');
   private readonly visorDocumento = viewChild('visorDocumento', { read: VisorPdf });
+  private readonly botaoAtribuir = viewChild<ElementRef<HTMLButtonElement>>('botaoAtribuir');
+  private readonly selectTecnico = viewChild<ElementRef<HTMLSelectElement>>('selectTecnico');
 
   protected readonly os = signal<OsLocal | undefined>(undefined);
   private readonly carregou = signal(false);
   protected readonly anexos = signal<AnexoOsVisivel[]>([]);
   protected readonly pendencias = signal<Pendencia[]>([]);
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
-  private readonly usuarios = toSignal(inject(PropostasRepo).observarUsuarios(), { initialValue: [] });
+  private readonly usuarios = toSignal(this.propostas.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
   });
@@ -618,6 +727,11 @@ export class OsExecucaoPage {
   protected readonly erroResumo = signal<string | null>(null);
   protected readonly erroAssinatura = signal<string | null>(null);
   protected readonly precisaVoltar = signal(false);
+  /** T4: o diálogo aberto de uma ação do escritório, a atribuição em edição e o status da proposta da OS. */
+  protected readonly dialogoEscritorio = signal<DialogoEscritorio | null>(null);
+  protected readonly atribuindo = signal(false);
+  protected readonly tecnicoEscolhido = signal('');
+  private readonly statusProposta = signal<StatusProposta | null>(null);
 
   protected readonly uploadAnexo = TIPO_UPLOAD_ANEXO_OS;
   protected readonly momentos = MOMENTOS;
@@ -665,13 +779,14 @@ export class OsExecucaoPage {
     return !!o && !!u && this.executor() && podeExecutar(o.status, u.perfil, this.ehTecnicoAtribuido());
   });
   /**
-   * Notas: quem executa, pela matriz. Depois do encerramento (M2P1-R26, M2P3-R9: a evidência do campo), em CONCLUIDA o
-   * ADMIN e o técnico atribuído; em CANCELADA só o técnico atribuído.
+   * Notas, pela matriz (`camposEditaveisOs`): em ABERTA e EM_ANDAMENTO, quem executa e o COMERCIAL responsável (T4).
+   * Depois do encerramento (M2P1-R26, M2P3-R9: a evidência do campo), em CONCLUIDA o ADMIN e o técnico atribuído; em
+   * CANCELADA só o técnico atribuído.
    */
   protected readonly podeNotar = computed(() => {
     const o = this.os();
     const u = this.usuario();
-    if (!o || !u || !this.executor()) return false;
+    if (!o || !u) return false;
     return camposEditaveisOs(o.status, u.perfil, this.ehResponsavel(), this.ehTecnicoAtribuido()).includes('notas');
   });
   /**
@@ -691,6 +806,61 @@ export class OsExecucaoPage {
     const o = this.os();
     return o && this.executor() ? motivoParaRegerarOs(o, this.anexos(), this.pendencias()) : null;
   });
+
+  // ---- escritório (T4) ----
+
+  protected readonly admin = computed(() => this.usuario()?.perfil === 'ADMIN');
+  /** "Editar" (o cabeçalho): ADMIN e COMERCIAL responsável, em ABERTA e EM_ANDAMENTO (`podeEditarCabecalho`). */
+  protected readonly podeEditar = computed(() => {
+    const o = this.os();
+    const u = this.usuario();
+    return !!o && !!u && this.escritorio() && podeEditarCabecalho(o.status, u.perfil, this.ehResponsavel());
+  });
+  /** O técnico (`atribuir`): ADMIN e COMERCIAL responsável, em ABERTA e EM_ANDAMENTO. */
+  protected readonly podeAtribuir = computed(() => {
+    const o = this.os();
+    const u = this.usuario();
+    return !!o && !!u && this.escritorio() && camposEditaveisOs(o.status, u.perfil, this.ehResponsavel(), false).includes('tecnicoId');
+  });
+  /** → CANCELADA: o ADMIN em ABERTA e EM_ANDAMENTO; o COMERCIAL responsável só em ABERTA. */
+  protected readonly podeCancelar = computed(() => {
+    const o = this.os();
+    const u = this.usuario();
+    return !!o && !!u && this.escritorio() && transicoesPermitidasOs(o.status, u.perfil, this.ehResponsavel(), false).includes('CANCELADA');
+  });
+  /** CONCLUIDA → EM_ANDAMENTO: só o ADMIN. */
+  protected readonly podeReabrir = computed(() => {
+    const o = this.os();
+    const u = this.usuario();
+    return o?.status === 'CONCLUIDA' && !!u && this.escritorio()
+      && transicoesPermitidasOs('CONCLUIDA', u.perfil, this.ehResponsavel(), false).includes('EM_ANDAMENTO');
+  });
+  /**
+   * A proposta da OS (no aparelho) está cancelada e a OS não: o caso do M2-R4. A recusada não entra (o servidor só
+   * reabre a cancelada, e o `aceitarTrabalho` a recusa no aparelho).
+   */
+  protected readonly propostaCancelada = computed(() => {
+    const o = this.os();
+    return !!o?.propostaId && o.status !== 'CANCELADA' && this.statusProposta() === 'CANCELADA';
+  });
+  /** M2-R4: só o ADMIN aceita o trabalho. */
+  protected readonly podeAceitar = computed(() => this.admin() && this.propostaCancelada());
+  /** Como o DELETE do servidor: ABERTA sem técnico (com técnico, cancela-se), pelo ADMIN ou o COMERCIAL responsável. */
+  protected readonly podeExcluir = computed(() => {
+    const o = this.os();
+    return !!o && o.status === 'ABERTA' && o.tecnicoId === null && (this.admin() || (this.escritorio() && this.ehResponsavel()));
+  });
+  protected readonly temAcaoTravada = computed(() => this.podeAtribuir() || this.podeCancelar() || this.podeReabrir() || this.podeAceitar());
+  protected readonly temAcoesEscritorio = computed(() => this.temAcaoTravada() || this.podeEditar() || this.podeExcluir());
+  /** Os técnicos para a atribuição: os ativos e, se for o caso, o atual inativo (marcado). */
+  protected readonly tecnicos = computed(() => {
+    const atual = this.os()?.tecnicoId ?? null;
+    return this.usuarios()
+      .filter((u) => u.perfil === 'TECNICO' && (u.ativo !== false || u.id === atual))
+      .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
+      .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
+  });
+  private readonly propostaDaOs = computed(() => this.os()?.propostaId ?? null);
 
   // ---- cabeçalho ----
 
@@ -797,7 +967,9 @@ export class OsExecucaoPage {
       this.limparFormulario();
       let primeira = true;
       const assinaturas = [
-        this.repo.observarOs(id).subscribe((o) => {
+        this.repo.observarOs(id).subscribe((lida) => {
+          // T4: o COMERCIAL não abre a OS de outro comercial (o filtro do `observarTodas`)
+          const o = lida && this.podeVer(lida) ? lida : undefined;
           // a OS reaberta traz o resumo da conclusão anterior: ele vem preenchido
           if (primeira) this.resumo.set(o?.resumoExecucao ?? '');
           primeira = false;
@@ -808,6 +980,14 @@ export class OsExecucaoPage {
         this.repo.observarPendencias(id).subscribe((x) => this.pendencias.set(x)),
       ];
       aoLimpar(() => assinaturas.forEach((a) => a.unsubscribe()));
+    });
+    // T4: o status da proposta da OS (o "Aceitar o trabalho" e a faixa da proposta cancelada), só no escritório
+    effect((aoLimpar) => {
+      const propostaId = this.propostaDaOs();
+      this.statusProposta.set(null);
+      if (!propostaId || !this.escritorio()) return;
+      const assinatura = this.propostas.observarProposta(propostaId).subscribe((p) => this.statusProposta.set(p?.status ?? null));
+      aoLimpar(() => assinatura.unsubscribe());
     });
     // a miniatura da assinatura (o próprio PNG) num URL de blob, revogado quando muda e no destroy
     effect((aoLimpar) => {
@@ -840,6 +1020,84 @@ export class OsExecucaoPage {
   /** As mensagens dos campos recusados, com o rótulo do campo: "Resumo da execução: …". */
   protected camposDa(x: Pendencia): string[] {
     return Object.entries(x.erro?.campos ?? {}).map(([campo, mensagem]) => `${rotuloCampoOs(campo)}: ${mensagem}`);
+  }
+
+  private podeVer(o: OsLocal): boolean {
+    const u = this.usuario();
+    return u?.perfil !== 'COMERCIAL' || o.responsavelId === u.id;
+  }
+
+  // ---- escritório (T4) ----
+
+  protected abrirDialogo(d: DialogoEscritorio, gatilho: HTMLElement | null): void {
+    this.gatilho.set(gatilho);
+    this.dialogoEscritorio.set(d);
+  }
+
+  protected abrirAtribuir(): void {
+    this.tecnicoEscolhido.set(this.os()?.tecnicoId ?? '');
+    this.atribuindo.set(true);
+    afterNextRender(() => this.selectTecnico()?.nativeElement.focus(), { injector: this.injector });
+  }
+
+  protected fecharAtribuir(): void {
+    this.atribuindo.set(false);
+    this.devolverFoco(() => this.botaoAtribuir()?.nativeElement);
+  }
+
+  /** O técnico novo (`atribuir`: TECNICO ativo; em andamento não fica sem técnico; trava do CONFLITO). */
+  protected async salvarTecnico(): Promise<void> {
+    const tecnicoId = this.tecnicoEscolhido() || null;
+    await this.acaoEscritorio((id) => this.repo.atribuir(id, { tecnicoId }), 'Técnico atualizado.', () => {
+      this.atribuindo.set(false);
+      this.devolverFoco(() => this.botaoAtribuir()?.nativeElement);
+    });
+  }
+
+  protected async cancelarOs(motivo: string | null): Promise<void> {
+    if (motivo === null) return;
+    await this.acaoEscritorio((id) => this.repo.cancelar(id, motivo), 'OS cancelada.', () => this.focarTitulo());
+  }
+
+  protected async reabrirOs(motivo: string | null): Promise<void> {
+    if (motivo === null) return;
+    await this.acaoEscritorio((id) => this.repo.reabrir(id, motivo), 'OS reaberta.', () => this.focarTitulo());
+  }
+
+  /** M2-R4: o comando vai na fila; o servidor reabre a proposta (EM_EXECUCAO, ou FINALIZADA se o trabalho acabou). */
+  protected async aceitarTrabalho(): Promise<void> {
+    await this.acaoEscritorio(
+      (id) => this.repo.aceitarTrabalho(id), 'Trabalho aceito. A proposta será reaberta ao sincronizar.', () => this.focarTitulo(),
+    );
+  }
+
+  /** A OS sai do aparelho (e do servidor): a tela volta para a proposta dela, ou para a lista na avulsa. */
+  protected async excluirOs(): Promise<void> {
+    const propostaId = this.os()?.propostaId ?? null;
+    await this.acaoEscritorio((id) => this.repo.excluir(id), 'OS excluída.', () => {
+      void this.router.navigate(propostaId ? ['/propostas', propostaId] : ['/os']);
+    });
+  }
+
+  /**
+   * Uma ação do escritório: guarda o id no começo e, se a rota trocou de OS enquanto ela gravava, não escreve nada na
+   * tela (nem o aviso, nem o erro): o resultado não é desta OS. Na recusa, o diálogo fica aberto (com o motivo).
+   */
+  private async acaoEscritorio(fazer: (id: string) => Promise<void>, aviso: string, depois: () => void): Promise<void> {
+    if (this.ocupado()) return;
+    const id = this.id();
+    this.ocupado.set(true);
+    try {
+      await fazer(id);
+      if (this.id() !== id) return;
+      this.dialogoEscritorio.set(null);
+      this.avisar(aviso);
+      depois();
+    } catch (e) {
+      if (this.id() === id) this.toasts.erro(mensagemErroOs(e));
+    } finally {
+      this.ocupado.set(false);
+    }
   }
 
   // ---- iniciar ----
@@ -1233,6 +1491,8 @@ export class OsExecucaoPage {
     this.assinando.set(false);
     this.recusando.set(false);
     this.documentoAberto.set(null);
+    this.dialogoEscritorio.set(null);
+    this.atribuindo.set(false);
   }
 
   /** O foco vai ao título depois do próximo desenho (o botão da ação some com a mudança de status). */

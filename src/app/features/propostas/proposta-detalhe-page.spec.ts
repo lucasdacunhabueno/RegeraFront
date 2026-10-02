@@ -13,6 +13,7 @@ import { Pendencia, TIPO_UPLOAD_DOCUMENTO, UsuarioResumo } from '../../core/sync
 import { Toasts } from '../../shared/ui/toasts';
 import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import { OsRepo } from '../os/os-repo';
 import { ItemPropostaLocal, PropostaDados, PropostaLocal, StatusProposta } from './proposta-models';
 import { DocumentoDaProposta, ErroProposta, EstadoSync, PropostasRepo } from './propostas-repo';
 import { PropostaDetalhePage } from './proposta-detalhe-page';
@@ -132,6 +133,11 @@ async function montar(o: Opcoes = {}) {
       { provide: AuthService, useValue: { usuario: signal(o.usuario ?? COMERCIAL) } },
       { provide: PropostasRepo, useValue: repo },
       { provide: ClientesRepo, useValue: { observarTodos: () => of([CLIENTE]) } },
+      // M2-P3: a seção "Ordens de serviço" (os-da-proposta.spec cobre a lista e o "Gerar OS")
+      {
+        provide: OsRepo,
+        useValue: { observarDaProposta: vi.fn(() => of([])), observarEstadoSync: () => of({ naOutbox: new Set(), comPendencia: new Set(), comConflito: new Set() }) },
+      },
       { provide: PdfService, useValue: pdf },
       { provide: ArquivosService, useValue: arquivos },
       { provide: ConectividadeService, useValue: { online } },
@@ -320,6 +326,25 @@ describe('PropostaDetalhePage', () => {
       expect(el.querySelector('a[data-testid=cliente]')).toBeNull();
       expect(el.querySelector('[data-testid=pendencia]')).toBeNull();
       expect(repo.observarDocumentos).not.toHaveBeenCalled();
+      // M2-P3: nem as OS (o técnico as vê em Minhas OS)
+      expect(el.querySelector('[data-testid=os-da-proposta]')).toBeNull();
+    });
+  });
+
+  describe('M2-P3: "Ordens de serviço"', () => {
+    it('a seção das OS da proposta, para o escritório, com o "Gerar OS" na aprovada do responsável', async () => {
+      const { el } = await montar({ proposta: proposta({ status: 'APROVADA' }) });
+      const secao = el.querySelector('[data-testid=os-da-proposta]')!;
+      expect(secao.querySelector('h2')!.textContent).toContain('Ordens de serviço');
+      expect([...secao.querySelectorAll('button')].map((b) => b.textContent?.trim())).toEqual(['Gerar OS']);
+      expect(TestBed.inject(OsRepo).observarDaProposta).toHaveBeenCalledWith('p1');
+    });
+
+    it('sem "Gerar OS" fora de APROVADA e EM_EXECUCAO; a lista continua', async () => {
+      const { el } = await montar({ usuario: ADMIN, proposta: proposta({ status: 'FINALIZADA' }) });
+      const secao = el.querySelector('[data-testid=os-da-proposta]')!;
+      expect(secao.querySelectorAll('button')).toHaveLength(0);
+      expect(secao.textContent).toContain('Nenhuma OS para esta proposta.');
     });
   });
 

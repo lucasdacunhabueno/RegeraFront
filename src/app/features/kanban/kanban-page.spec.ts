@@ -13,6 +13,8 @@ import { ErroCampo } from '../../core/util/erro-campo';
 import { Toasts } from '../../shared/ui/toasts';
 import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import { OsDados, OsLocal, paraOsLocal, StatusOs } from '../os/os-models';
+import { OsRepo } from '../os/os-repo';
 import { PropostaLocal, StatusProposta } from '../propostas/proposta-models';
 import { EstadoSync, PropostasRepo } from '../propostas/propostas-repo';
 
@@ -69,7 +71,16 @@ interface Opcoes {
   todas?: Observable<PropostaLocal[]>;
   estado?: Observable<EstadoSync>;
   transicionar?: (id: string, para: StatusProposta, motivo?: string | null) => Promise<void>;
+  /** As OS que o perfil vê (`OsRepo.observarTodas`): os selos da OS nos cards. */
+  oss?: Observable<OsLocal[]>;
 }
+
+/** Uma OS da proposta `propostaId` no status dado. */
+const osDe = (id: string, propostaId: string, status: StatusOs, extra: Partial<OsDados> = {}): OsLocal =>
+  paraOsLocal(id, 1, {
+    codigoProvisorio: 'OSP-AAAAAA', propostaId, clienteId: 'c1', tipo: 'SERVICO', status, urgente: false, concluiProposta: true,
+    assinaturaRecusada: false, itens: [], notas: [], ...extra,
+  });
 
 const originalMatchMedia = window.matchMedia;
 
@@ -97,6 +108,7 @@ function montar(o: Opcoes = {}) {
       { provide: AuthService, useValue: { usuario: signal(o.usuario ?? ADMIN) } },
       { provide: PropostasRepo, useValue: repo },
       { provide: ClientesRepo, useValue: { observarTodos: () => of(CLIENTES) } },
+      { provide: OsRepo, useValue: { observarTodas: () => o.oss ?? of([]) } },
     ],
   });
   const router = TestBed.inject(Router);
@@ -361,6 +373,54 @@ describe('KanbanPage', () => {
         expect(repo.transicionar).not.toHaveBeenCalled();
         expect(codigos(coluna(el, 'ENVIADA'))).toContain('000277');
       });
+    });
+  });
+
+  describe('selos das OS (M2-P3)', () => {
+    const selosDoCard = (el: HTMLElement, id: string) =>
+      [...(cartao(el, id)?.querySelectorAll('[data-selo]') ?? [])].map((s) => s.getAttribute('data-selo'));
+
+    it('cada card ganha os selos das OS da própria proposta, depois dos dele', () => {
+      const { el } = montar({
+        desktop: true,
+        estado: of({ ...VAZIO, naOutbox: new Set(['h']) }),
+        oss: of([
+          osDe('o1', 'h', 'EM_ANDAMENTO'),
+          osDe('o2', 'c', 'CANCELADA'),
+          osDe('o3', 'i', 'CONCLUIDA'),
+        ]),
+      });
+      expect(selosDoCard(el, 'h')).toEqual(['nao-sincronizada', 'os-em-andamento']);
+      expect(selosDoCard(el, 'c')).toEqual(['os-cancelada']);
+      expect(selosDoCard(el, 'a')).toEqual([]);
+    });
+
+    it('"OS concluída" na FINALIZADA e "Retorno pendente" em execução (Q21)', () => {
+      const { el, fixture } = montar({
+        desktop: true,
+        oss: of([osDe('o1', 'i', 'CONCLUIDA'), osDe('o2', 'h', 'CONCLUIDA', { concluiProposta: false })]),
+      });
+      botao(el, 'Mostrar encerradas')!.click();
+      fixture.detectChanges();
+      expect(selosDoCard(el, 'i')).toEqual(['os-concluida']);
+      expect(selosDoCard(el, 'h')).toEqual(['os-concluida', 'retorno-pendente']);
+      expect(cartao(el, 'h')!.textContent).toContain('Retorno pendente');
+    });
+
+    it('"Trabalho em proposta cancelada" (M2-R4) no card da cancelada', () => {
+      const { el, fixture } = montar({ desktop: true, oss: of([osDe('o1', 'd', 'EM_ANDAMENTO')]) });
+      botao(el, 'Mostrar encerradas')!.click();
+      fixture.detectChanges();
+      expect(selosDoCard(el, 'd')).toEqual(['trabalho-proposta-cancelada', 'os-em-andamento']);
+    });
+
+    it('os selos acompanham a OS (o sync que conclui a OS chega ao card)', () => {
+      const oss = new BehaviorSubject<OsLocal[]>([osDe('o1', 'h', 'EM_ANDAMENTO')]);
+      const { el, fixture } = montar({ desktop: true, oss });
+      expect(selosDoCard(el, 'h')).toEqual(['os-em-andamento']);
+      oss.next([osDe('o1', 'h', 'CONCLUIDA')]);
+      fixture.detectChanges();
+      expect(selosDoCard(el, 'h')).toEqual(['os-concluida']);
     });
   });
 

@@ -12,6 +12,7 @@ import { formatarDocumento, formatarTelefone } from '../../core/util/formatos';
 import { Toasts } from '../../shared/ui/toasts';
 import { VisorPdf } from '../../shared/ui/visor-pdf';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import { OsDaProposta } from '../os/os-da-proposta';
 import { deCentesimos, deMilesimos } from './calculo';
 import { arquivoPdf, compartilharArquivo, ResultadoCompartilhar } from './compartilhar';
 import { DialogoMotivo } from './dialogo-motivo';
@@ -86,6 +87,8 @@ interface LinhaItem {
  * - Ações: só as de `transicoesPermitidas` (e Editar, Enviar, Ver prévia, Duplicar, Excluir rascunho); RECUSADA e
  *   CANCELADA pedem o motivo (`DialogoMotivo`); com CONFLITO, as transições, Editar, Enviar e "Gerar PDF novamente"
  *   ficam desabilitados (P4c-R15).
+ * - M2-P3: "Ordens de serviço" (`OsDaProposta`): as OS da proposta e o "Gerar OS" (APROVADA ou EM_EXECUCAO, ADMIN ou
+ *   COMERCIAL responsável).
  * - Pendências (§11.5): faixa com o link para Pendências; "Corrigir e reenviar" na recusa corrigível (P4c-R4) e
  *   "Gerar PDF novamente" no `CODIGO_EXIBIDO_INVALIDO` ou sem o PDF da revisão (P4b-R13).
  * O técnico (§10) vê só código, cliente (nome, endereço, telefone), tipo, status, técnico, validade, prazo e os itens
@@ -94,7 +97,7 @@ interface LinhaItem {
  */
 @Component({
   selector: 'app-proposta-detalhe-page',
-  imports: [RouterLink, LucideDynamicIcon, VisorPdf, PdfPronto, DialogoMotivo],
+  imports: [RouterLink, LucideDynamicIcon, VisorPdf, PdfPronto, DialogoMotivo, OsDaProposta],
   template: `
     <a routerLink="/propostas" class="inline-flex min-h-12 items-center text-sm text-blue-700">← Propostas</a>
     <p role="status" aria-live="polite" class="sr-only">{{ anuncio() }}</p>
@@ -293,6 +296,10 @@ interface LinhaItem {
             </dd>
           </dl>
         </section>
+
+        @if (!restrito()) {
+          <app-os-da-proposta class="block" [proposta]="p" [clienteNome]="cliente()?.nome ?? ''" />
+        }
 
         <section aria-labelledby="itens-titulo" class="space-y-3 rounded-xl bg-white p-4">
           <h2 id="itens-titulo" class="font-semibold">Itens</h2>

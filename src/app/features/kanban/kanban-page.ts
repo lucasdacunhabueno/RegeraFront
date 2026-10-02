@@ -10,6 +10,9 @@ import { LucideDynamicIcon, LucideListFilter } from '@lucide/angular';
 import { AuthService } from '../../core/auth/auth-service';
 import { Toasts } from '../../shared/ui/toasts';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import { SeloOsProposta, selosOsDaProposta } from '../os/formatos-os';
+import type { OsLocal } from '../os/os-models';
+import { OsRepo } from '../os/os-repo';
 import { DialogoMotivo } from '../propostas/dialogo-motivo';
 import { correspondeABusca, mensagemErroProposta, moedaCentavos, rotuloCodigo, Selo, selosDaProposta } from '../propostas/formatos-proposta';
 import { hojeReativo } from '../propostas/hoje-reativo';
@@ -29,6 +32,8 @@ interface Cartao {
   clienteNome: string;
   responsavelNome: string | null;
   selos: Selo[];
+  /** M2-P3: os selos das OS da proposta (em andamento, concluída, retorno pendente, cancelada, trabalho na cancelada). */
+  selosOs: SeloOsProposta[];
   /** Os destinos de "Mover para…" (vazio: nem o botão aparece, nem arrasta). */
   destinos: StatusProposta[];
   /** Pendência de CONFLITO: nada se move até resolver (como no detalhe). */
@@ -67,6 +72,8 @@ function midiaDesktop(): Signal<boolean> {
  *   O "Mover para…" fica também, porque o arrasto do CDK não tem teclado.
  * - Celular: uma coluna por vez, em abas (tablist da APG, com a contagem), e "Mover para…" em cada card.
  * Os filtros (tipo, emissão de/até, busca e, para o admin, responsável) valem enquanto a página está aberta.
+ * M2-P3: cada card leva os selos das OS da proposta (`selosOsDaProposta`, das OS do aparelho que o perfil vê): a OS
+ * concluída no campo aparece como "OS concluída" no pull seguinte, e a cancelada como "OS cancelada" sem mover o card.
  */
 @Component({
   selector: 'app-kanban-page',
@@ -211,7 +218,7 @@ function midiaDesktop(): Signal<boolean> {
     <ng-template #cartao let-k>
       <div [attr.data-proposta]="k.proposta.id" class="rounded-xl bg-white shadow-sm">
         <app-proposta-card [proposta]="k.proposta" [clienteNome]="k.clienteNome" [responsavelNome]="k.responsavelNome"
-                           [mostrarValores]="!restrito()" [selos]="k.selos" [mostrarStatus]="false" />
+                           [mostrarValores]="!restrito()" [selos]="k.selos" [selosOs]="k.selosOs" [mostrarStatus]="false" />
         @if (k.destinos.length > 0) {
           <app-menu-mover class="block px-4 pb-3" [destinos]="k.destinos" [codigo]="k.codigo" [bloqueado]="k.conflito"
                           (escolhido)="aoEscolher(k.proposta, $event)" (fechouBloqueado)="focarLinkDoCard(k.proposta.id)" />
@@ -286,6 +293,18 @@ export class KanbanPage {
   /** undefined até a primeira leitura do banco (sem isso o quadro piscaria vazio). */
   private readonly propostas = toSignal(this.repo.observarTodas());
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
+  /** As OS que o perfil vê, agrupadas pela proposta (a avulsa não entra). */
+  private readonly oss = toSignal(inject(OsRepo).observarTodas(), { initialValue: [] as OsLocal[] });
+  private readonly osPorProposta = computed(() => {
+    const mapa = new Map<string, OsLocal[]>();
+    for (const o of this.oss()) {
+      if (o.propostaId === null) continue;
+      const lista = mapa.get(o.propostaId);
+      if (lista) lista.push(o);
+      else mapa.set(o.propostaId, [o]);
+    }
+    return mapa;
+  });
   private readonly usuarios = toSignal(this.repo.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
@@ -331,6 +350,7 @@ export class KanbanPage {
     const perfil = this.usuario()?.perfil;
     const eu = this.usuario()?.id;
     const valores = !this.restrito();
+    const oss = this.osPorProposta();
     return [...grupos].map(([status, lista]) => ({
       status,
       rotulo: STATUS_PROPOSTA[status].rotulo,
@@ -341,6 +361,7 @@ export class KanbanPage {
         clienteNome: p.clienteId ? (clientes.get(p.clienteId)?.nome ?? 'Cliente não encontrado') : 'Sem cliente',
         responsavelNome: nomes.get(p.responsavelId) ?? null,
         selos: selosDaProposta(p, { pendente: comPendencia.has(p.id), naoSincronizada: naOutbox.has(p.id), hoje }),
+        selosOs: selosOsDaProposta(p.status, oss.get(p.id) ?? []),
         destinos: destinos(p, perfil, eu),
         conflito: comConflito.has(p.id),
       })),

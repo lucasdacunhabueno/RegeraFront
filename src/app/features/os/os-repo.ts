@@ -113,6 +113,11 @@ const TIPO_DA_PROPOSTA: Readonly<Record<TipoProposta, TipoOs>> = {
   VENDA: 'ENTREGA', SERVICO: 'SERVICO', MANUTENCAO: 'MANUTENCAO', LOCACAO: 'ENTREGA',
 };
 
+/** O tipo da OS que o `gerarDaProposta` deriva do tipo da proposta (VENDA e LOCACAO → ENTREGA). */
+export function tipoOsDaProposta(tipo: TipoProposta): TipoOs {
+  return TIPO_DA_PROPOSTA[tipo];
+}
+
 // --- tipos da API ---
 
 /** Endereço do serviço (o *snapshot* na OS). */
@@ -318,6 +323,17 @@ function dataValida(d: string): boolean {
 function cortar(t: string, max: number): string {
   const pontos = [...t];
   return pontos.length > max ? pontos.slice(0, max).join('') : t;
+}
+
+/**
+ * A descrição que a OS da proposta copia (e que a tela do "Gerar OS" mostra para revisão, M2P2-R17): as observações e
+ * o prazo de execução da proposta, cortada em 4.000 code points; null sem nenhum dos dois.
+ */
+export function descricaoDaProposta(p: { observacoes: string | null; prazoExecucao: string | null }): string | null {
+  const prazo = texto(p.prazoExecucao);
+  return texto(cortar(
+    [texto(p.observacoes), prazo && `Prazo de execução: ${prazo}`].filter((x) => !!x).join('\n\n'), MAX_DESCRICAO,
+  ));
 }
 
 /**
@@ -753,10 +769,7 @@ export class OsRepo {
         ordem: i,
       });
     }
-    const prazo = texto(proposta.prazoExecucao);
-    const descricao = opcoes.descricao !== undefined ? texto(opcoes.descricao) : texto(cortar(
-      [texto(proposta.observacoes), prazo && `Prazo de execução: ${prazo}`].filter((x) => !!x).join('\n\n'), MAX_DESCRICAO,
-    ));
+    const descricao = opcoes.descricao !== undefined ? texto(opcoes.descricao) : descricaoDaProposta(proposta);
     const os = this.nova({
       propostaId,
       clienteId: proposta.clienteId,
