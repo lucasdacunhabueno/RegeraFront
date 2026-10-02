@@ -70,14 +70,36 @@ const SHA_PNG = 'd'.repeat(64);
 const PDF = '%PDF-1.7 os';
 
 describe('ordenarParaTecnico', () => {
-  it('data prevista ascendente, sem data no fim; no mesmo dia, as urgentes primeiro', () => {
-    const os = (id: string, dataPrevista: string | null, urgente = false, atualizadoEm: string | null = null) =>
-      ({ id, dataPrevista, urgente, atualizadoEm });
-    const lista = [
-      os('a', null), os('b', '2026-10-03'), os('c', '2026-10-02'), os('d', '2026-10-03', true), os('e', null, true),
-      os('f', '2026-10-02', false, '2026-10-01T12:00:00Z'),
-    ];
-    expect(ordenarParaTecnico(lista).map((x) => x.id)).toEqual(['f', 'c', 'd', 'b', 'e', 'a']);
+  const os = (id: string, dataPrevista: string | null, urgente = false, atualizadoEm: string | null = null) =>
+    ({ id, dataPrevista, urgente, atualizadoEm });
+  const lista = () => [
+    os('a', null), os('b', '2026-10-03'), os('c', '2026-10-02'), os('d', '2026-10-03', true), os('e', null, true),
+    os('f', '2026-10-02', false, '2026-10-01T12:00:00Z'), os('g', null, false, '2026-10-01T12:00:00Z'),
+  ];
+
+  it('data prevista ascendente, a normal sem data no fim; no mesmo dia, as urgentes primeiro', () => {
+    // hoje antes de todas as datas: a urgente sem data (hoje) vem primeiro
+    expect(ordenarParaTecnico(lista(), '2026-10-01').map((x) => x.id)).toEqual(['e', 'f', 'c', 'd', 'b', 'g', 'a']);
+  });
+
+  it('M2P3-R8: a urgente sem data prevista conta como de hoje (no topo do dia, com as urgentes de hoje)', () => {
+    // hoje = 10-02: entra no dia 10-02, antes das normais dele
+    expect(ordenarParaTecnico(lista(), '2026-10-02').map((x) => x.id)).toEqual(['e', 'f', 'c', 'd', 'b', 'g', 'a']);
+    // hoje = 10-03: entra no dia 10-03 com a urgente 'd' (empate desfeito como sempre: atualizadoEm, depois o id desc)
+    expect(ordenarParaTecnico(lista(), '2026-10-03').map((x) => x.id)).toEqual(['f', 'c', 'e', 'd', 'b', 'g', 'a']);
+    // hoje depois de todas: as datadas atrasadas vêm antes; a normal sem data continua no fim
+    expect(ordenarParaTecnico(lista(), '2026-10-09').map((x) => x.id)).toEqual(['f', 'c', 'd', 'b', 'e', 'g', 'a']);
+  });
+
+  it('sem `hoje`, usa a data de São Paulo do relógio', () => {
+    vi.useFakeTimers({ toFake: ['Date'] });
+    try {
+      // 02:30 UTC de 10-03 ainda é 10-02 em São Paulo
+      vi.setSystemTime(new Date('2026-10-03T02:30:00Z'));
+      expect(ordenarParaTecnico(lista()).map((x) => x.id)).toEqual(['e', 'f', 'c', 'd', 'b', 'g', 'a']);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

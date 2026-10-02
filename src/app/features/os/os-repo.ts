@@ -20,7 +20,7 @@ import type { ClienteLocal, EnderecoDados } from '../clientes/cliente-models';
 import { EmpresaLocal, ID_EMPRESA } from '../empresa/empresa-models';
 import { deMilesimos } from '../propostas/calculo';
 import { ordenarPorAtualizacao, stripJava } from '../propostas/proposta-models';
-import type { EstadoSync } from '../propostas/propostas-repo';
+import { type EstadoSync, hojeEmSaoPaulo } from '../propostas/propostas-repo';
 import type { TipoProposta } from '../templates/template-models';
 import { gerarCodigoProvisorioOs } from './codigo-provisorio-os';
 import { ErroOs } from './erro-os';
@@ -352,16 +352,23 @@ function camposDoEndereco(e: EnderecoOs | EnderecoDados | undefined): Pick<OsLoc
 }
 
 /**
- * Técnico: por data prevista ascendente (sem data no fim); no mesmo dia, as urgentes primeiro; depois a atualizada
- * mais recentemente. Ordena no lugar.
+ * Técnico: por data prevista ascendente (a normal sem data no fim); no mesmo dia, as urgentes primeiro; depois a
+ * atualizada mais recentemente. M2P3-R8: a urgente sem data prevista conta como de `hoje` (`aaaa-mm-dd` em São Paulo),
+ * no topo do dia, em vez de ir para o fim. Ordena no lugar.
  */
-export function ordenarParaTecnico<T extends Pick<OsLocal, 'id' | 'dataPrevista' | 'urgente' | 'atualizadoEm'>>(lista: T[]): T[] {
+export function ordenarParaTecnico<T extends Pick<OsLocal, 'id' | 'dataPrevista' | 'urgente' | 'atualizadoEm'>>(
+  lista: T[],
+  hoje: string = hojeEmSaoPaulo(),
+): T[] {
   const instante = (o: T) => (o.atualizadoEm ? Date.parse(o.atualizadoEm) : Number.NEGATIVE_INFINITY);
+  const data = (o: T) => o.dataPrevista ?? (o.urgente ? hoje : null);
   return lista.sort((a, b) => {
-    if (a.dataPrevista !== b.dataPrevista) {
-      if (a.dataPrevista === null) return 1;
-      if (b.dataPrevista === null) return -1;
-      return a.dataPrevista < b.dataPrevista ? -1 : 1;
+    const da = data(a);
+    const db = data(b);
+    if (da !== db) {
+      if (da === null) return 1;
+      if (db === null) return -1;
+      return da < db ? -1 : 1;
     }
     if (a.urgente !== b.urgente) return a.urgente ? -1 : 1;
     return instante(b) - instante(a) || (a.id < b.id ? 1 : a.id > b.id ? -1 : 0);

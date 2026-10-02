@@ -3,7 +3,7 @@ import { normalizarDocumento } from '../../core/util/documentos';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { normalizarBusca } from '../../core/util/formatos';
 import type { ClienteLocal } from '../clientes/cliente-models';
-import { hojeEmSaoPaulo } from '../propostas/propostas-repo';
+import { hojeEmSaoPaulo, somarDias } from '../propostas/propostas-repo';
 import { codigoOsExibido, OsLocal, StatusOs } from './os-models';
 
 /**
@@ -30,25 +30,22 @@ export const PRAZO_DIAS_NORMAL = 20;
 const UUID_V7 = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
 /**
- * A data (`aaaa-mm-dd`, em America/Sao_Paulo) em que a OS foi criada. O `OsLocal` não traz o `criadoEm`; vale a
- * entrada de criação do histórico (`statusDe` null, gravada pelo servidor) e, na OS ainda não enviada, o instante do
- * UUIDv7 do id (gerado no aparelho na criação). Sem nenhum dos dois (id de outra versão), null.
+ * A data (`aaaa-mm-dd`, em America/Sao_Paulo) em que a OS foi criada. O `OsLocal` não traz o `criadoEm`. M2P3-R7: vale
+ * o mais cedo entre o instante do UUIDv7 do id (gerado no aparelho na criação) e a entrada de criação do histórico
+ * (`statusDe` null, gravada pelo servidor quando a OS chega lá): a OS criada offline não reinicia o prazo no sync.
+ * Sem nenhum dos dois (id de outra versão e sem o histórico), null.
  */
 export function criacaoOs(os: Pick<OsLocal, 'id' | 'historico'>): string | null {
   const criacao = os.historico.find((h) => h.statusDe === null);
-  const instante = criacao ? Date.parse(criacao.em) : instanteDoUuidV7(os.id);
-  return instante === null || Number.isNaN(instante) ? null : hojeEmSaoPaulo(new Date(instante));
+  const instantes = [instanteDoUuidV7(os.id), criacao ? Date.parse(criacao.em) : null].filter(
+    (i): i is number => i !== null && !Number.isNaN(i),
+  );
+  return instantes.length === 0 ? null : hojeEmSaoPaulo(new Date(Math.min(...instantes)));
 }
 
 function instanteDoUuidV7(id: string): number | null {
   const m = UUID_V7.exec(id);
   return m ? parseInt(m[1] + m[2], 16) : null;
-}
-
-/** `aaaa-mm-dd` + `dias`, no calendário (sem fuso). */
-function somarDias(data: string, dias: number): string {
-  const [ano, mes, dia] = data.split('-').map(Number);
-  return new Date(Date.UTC(ano, mes - 1, dia + dias)).toISOString().slice(0, 10);
 }
 
 /**
@@ -83,6 +80,21 @@ export function selosDaOs(
   return selos;
 }
 
+/** M2P3-R6 (Q15): o escritório vê por padrão as concluídas dos últimos 7 dias (hoje e os 6 anteriores). */
+export const DIAS_CONCLUIDA_RECENTE = 7;
+
+/**
+ * CONCLUIDA com o `concluidaEm` (data de São Paulo) nos últimos `DIAS_CONCLUIDA_RECENTE` dias até `hoje`. Sem o
+ * `concluidaEm` (concluída neste aparelho, à espera do servidor), é recente.
+ */
+export function concluidaRecente(os: Pick<OsLocal, 'status' | 'concluidaEm'>, hoje: string): boolean {
+  if (os.status !== 'CONCLUIDA') return false;
+  if (os.concluidaEm === null) return true;
+  const instante = Date.parse(os.concluidaEm);
+  if (Number.isNaN(instante)) return true;
+  return hojeEmSaoPaulo(new Date(instante)) >= somarDias(hoje, 1 - DIAS_CONCLUIDA_RECENTE);
+}
+
 /** Bairro e cidade do endereço *snapshot* da OS, o que houver ("Bela Vista · São Paulo"); sem nenhum, ''. */
 export function localDaOs(os: Pick<OsLocal, 'enderecoBairro' | 'enderecoCidade'>): string {
   return [os.enderecoBairro, os.enderecoCidade].filter((p) => p !== null && p.trim() !== '').join(' · ');
@@ -90,14 +102,15 @@ export function localDaOs(os: Pick<OsLocal, 'enderecoBairro' | 'enderecoCidade'>
 
 /**
  * Busca da lista do escritório: o código da OS (com ou sem os zeros, com a revisão), o `OSP-…` (também depois de
- * numerada), o código da proposta, o nome ou nome fantasia do cliente (sem acento nem caixa) e o documento do cliente
- * (com ou sem máscara, a partir de 3 caracteres). Só a busca usa o documento; a tela não o mostra.
+ * numerada), o código da proposta, o bairro e a cidade do snapshot (`localDaOs`, o que o card mostra), o nome ou nome
+ * fantasia do cliente (sem acento nem caixa) e o documento do cliente (com ou sem máscara, a partir de 3 caracteres;
+ * null no aparelho que não o recebe). Só a busca usa o documento; a tela não o mostra.
  */
 export function correspondeABuscaOs(os: OsLocal, cliente: ClienteLocal | undefined, busca: string): boolean {
   const q = normalizarBusca(busca);
   if (!q) return true;
-  const codigos = [codigoOsExibido(os), os.codigoProvisorio, os.propostaCodigoExibido ?? ''];
-  if (codigos.some((c) => normalizarBusca(c).includes(q))) return true;
+  const textos = [codigoOsExibido(os), os.codigoProvisorio, os.propostaCodigoExibido ?? '', localDaOs(os)];
+  if (textos.some((t) => normalizarBusca(t).includes(q))) return true;
   if (!cliente) return false;
   if (cliente.nomeBusca.includes(q)) return true;
   const doc = normalizarDocumento(busca);

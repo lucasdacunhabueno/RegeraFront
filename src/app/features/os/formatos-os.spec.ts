@@ -1,8 +1,8 @@
 import { ErroCampo } from '../../core/util/erro-campo';
 import { ErroOs } from './erro-os';
-import { paraClienteLocal } from '../clientes/cliente-models';
+import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import {
-  atrasadaOs, CODIGOS_ERRO_OS, correspondeABuscaOs, criacaoOs, localDaOs, mensagemErroOs, osEncerrada, rotuloCampoOs,
+  atrasadaOs, CODIGOS_ERRO_OS, concluidaRecente, correspondeABuscaOs, criacaoOs, localDaOs, mensagemErroOs, osEncerrada, rotuloCampoOs,
   selosDaOs, textoPerdaOs,
 } from './formatos-os';
 import { OsDados, OsLocal, paraOsLocal, StatusOs } from './os-models';
@@ -102,20 +102,34 @@ describe('formatos-os', () => {
       });
     const criada = (em: string): Partial<OsDados> => ({ historico: [{ statusDe: null, statusPara: 'ABERTA', usuarioId: 'u', em }] });
 
-    it('criacaoOs: a data em São Paulo da criação no histórico (a do servidor), senão o instante do UUIDv7', () => {
-      // 01:30 UTC de 10-02 ainda é 10-01 em São Paulo
-      expect(criacaoOs(os('ABERTA', criada('2026-10-02T01:30:00Z')))).toBe('2026-10-01');
-      expect(criacaoOs(os('ABERTA', criada('2026-10-02T03:00:00Z')))).toBe('2026-10-02');
-      // o histórico vale mais que o id (o relógio do aparelho que criou pode estar errado)
+    it('M2P3-R7 criacaoOs: o mais cedo entre o instante do UUIDv7 do id e a criação no histórico, em data de São Paulo', () => {
+      // só o histórico (id que não é v7): 01:30 UTC de 10-02 ainda é 10-01 em São Paulo; 03:00 UTC já é 10-02
+      expect(criacaoOs(os('ABERTA', criada('2026-10-02T01:30:00Z'), ID_V5))).toBe('2026-10-01');
+      expect(criacaoOs(os('ABERTA', criada('2026-10-02T03:00:00Z'), ID_V5))).toBe('2026-10-02');
+      // os dois: vale o mais cedo
       expect(criacaoOs(os('ABERTA', criada('2026-09-20T12:00:00Z')))).toBe('2026-09-20');
+      expect(criacaoOs(os('ABERTA', criada('2026-10-04T12:00:00Z')))).toBe('2026-10-01');
+      // só o id: a OS criada aqui e ainda não enviada
       expect(criacaoOs(os('ABERTA'))).toBe('2026-10-01');
-      // criada offline às 23:30 de São Paulo (02:30 UTC do dia seguinte), ainda sem histórico do servidor
+      // criada offline às 23:30 de São Paulo (02:30 UTC do dia seguinte)
       expect(criacaoOs(os('ABERTA', {}, idV7('2026-10-02T02:30:00Z')))).toBe('2026-10-01');
       // as transições não são a criação
       expect(criacaoOs(os('ABERTA', { historico: [{ statusDe: 'ABERTA', statusPara: 'EM_ANDAMENTO', usuarioId: 'u', em: '2026-09-01T12:00:00Z' }] })))
         .toBe('2026-10-01');
       // sem v7 e sem a criação no histórico: sem data
       expect(criacaoOs(os('ABERTA', {}, ID_V5))).toBeNull();
+    });
+
+    it('M2P3-R7: criada offline e sincronizada 3 dias depois, o prazo continua contando da criação no aparelho', () => {
+      // o aparelho criou em 10-01 (o id); o servidor só gravou a criação no sync, em 10-04
+      const sincronizadaDepois = criada('2026-10-04T15:00:00Z');
+      expect(criacaoOs(os('ABERTA', sincronizadaDepois))).toBe('2026-10-01');
+      // urgente: o limite é 10-08 (10-01 + 7), não 10-11 (10-04 + 7)
+      expect(atrasadaOs(os('ABERTA', { ...sincronizadaDepois, urgente: true, dataPrevista: '2026-10-08' }), '2026-10-04')).toBe(false);
+      expect(atrasadaOs(os('ABERTA', { ...sincronizadaDepois, urgente: true, dataPrevista: '2026-10-09' }), '2026-10-04')).toBe(true);
+      // sem data prevista: atrasada a partir de 10-09
+      expect(atrasadaOs(os('ABERTA', { ...sincronizadaDepois, urgente: true }), '2026-10-08')).toBe(false);
+      expect(atrasadaOs(os('ABERTA', { ...sincronizadaDepois, urgente: true }), '2026-10-09')).toBe(true);
     });
 
     it('urgente: atrasada com a data prevista mais de 7 dias depois da criação, ou já passada', () => {
@@ -135,14 +149,18 @@ describe('formatos-os', () => {
 
     it('a criação conta pela data de São Paulo: criada às 22:30 de 10-01 (01:30 UTC de 10-02), o limite da urgente é 10-08', () => {
       const noite = criada('2026-10-02T01:30:00Z');
-      expect(atrasadaOs(os('ABERTA', { ...noite, urgente: true, dataPrevista: '2026-10-08' }), '2026-10-01')).toBe(false);
-      expect(atrasadaOs(os('ABERTA', { ...noite, urgente: true, dataPrevista: '2026-10-09' }), '2026-10-01')).toBe(true);
+      expect(atrasadaOs(os('ABERTA', { ...noite, urgente: true, dataPrevista: '2026-10-08' }, ID_V5), '2026-10-01')).toBe(false);
+      expect(atrasadaOs(os('ABERTA', { ...noite, urgente: true, dataPrevista: '2026-10-09' }, ID_V5), '2026-10-01')).toBe(true);
+      // o mesmo instante no id v7
+      const id = idV7('2026-10-02T01:30:00Z');
+      expect(atrasadaOs(os('ABERTA', { urgente: true, dataPrevista: '2026-10-08' }, id), '2026-10-01')).toBe(false);
+      expect(atrasadaOs(os('ABERTA', { urgente: true, dataPrevista: '2026-10-09' }, id), '2026-10-01')).toBe(true);
     });
 
     it('o prazo atravessa o fim do mês e do ano', () => {
-      const dezembro = criada('2026-12-28T15:00:00Z');
-      expect(atrasadaOs(os('ABERTA', { ...dezembro, urgente: true, dataPrevista: '2027-01-04' }), '2026-12-28')).toBe(false);
-      expect(atrasadaOs(os('ABERTA', { ...dezembro, urgente: true, dataPrevista: '2027-01-05' }), '2026-12-28')).toBe(true);
+      const dezembro = idV7('2026-12-28T15:00:00Z');
+      expect(atrasadaOs(os('ABERTA', { urgente: true, dataPrevista: '2027-01-04' }, dezembro), '2026-12-28')).toBe(false);
+      expect(atrasadaOs(os('ABERTA', { urgente: true, dataPrevista: '2027-01-05' }, dezembro), '2026-12-28')).toBe(true);
     });
 
     it('sem data prevista: atrasada quando o prazo contado da criação já passou', () => {
@@ -179,6 +197,23 @@ describe('formatos-os', () => {
     it('osEncerrada: concluída e cancelada', () => {
       expect((['ABERTA', 'EM_ANDAMENTO', 'CONCLUIDA', 'CANCELADA'] as const).map(osEncerrada)).toEqual([false, false, true, true]);
     });
+
+    it('M2P3-R6 concluidaRecente: CONCLUIDA com concluidaEm nos últimos 7 dias de São Paulo (hoje e os 6 anteriores)', () => {
+      const hoje = '2026-10-10';
+      const concluida = (concluidaEm: string | null) => os('CONCLUIDA', { concluidaEm });
+      expect(concluidaRecente(concluida('2026-10-10T12:00:00Z'), hoje)).toBe(true);
+      expect(concluidaRecente(concluida('2026-10-04T12:00:00Z'), hoje)).toBe(true);
+      expect(concluidaRecente(concluida('2026-10-03T12:00:00Z'), hoje)).toBe(false);
+      // 02:30 UTC de 10-04 ainda é 10-03 em São Paulo: fora; 03:30 UTC já é 10-04: dentro
+      expect(concluidaRecente(concluida('2026-10-04T02:30:00Z'), hoje)).toBe(false);
+      expect(concluidaRecente(concluida('2026-10-04T03:30:00Z'), hoje)).toBe(true);
+      // concluída aqui e ainda sem o concluidaEm do servidor: é recente
+      expect(concluidaRecente(concluida(null), hoje)).toBe(true);
+      // só CONCLUIDA
+      for (const s of ['ABERTA', 'EM_ANDAMENTO', 'CANCELADA'] as const) {
+        expect(concluidaRecente(os(s, { concluidaEm: '2026-10-10T12:00:00Z' }), hoje)).toBe(false);
+      }
+    });
   });
 
   describe('localDaOs', () => {
@@ -196,7 +231,7 @@ describe('formatos-os', () => {
     const os = paraOsLocal('o1', 1, {
       codigoProvisorio: 'OSP-K7Q2ZP', numero: 123, revisao: 2, propostaCodigoExibido: '000277-R2', clienteId: 'c1',
       tipo: 'MANUTENCAO', status: 'ABERTA', urgente: false, concluiProposta: true, assinaturaRecusada: false, itens: [],
-      notas: [], anexos: [], historico: [],
+      notas: [], anexos: [], historico: [], enderecoBairro: 'Bela Vista', enderecoCidade: 'São Paulo',
     });
     const cliente = paraClienteLocal('c1', 1, {
       tipo: 'PJ', documento: '11444777000161', nome: 'Padaria São João', nomeFantasia: 'Pão Quente', inscricaoEstadual: null,
@@ -206,13 +241,24 @@ describe('formatos-os', () => {
     it.each([
       ['', true], ['  ', true], ['OS-000123', true], ['123', true], ['os-000123-r2', true], ['osp-k7q', true],
       ['000277', true], ['sao joao', true], ['PÃO QUENTE', true], ['11.444.777/0001', true], ['nada', false], ['11', false],
+      // M2: bairro e cidade do snapshot (o que o card mostra)
+      ['bela vista', true], ['SAO PAULO', true], ['vista · sao', true],
     ])('"%s" → %s', (busca, esperado) => {
       expect(correspondeABuscaOs(os, cliente, busca)).toBe(esperado);
     });
 
-    it('sem o cliente no aparelho: só os códigos', () => {
+    it('sem o cliente no aparelho: os códigos e o local', () => {
       expect(correspondeABuscaOs(os, undefined, '123')).toBe(true);
+      expect(correspondeABuscaOs(os, undefined, 'bela vista')).toBe(true);
       expect(correspondeABuscaOs(os, undefined, 'padaria')).toBe(false);
+    });
+
+    it('M2: cliente sem documento no aparelho (documento null): a busca por números não quebra nem casa por documento', () => {
+      const semDocumento: ClienteLocal = { ...cliente, documento: null };
+      expect(correspondeABuscaOs(os, semDocumento, '11.444.777/0001')).toBe(false);
+      expect(correspondeABuscaOs(os, semDocumento, '114447')).toBe(false);
+      expect(correspondeABuscaOs(os, semDocumento, 'padaria')).toBe(true);
+      expect(correspondeABuscaOs(os, semDocumento, '123')).toBe(true);
     });
   });
 });

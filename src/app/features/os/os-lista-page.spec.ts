@@ -57,7 +57,7 @@ const LISTA: OsLocal[] = [
   os('a', { numero: 101, urgente: true, dataPrevista: '2026-09-30', tipo: 'INSTALACAO' }),
   os('b', { clienteId: 'c2', tecnicoId: null, tipo: 'MANUTENCAO', dataPrevista: '2026-10-10', enderecoBairro: null, enderecoCidade: 'Santos' }),
   os('c', { numero: 103, status: 'EM_ANDAMENTO', tipo: 'CORRETIVA', tecnicoId: TECNICO_2.id, dataPrevista: '2026-10-03' }),
-  os('d', { numero: 104, status: 'CONCLUIDA', clienteId: 'c2', dataPrevista: '2026-09-25' }),
+  os('d', { numero: 104, status: 'CONCLUIDA', clienteId: 'c2', dataPrevista: '2026-09-20', concluidaEm: '2026-09-21T15:00:00Z' }),
   os('e', { numero: 105, status: 'CANCELADA', tipo: 'ENTREGA', dataPrevista: '2026-09-20' }),
 ];
 
@@ -169,6 +169,18 @@ describe('OsListaPage', () => {
       expect(card(el, 'OS-000201').textContent).toContain('Centro · Campinas');
     });
 
+    it('M2P3-R8: a urgente sem data prevista entra no dia de hoje, antes das normais de hoje', () => {
+      const lista = [
+        os('u1', { numero: 601, dataPrevista: '2026-10-01' }),
+        os('u2', { numero: 602, dataPrevista: null }),
+        os('u3', { numero: 603, dataPrevista: null, urgente: true }),
+        os('u4', { numero: 604, dataPrevista: '2026-09-30' }),
+        os('u5', { numero: 605, dataPrevista: '2026-10-02', urgente: true }),
+      ];
+      const { el } = montar({ usuario: TECNICO, doTecnico: of(lista) });
+      expect(codigos(el)).toEqual(['OS-000604', 'OS-000603', 'OS-000601', 'OS-000605', 'OS-000602']);
+    });
+
     it('vazio: "Nenhuma OS atribuída a você."', () => {
       const { el } = montar({ usuario: TECNICO, doTecnico: of([]) });
       expect(el.textContent).toContain('Nenhuma OS atribuída a você.');
@@ -264,7 +276,7 @@ describe('OsListaPage', () => {
     it('chips de status com aria-pressed; Concluída e Cancelada só com "Mostrar encerradas"', async () => {
       const { fixture, el } = montar();
       const chips = () => [...el.querySelectorAll('[role=group][aria-label="Filtrar por status"] button')].map((b) => b.textContent?.trim());
-      expect(chips()).toEqual(['Todas', 'Aberta', 'Em andamento']);
+      expect(chips()).toEqual(['Todas', 'Aberta', 'Em andamento', 'Concluída']);
       expect(botao(el, 'Todas')?.getAttribute('aria-pressed')).toBe('true');
       for (const b of el.querySelectorAll('[role=group] button')) expect(b.className).toContain('min-h-12');
 
@@ -280,11 +292,14 @@ describe('OsListaPage', () => {
       await ate(fixture, () => expect(codigos(el)).toEqual(['OS-000101', 'OSP-BBBBBB', 'OS-000103', 'OS-000104', 'OS-000105']));
       botao(el, 'Concluída')!.click();
       await ate(fixture, () => expect(codigos(el)).toEqual(['OS-000104']));
+      botao(el, 'Cancelada')!.click();
+      await ate(fixture, () => expect(codigos(el)).toEqual(['OS-000105']));
 
-      // esconder as encerradas com uma delas escolhida volta para Todas
+      // esconder as encerradas com Cancelada escolhida volta para Todas
       encerradas.click();
       await ate(fixture, () => expect(codigos(el)).toEqual(['OS-000101', 'OSP-BBBBBB', 'OS-000103']));
       expect(botao(el, 'Todas')?.getAttribute('aria-pressed')).toBe('true');
+      expect(chips()).toEqual(['Todas', 'Aberta', 'Em andamento', 'Concluída']);
     });
 
     it('filtro de tipo, com rótulo', async () => {
@@ -327,9 +342,55 @@ describe('OsListaPage', () => {
     it('sem nenhuma aberta visível: a dica das encerradas', async () => {
       const { fixture, el } = montar({ todas: of([LISTA[3]]) });
       expect(el.textContent).toContain('Nenhuma OS encontrada.');
-      expect(el.textContent).toContain('As concluídas e canceladas estão ocultas.');
+      expect(el.textContent).toContain('As canceladas e as concluídas há mais de 7 dias estão ocultas.');
       botao(el, 'Mostrar encerradas')!.click();
       await ate(fixture, () => expect(codigos(el)).toEqual(['OS-000104']));
+    });
+
+    describe('M2P3-R6: as concluídas dos últimos 7 dias aparecem por padrão (Q15)', () => {
+      // hoje = 10-01 em São Paulo: a janela é de 09-25 a 10-01
+      const RECENTES: OsLocal[] = [
+        os('r1', { numero: 501, status: 'CONCLUIDA', concluidaEm: '2026-10-01T18:00:00Z' }),
+        os('r2', { numero: 502, status: 'CONCLUIDA', concluidaEm: '2026-09-25T12:00:00Z' }),
+        // 02:30 UTC de 09-25 ainda é 09-24 em São Paulo: fora
+        os('r3', { numero: 503, status: 'CONCLUIDA', concluidaEm: '2026-09-25T02:30:00Z' }),
+        // concluída aqui, ainda sem o concluidaEm do servidor
+        os('r4', { numero: 504, status: 'CONCLUIDA', concluidaEm: null }),
+        os('r5', { numero: 505, status: 'CANCELADA', atualizadoEm: '2026-10-01T18:00:00Z' }),
+        os('r6', { numero: 506, status: 'ABERTA' }),
+      ];
+
+      it('no escritório: as recentes com o status "Concluída"; as antigas e as canceladas só com "Mostrar encerradas"', async () => {
+        const { fixture, el } = montar({ todas: of(RECENTES) });
+        expect(codigos(el)).toEqual(['OS-000501', 'OS-000502', 'OS-000504', 'OS-000506']);
+        expect(card(el, 'OS-000501').querySelector('[data-status]')?.textContent?.trim()).toBe('Concluída');
+        expect(el.querySelector('[aria-live=polite]')?.textContent?.trim()).toBe('4 OS');
+        botao(el, 'Concluída')!.click();
+        await ate(fixture, () => expect(codigos(el)).toEqual(['OS-000501', 'OS-000502', 'OS-000504']));
+        botao(el, 'Mostrar encerradas')!.click();
+        await ate(fixture, () => expect(codigos(el)).toEqual(['OS-000501', 'OS-000502', 'OS-000503', 'OS-000504']));
+        botao(el, 'Todas')!.click();
+        await ate(fixture, () => expect(codigos(el)).toHaveLength(6));
+      });
+
+      it('a janela anda com o dia: à meia-noite de São Paulo a de 09-25 sai', async () => {
+        vi.useRealTimers();
+        vi.useFakeTimers({ toFake: ['Date', 'setTimeout', 'clearTimeout'] });
+        vi.setSystemTime(new Date('2026-10-02T02:59:00Z'));
+        const { fixture, el } = montar({ todas: of(RECENTES) });
+        expect(codigos(el)).toContain('OS-000502');
+        vi.advanceTimersByTime(61_000);
+        fixture.detectChanges();
+        expect(codigos(el)).not.toContain('OS-000502');
+        expect(codigos(el)).toContain('OS-000501');
+      });
+
+      it('o técnico continua sem nenhuma encerrada por padrão, nem as recentes', async () => {
+        const { fixture, el } = montar({ usuario: TECNICO, doTecnico: of(RECENTES) });
+        expect(codigos(el)).toEqual(['OS-000506']);
+        botao(el, 'Mostrar encerradas')!.click();
+        await ate(fixture, () => expect(codigos(el)).toHaveLength(6));
+      });
     });
 
     it('vazio do escritório: "Nenhuma OS ainda."', () => {

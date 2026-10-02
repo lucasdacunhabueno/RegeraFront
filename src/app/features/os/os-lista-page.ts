@@ -5,7 +5,7 @@ import { AuthService } from '../../core/auth/auth-service';
 import { ClientesRepo } from '../clientes/clientes-repo';
 import { hojeReativo } from '../propostas/hoje-reativo';
 import { PropostasRepo } from '../propostas/propostas-repo';
-import { correspondeABuscaOs, osEncerrada, SeloOs, selosDaOs } from './formatos-os';
+import { concluidaRecente, correspondeABuscaOs, osEncerrada, SeloOs, selosDaOs } from './formatos-os';
 import { OsCard } from './os-card';
 import { OsLocal, rotuloTipoOs, STATUS_OS, StatusOs, TIPOS_OS, TipoOs } from './os-models';
 import { EstadoSync, ordenarParaTecnico, OsRepo } from './os-repo';
@@ -15,8 +15,9 @@ type FiltroTipo = 'TODOS' | TipoOs;
 /** 'TODOS', 'SEM' (sem técnico atribuído) ou o id do técnico. */
 type FiltroTecnico = string;
 
-const ABERTAS: readonly StatusOs[] = ['ABERTA', 'EM_ANDAMENTO'];
-const ENCERRADAS: readonly StatusOs[] = ['CONCLUIDA', 'CANCELADA'];
+/** Os chips do escritório sem "Mostrar encerradas": a Concluída fica (as dos últimos 7 dias, M2P3-R6). */
+const CHIPS_PADRAO: readonly StatusOs[] = ['ABERTA', 'EM_ANDAMENTO', 'CONCLUIDA'];
+const CHIPS_TODOS: readonly StatusOs[] = ['ABERTA', 'EM_ANDAMENTO', 'CONCLUIDA', 'CANCELADA'];
 
 interface Linha {
   os: OsLocal;
@@ -33,7 +34,8 @@ const instante = (o: OsLocal) => (o.atualizadoEm ? Date.parse(o.atualizadoEm) : 
  *   mesmo dia, sem data no fim). As encerradas ficam ocultas até "Mostrar encerradas" e então vêm depois das abertas,
  *   as mais recentes primeiro: as concluídas, de datas passadas, não empurram o trabalho do dia para baixo.
  * - ADMIN e COMERCIAL: `observarTodas` (o repositório já filtra o que o perfil vê), busca, chips de status, tipo, o
- *   técnico (só o ADMIN) e "Nova OS avulsa".
+ *   técnico (só o ADMIN) e "Nova OS avulsa". M2P3-R6 (Q15): as concluídas dos últimos 7 dias aparecem por padrão, com
+ *   o status "Concluída"; as mais antigas e as canceladas, só com "Mostrar encerradas".
  * Qualquer perfil fora de ADMIN e COMERCIAL cai na visão do técnico. A OS não tem valores, e nenhuma linha leva o
  * CPF/CNPJ: o card recebe só o nome do cliente.
  */
@@ -113,7 +115,7 @@ const instante = (o: OsLocal) => (o.atualizadoEm ? Date.parse(o.atualizadoEm) : 
       <p class="py-8 text-center text-slate-500">
         {{ restrito() ? 'Nenhuma OS em aberto.' : 'Nenhuma OS encontrada.' }}
         @if (encerradasOcultas()) {
-          <span class="block">As concluídas e canceladas estão ocultas.</span>
+          <span class="block">{{ restrito() ? 'As concluídas e canceladas estão ocultas.' : 'As canceladas e as concluídas há mais de 7 dias estão ocultas.' }}</span>
         }
       </p>
     } @else {
@@ -159,7 +161,7 @@ export class OsListaPage {
 
   protected readonly chips = computed(() => [
     { valor: 'TODAS' as FiltroStatus, rotulo: 'Todas' },
-    ...(this.mostrarEncerradas() ? [...ABERTAS, ...ENCERRADAS] : ABERTAS).map((s) => ({ valor: s as FiltroStatus, rotulo: STATUS_OS[s].rotulo })),
+    ...(this.mostrarEncerradas() ? CHIPS_TODOS : CHIPS_PADRAO).map((s) => ({ valor: s as FiltroStatus, rotulo: STATUS_OS[s].rotulo })),
   ]);
 
   private readonly clientePorId = computed(() => new Map((this.clientes() ?? []).map((c) => [c.id, c])));
@@ -190,21 +192,33 @@ export class OsListaPage {
     );
   });
 
-  protected readonly encerradasOcultas = computed(() => !this.mostrarEncerradas() && this.buscadas().some((o) => osEncerrada(o.status)));
+  /**
+   * Sem "Mostrar encerradas", a OS fica de fora quando está encerrada; no escritório, menos a concluída dos últimos 7
+   * dias (M2P3-R6). O técnico não vê nenhuma encerrada por padrão.
+   */
+  private readonly oculta = computed(() => {
+    if (this.mostrarEncerradas()) return () => false;
+    const restrito = this.restrito();
+    const hoje = this.hoje();
+    return (o: OsLocal) => osEncerrada(o.status) && (restrito || !concluidaRecente(o, hoje));
+  });
+
+  protected readonly encerradasOcultas = computed(() => {
+    const oculta = this.oculta();
+    return this.buscadas().some(oculta);
+  });
 
   /** Na ordem final: a do técnico (abertas pelo `ordenarParaTecnico`, depois as encerradas) ou a do repositório. */
   private readonly visiveis = computed(() => {
-    const mostrarEncerradas = this.mostrarEncerradas();
+    const oculta = this.oculta();
     const buscadas = this.buscadas();
     if (this.restrito()) {
-      const abertas = ordenarParaTecnico(buscadas.filter((o) => !osEncerrada(o.status)));
-      const encerradas = mostrarEncerradas
-        ? buscadas.filter((o) => osEncerrada(o.status)).sort((a, b) => instante(b) - instante(a))
-        : [];
+      const abertas = ordenarParaTecnico(buscadas.filter((o) => !osEncerrada(o.status)), this.hoje());
+      const encerradas = buscadas.filter((o) => osEncerrada(o.status) && !oculta(o)).sort((a, b) => instante(b) - instante(a));
       return [...abertas, ...encerradas];
     }
     const status = this.status();
-    return buscadas.filter((o) => (status === 'TODAS' ? mostrarEncerradas || !osEncerrada(o.status) : o.status === status));
+    return buscadas.filter((o) => (status === 'TODAS' || o.status === status) && !oculta(o));
   });
 
   protected readonly linhas = computed<Linha[]>(() => {
@@ -238,6 +252,7 @@ export class OsListaPage {
     const mostrar = !this.mostrarEncerradas();
     this.mostrarEncerradas.set(mostrar);
     const s = this.status();
-    if (!mostrar && s !== 'TODAS' && osEncerrada(s)) this.status.set('TODAS');
+    // a Concluída continua entre os chips (as recentes); a Cancelada some
+    if (!mostrar && s === 'CANCELADA') this.status.set('TODAS');
   }
 }
