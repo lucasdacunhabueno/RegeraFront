@@ -1,9 +1,6 @@
 import { Component, computed, DestroyRef, effect, inject, input, output, signal, untracked } from '@angular/core';
-import { MomentoFoto } from './os-models';
+import { FOTOS_MAX_OS, MomentoFoto } from './os-models';
 import type { AnexoOsVisivel } from './os-repo';
-
-/** No máximo 20 fotos por OS (o `LIMITE_FOTOS` do servidor). */
-export const MAX_FOTOS_OS = 20;
 
 export const ROTULO_MOMENTO: Readonly<Record<MomentoFoto, string>> = { ANTES: 'Antes', DURANTE: 'Durante', DEPOIS: 'Depois' };
 export const MOMENTOS: readonly MomentoFoto[] = ['ANTES', 'DURANTE', 'DEPOIS'];
@@ -30,7 +27,8 @@ interface ItemGaleria {
   host: { class: 'block space-y-2' },
   template: `
     <p class="text-sm text-slate-600">
-      Fotos: <span data-testid="contador-fotos" class="font-semibold" [attr.aria-label]="itens().length + ' de ' + limite + ' fotos'">{{ itens().length }}/{{ limite }}</span>
+      Fotos: <span data-testid="contador-fotos" class="font-semibold" aria-hidden="true">{{ itens().length }}/{{ limite }}</span>
+      <span data-testid="contador-fotos-leitor" class="sr-only">{{ itens().length }} de {{ limite }} fotos</span>
     </p>
     <ul class="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4" aria-label="Fotos da OS">
       @for (f of itens(); track f.anexo.id) {
@@ -66,7 +64,7 @@ export class GaleriaOs {
   readonly fotos = input.required<readonly AnexoOsVisivel[]>();
   readonly abrir = output<AnexoOsVisivel>();
 
-  protected readonly limite = MAX_FOTOS_OS;
+  protected readonly limite = FOTOS_MAX_OS;
   /** id → URL de blob da miniatura. */
   private readonly urls = signal<ReadonlyMap<string, string>>(new Map());
 

@@ -4,17 +4,17 @@ import {
 import { stripJava } from '../propostas/proposta-models';
 import { AssinaturaCanvas, Ponto } from './assinatura-canvas';
 import { mensagemErroOs } from './formatos-os';
-import { tamanhoTextoOs } from './os-models';
+import { ASSINANTE_NOME_MAX_OS, ASSINANTE_NOME_MIN_OS, ASSINANTE_PAPEL_MAX_OS, tamanhoTextoOs } from './os-models';
 import type { AssinaturaColhida } from './os-repo';
 
 let sequencia = 0;
 
 const FOCAVEIS = 'button:not([disabled]), input:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])';
 
-/** Os limites do `OsRepo.assinar` (os do servidor): nome de 2 a 120, papel até 60, em code points. */
-const NOME_MIN = 2;
-const NOME_MAX = 120;
-const PAPEL_MAX = 60;
+/** Os limites do `OsRepo.assinar` (os do servidor, em `os-models`): nome de 2 a 120, papel até 60, em code points. */
+const NOME_MIN = ASSINANTE_NOME_MIN_OS;
+const NOME_MAX = ASSINANTE_NOME_MAX_OS;
+const PAPEL_MAX = ASSINANTE_PAPEL_MAX_OS;
 
 const dentro = (p: Ponto, largura: number, altura: number) => p.x >= 0 && p.y >= 0 && p.x <= largura && p.y <= altura;
 

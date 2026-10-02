@@ -2,6 +2,7 @@ import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { computed, inject, Injectable, InjectionToken, signal } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 import { RegeraDb } from '../db/regera-db';
+import { limparRascunhosOs } from '../util/rascunho-os';
 import { RespostaSessao, UsuarioSessao } from './auth-models';
 
 const CHAVE_SESSAO = 'sessao';
@@ -67,6 +68,8 @@ export class AuthService {
     this.accessToken = null;
     this.usuario.set(null);
     this.sessaoExpirada.set(false);
+    // FW-R2: o resumo e a nota digitados numa OS (sessionStorage) não ficam para quem usar a aba depois
+    limparRascunhosOs();
     await this.db.limparTudo();
   }
 

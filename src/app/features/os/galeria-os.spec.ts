@@ -63,7 +63,11 @@ describe('GaleriaOs', () => {
     expect(imgs[1].alt).toBe('Foto 2, Depois');
     const contador = el.querySelector('[data-testid=contador-fotos]')!;
     expect(contador.textContent!.trim()).toBe('2/20');
-    expect(contador.getAttribute('aria-label')).toBe('2 de 20 fotos');
+    // N3: o "2/20" à vista fica fora da leitura; o leitor de tela lê o texto escondido (aria-label num span não vale)
+    expect(contador.getAttribute('aria-hidden')).toBe('true');
+    expect(contador.hasAttribute('aria-label')).toBe(false);
+    expect(el.querySelector('[data-testid=contador-fotos-leitor]')!.textContent!.trim()).toBe('2 de 20 fotos');
+    expect(el.querySelector('[data-testid=contador-fotos-leitor]')!.classList).toContain('sr-only');
     const itens = [...el.querySelectorAll('li')];
     expect(itens[0].textContent).toContain('Quadro antigo');
     expect(itens[0].textContent).not.toContain('Não sincronizada');

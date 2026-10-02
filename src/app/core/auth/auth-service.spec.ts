@@ -3,6 +3,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
 import { RegeraDb } from '../db/regera-db';
+import { gravarRascunhoOs, lerRascunhoOs } from '../util/rascunho-os';
 import { RespostaSessao, UsuarioSessao } from './auth-models';
 import { AuthService, ESPERA_REPETIR_RENOVACAO } from './auth-service';
 
@@ -163,5 +164,14 @@ describe('AuthService', () => {
     expect(auth.usuario()).toBeNull();
     expect(auth.token()).toBeNull();
     expect(await db.meta.count()).toBe(0);
+  });
+
+  it('FW-R2: o logout apaga os rascunhos da OS desta aba (o resumo e a nota digitados)', async () => {
+    gravarRascunhoOs(ANA.id, 'o1', 'resumo', 'Quadro trocado');
+    gravarRascunhoOs(ANA.id, 'o1', 'nota', 'Falta o disjuntor');
+    const p = auth.logout();
+    http.expectOne('/api/auth/logout').flush({});
+    await p;
+    expect(lerRascunhoOs(ANA.id, 'o1')).toEqual({});
   });
 });

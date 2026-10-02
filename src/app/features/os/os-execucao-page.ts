@@ -1,7 +1,9 @@
-import { afterNextRender, Component, computed, effect, ElementRef, inject, Injector, input, signal, viewChild } from '@angular/core';
+import {
+  afterNextRender, Component, computed, effect, ElementRef, inject, Injector, input, signal, untracked, viewChild,
+} from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
-import { LucideCamera, LucideDynamicIcon, LucideMapPin, LucidePhone } from '@lucide/angular';
+import { LucideCamera, LucideDynamicIcon, LucideImage, LucideMapPin, LucidePhone } from '@lucide/angular';
 import { ArquivosService, ErroDownload } from '../../core/arquivos/arquivos-service';
 import type { Perfil } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
@@ -11,6 +13,7 @@ import { dataBr, dataHoraBr, quantidadeBr } from '../../core/pdf/formatos-pdf';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { DadosUploadAnexoOs, Pendencia, TIPO_UPLOAD_ANEXO_OS } from '../../core/sync/sync-models';
 import { ErroCampo } from '../../core/util/erro-campo';
+import { CampoRascunhoOs, gravarRascunhoOs, lerRascunhoOs } from '../../core/util/rascunho-os';
 import { formatarTelefone, somenteDigitos } from '../../core/util/formatos';
 import { Toasts } from '../../shared/ui/toasts';
 import { VisorPdf } from '../../shared/ui/visor-pdf';
@@ -25,22 +28,20 @@ import { PropostasRepo } from '../propostas/propostas-repo';
 import { AssinaturaTela } from './assinatura-tela';
 import { ErroOs } from './erro-os';
 import { mensagemErroOs, rotuloCampoOs, SeloOs, selosDaOs } from './formatos-os';
-import { GaleriaOs, MAX_FOTOS_OS, MOMENTOS, ROTULO_MOMENTO } from './galeria-os';
+import { GaleriaOs, MOMENTOS, ROTULO_MOMENTO } from './galeria-os';
 import { pdfRegeravel, recusaDePdfRegeravel } from './pdf-regeravel';
 import { ESTILO_SELO_OS } from './os-card';
 import {
-  camposEditaveisOs, codigoOsExibido, MomentoFoto, OsLocal, podeEditarCabecalho, podeExecutar, RESUMO_MAX_OS, RESUMO_MIN_OS,
-  rotuloStatusOs, rotuloTipoOs, STATUS_OS, StatusOs, tamanhoTextoOs, textoOsValido, transicoesPermitidasOs, MOTIVO_MAX_OS,
-  MOTIVO_MIN_OS,
+  camposEditaveisOs, codigoOsExibido, FOTOS_MAX_OS, LEGENDA_MAX_OS, MomentoFoto, MOTIVO_MAX_OS, MOTIVO_MIN_OS, NOTA_MAX_OS,
+  OsLocal, podeEditarCabecalho, podeExecutar, RESUMO_MAX_OS, RESUMO_MIN_OS, rotuloStatusOs, rotuloTipoOs, STATUS_OS, StatusOs,
+  tamanhoTextoOs, textoOsValido, transicoesPermitidasOs,
 } from './os-models';
 import {
   AnexoOsVisivel, AssinaturaColhida, enderecoDaOs, EstadoSync, linhaDoEndereco, OsRepo,
 } from './os-repo';
 
 const MAPA = 'https://www.google.com/maps/search/?api=1&query=';
-const MAX_NOTA = 2000;
-const MAX_LEGENDA = 200;
-const ERRO_LEGENDA = `A legenda tem no máximo ${MAX_LEGENDA} caracteres.`;
+const ERRO_LEGENDA = `A legenda tem no máximo ${LEGENDA_MAX_OS} caracteres.`;
 const FALHA_GRAVAR_FOTO = 'Não foi possível gravar a foto. Tente de novo.';
 const FOTO_DURANTE_PDF = 'A foto chegou enquanto o PDF da OS era gerado e não foi gravada. Tire de novo.';
 
@@ -125,27 +126,30 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
  *
  * - Escritório (T4, ADMIN e COMERCIAL responsável), conforme `transicoesPermitidasOs` e `camposEditaveisOs`: "Editar"
  *   (`/os/:id/editar`, o cabeçalho), "Atribuir/Trocar técnico" (ABERTA e EM_ANDAMENTO; em andamento sem "Nenhum"),
- *   "Cancelar OS" com o motivo (ADMIN; o COMERCIAL só em ABERTA), "Reabrir" com o motivo (ADMIN, CONCLUIDA), "Aceitar
- *   o trabalho" com confirmação (M2-R4: ADMIN, a proposta CANCELADA e a OS não cancelada) e "Excluir OS" (ABERTA sem
- *   técnico). Com a proposta cancelada, uma faixa avisa. A trava do CONFLITO (P4c-R15) vale para atribuir, cancelar,
- *   reabrir e aceitar, como no repositório; o cabeçalho e a exclusão seguem. Cada ação guarda o id da OS no começo e
- *   não escreve na tela se a rota trocou de OS no meio.
+ *   "Trocar responsável" (FW-R4: só o ADMIN, só na OS avulsa, ABERTA e EM_ANDAMENTO; na de proposta ele segue o da
+ *   proposta), "Cancelar OS" com o motivo (ADMIN; o COMERCIAL só em ABERTA), "Reabrir" com o motivo (ADMIN,
+ *   CONCLUIDA), "Aceitar o trabalho" com confirmação (M2-R4: ADMIN, a proposta CANCELADA e a OS em andamento ou
+ *   concluída; FW-R3: com a OS ainda aberta a faixa sugere cancelá-la) e "Excluir OS" (ABERTA sem técnico). Com a
+ *   proposta cancelada, uma faixa avisa. A trava do CONFLITO (P4c-R15) vale para atribuir (técnico e responsável),
+ *   cancelar, reabrir e aceitar, como no repositório; o cabeçalho e a exclusão seguem. Cada ação guarda o id da OS no
+ *   começo e não escreve na tela se a rota trocou de OS no meio.
  *
  * - Cabeçalho: código, status, tipo e selos; o cliente (nome e telefone com `tel:`, nunca o CPF/CNPJ), o endereço
  *   *snapshot* com o link do mapa (nova aba), a data prevista e a proposta; no escritório, o técnico e o responsável.
  *   Descrição e itens (código, nome e quantidade prevista). A OS não tem valores.
  * - ABERTA: "Iniciar OS"; notas; as fotos só depois de iniciar.
- * - EM_ANDAMENTO: notas (só se acrescentam), fotos (câmera pelo input, uma de cada vez, momento e legenda, galeria
- *   `n/20`) e o concluir: resumo, assinatura em tela cheia ou "Cliente não pôde assinar" com o motivo, "Precisa voltar"
- *   (Q21) e "Concluir e gerar PDF" (`OsRepo.concluir` com o `PdfService.gerarBlobOs`, depois o compartilhamento ou o
- *   painel "PDF pronto", P4c-R8).
+ * - EM_ANDAMENTO: notas (só se acrescentam), fotos (a câmera ou, FW-R1, a galeria do aparelho, uma de cada vez, momento
+ *   e legenda, galeria `n/20`) e o concluir: resumo, assinatura em tela cheia ou "Cliente não pôde assinar" com o
+ *   motivo, "Precisa voltar" (Q21) e "Concluir e gerar PDF" (`OsRepo.concluir` com o `PdfService.gerarBlobOs`, depois o
+ *   compartilhamento ou o painel "PDF pronto", P4c-R8).
  * - CONCLUIDA: resumo, assinatura ou recusa, o PDF para abrir e compartilhar (bytes do aparelho ou download sem cache,
  *   nunca pelo cache de arquivos) e "Gerar PDF novamente" quando falta ou foi recusado (`motivoParaRegerarOs`). O
  *   técnico atribuído ainda acrescenta notas e fotos, e o ADMIN notas (M2P1-R26, evidência).
- * - CANCELADA: só leitura, com o motivo.
+ * - CANCELADA: o motivo; o técnico atribuído ainda acrescenta notas e fotos (M2P1-R26, M2P3-R9).
  * - CONFLITO da OS (P4c-R15): iniciar, concluir e gerar o PDF ficam desabilitados com "Resolva a pendência primeiro";
  *   notas, fotos e assinatura continuam (só se acrescentam).
- * Os erros saem pelo `mensagemErroOs`: os da foto e da nota no próprio campo, os de uma ação num toast.
+ * Os erros saem pelo `mensagemErroOs`: os da foto e da nota no próprio campo, os de uma ação num toast. O resumo e a
+ * nota digitados ficam no rascunho da aba (FW-R2, `rascunho-os`) até serem gravados.
  */
 @Component({
   selector: 'app-os-execucao-page',
@@ -219,7 +223,7 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
             @if (conflito()) {
               <p id="dica-pendencia-regerar" class="font-semibold">Resolva a pendência primeiro.</p>
             }
-            <button type="button" (click)="regerar()" [disabled]="ocupado() || conflito() || gravandoCampo()"
+            <button #botaoRegerar type="button" (click)="regerar()" [disabled]="ocupado() || conflito() || gravandoCampo()"
                     [attr.aria-describedby]="conflito() ? 'dica-pendencia-regerar' : null"
                     class="h-12 w-full rounded-lg bg-amber-700 px-4 font-semibold text-white disabled:opacity-60 sm:w-auto">
               {{ regerando() ? 'Gerando PDF…' : 'Gerar PDF novamente' }}
@@ -241,6 +245,10 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
               <p data-testid="proposta-cancelada" class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
                 @if (aceito()) {
                   Trabalho aceito: a proposta reabre ao sincronizar.
+                } @else if (o.status === 'ABERTA') {
+                  <!-- FW-R3: sem trabalho feito, não há o que aceitar -->
+                  A proposta desta OS foi cancelada.
+                  A OS ainda não começou: se o serviço não vai acontecer, cancele a OS.
                 } @else {
                   A proposta desta OS foi cancelada.
                   {{ admin() ? 'Aceite o trabalho para reabrir a proposta.' : 'Só o administrador aceita o trabalho, reabrindo a proposta.' }}
@@ -261,6 +269,11 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
                         class="h-12 rounded-lg border border-slate-300 px-4 font-semibold text-slate-700 disabled:opacity-60">
                   {{ o.tecnicoId ? 'Trocar técnico' : 'Atribuir técnico' }}
                 </button>
+              }
+              @if (podeTrocarResponsavel() && !trocandoResponsavel()) {
+                <button #botaoResponsavel type="button" (click)="abrirResponsavel()" [disabled]="ocupado() || conflito()"
+                        [attr.aria-describedby]="conflito() ? 'dica-pendencia-escritorio' : null"
+                        class="h-12 rounded-lg border border-slate-300 px-4 font-semibold text-slate-700 disabled:opacity-60">Trocar responsável</button>
               }
               @if (podeAceitar()) {
                 <button type="button" (click)="abrirDialogo('aceitar', $any($event.currentTarget))" [disabled]="ocupado() || conflito()"
@@ -295,9 +308,26 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
                   }
                 </select>
                 <div class="flex gap-2">
-                  <button type="button" (click)="salvarTecnico()" [disabled]="ocupado() || conflito()"
+                  <button #botaoSalvarTecnico type="button" (click)="salvarTecnico()" [disabled]="ocupado() || conflito()"
                           class="h-12 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 sm:flex-none">Salvar técnico</button>
                   <button type="button" (click)="fecharAtribuir()"
+                          class="h-12 flex-1 rounded-lg border border-slate-300 px-4 font-semibold sm:flex-none">Cancelar</button>
+                </div>
+              </div>
+            }
+            @if (trocandoResponsavel()) {
+              <div class="space-y-2">
+                <label for="responsavel-os" class="block text-sm font-medium">Responsável da OS</label>
+                <select #selectResponsavel id="responsavel-os" (change)="responsavelEscolhido.set($any($event.target).value)"
+                        class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3 sm:w-72">
+                  @for (r of responsaveis(); track r.id) {
+                    <option [value]="r.id" [selected]="r.id === responsavelEscolhido()">{{ r.rotulo }}</option>
+                  }
+                </select>
+                <div class="flex gap-2">
+                  <button #botaoSalvarResponsavel type="button" (click)="salvarResponsavel()" [disabled]="ocupado() || conflito()"
+                          class="h-12 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 sm:flex-none">Salvar responsável</button>
+                  <button type="button" (click)="fecharResponsavel()"
                           class="h-12 flex-1 rounded-lg border border-slate-300 px-4 font-semibold sm:flex-none">Cancelar</button>
                 </div>
               </div>
@@ -310,7 +340,7 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
             @if (conflito()) {
               <p id="dica-pendencia-iniciar" class="text-sm text-amber-800">Resolva a pendência primeiro.</p>
             }
-            <button type="button" (click)="iniciar()" [disabled]="ocupado() || conflito()"
+            <button #botaoIniciar type="button" (click)="iniciar()" [disabled]="ocupado() || conflito()"
                     [attr.aria-describedby]="conflito() ? 'dica-pendencia-iniciar' : null"
                     class="h-12 w-full rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 lg:w-auto">
               {{ iniciando() ? 'Iniciando…' : 'Iniciar OS' }}
@@ -361,7 +391,12 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
               <dt class="text-slate-500">Técnico</dt>
               <dd data-testid="tecnico">{{ o.tecnicoId ? (nome(o.tecnicoId) ?? 'Técnico não identificado') : 'Nenhum' }}</dd>
               <dt class="text-slate-500">Responsável</dt>
-              <dd data-testid="responsavel">{{ o.responsavelId ? (nome(o.responsavelId) ?? 'Não identificado') : '—' }}</dd>
+              <dd data-testid="responsavel">
+                {{ o.responsavelId ? (nome(o.responsavelId) ?? 'Não identificado') : '—' }}
+                @if (admin() && o.propostaId && (o.status === 'ABERTA' || o.status === 'EM_ANDAMENTO')) {
+                  <span class="block text-xs text-slate-500">O responsável segue o da proposta.</span>
+                }
+              </dd>
             }
             @if (iniciadaEm(); as i) {
               <dt class="text-slate-500">Iniciada em</dt>
@@ -487,13 +522,23 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
                 @if (dicaFoto(); as d) {
                   <p id="dica-foto" class="text-sm text-slate-600">{{ d }}</p>
                 }
+                <!-- FW-R1 (Q13): a câmera e a galeria (a foto tirada fora do app, ou a câmera que recarregou a página) -->
                 <input #inputFoto type="file" accept="image/*" capture="environment" class="hidden" (change)="fotoEscolhida($event)" />
-                <button #botaoFoto type="button" (click)="tirarFoto(inputFoto)" [disabled]="gravandoFoto() || limiteFotos() || ocupado()"
-                        [attr.aria-describedby]="dicaFoto() ? 'dica-foto' : null"
-                        class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 sm:w-auto">
-                  <svg [lucideIcon]="iconeCamera" [size]="18" aria-hidden="true"></svg>
-                  {{ gravandoFoto() ? 'Gravando foto…' : 'Tirar foto' }}
-                </button>
+                <input #inputGaleria data-testid="input-galeria" type="file" accept="image/*" class="hidden" (change)="fotoEscolhida($event)" />
+                <div class="flex flex-col gap-2 sm:flex-row">
+                  <button #botaoFoto type="button" (click)="tirarFoto(inputFoto)" [disabled]="gravandoFoto() || limiteFotos() || ocupado()"
+                          [attr.aria-describedby]="dicaFoto() ? 'dica-foto' : null"
+                          class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 sm:w-auto">
+                    <svg [lucideIcon]="iconeCamera" [size]="18" aria-hidden="true"></svg>
+                    {{ gravandoFoto() ? 'Gravando foto…' : 'Tirar foto' }}
+                  </button>
+                  <button #botaoGaleria type="button" (click)="tirarFoto(inputGaleria)" [disabled]="gravandoFoto() || limiteFotos() || ocupado()"
+                          [attr.aria-describedby]="dicaFoto() ? 'dica-foto' : null"
+                          class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg border border-blue-600 px-4 font-semibold text-blue-700 disabled:opacity-60 sm:w-auto">
+                    <svg [lucideIcon]="iconeGaleria" [size]="18" aria-hidden="true"></svg>
+                    Escolher da galeria
+                  </button>
+                </div>
               </div>
             }
             <app-galeria-os [fotos]="fotos()" (abrir)="abrirFoto($event)" />
@@ -590,7 +635,7 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
                   <span class="flex gap-2">
                     <button type="button" (click)="abrirDocumento(d)" [attr.aria-label]="'Abrir ' + d.codigoExibido"
                             class="h-12 rounded-lg border border-slate-300 px-4 font-semibold">Abrir</button>
-                    <button type="button" (click)="compartilharDocumento(d)" [disabled]="ocupado()" [attr.aria-label]="'Compartilhar ' + d.codigoExibido"
+                    <button type="button" (click)="compartilharDocumento(d, $any($event.currentTarget))" [disabled]="ocupado()" [attr.aria-label]="'Compartilhar ' + d.codigoExibido"
                             class="h-12 rounded-lg border border-blue-600 px-4 font-semibold text-blue-700 disabled:opacity-60">Compartilhar</button>
                   </span>
                 </li>
@@ -694,6 +739,14 @@ export class OsExecucaoPage {
   private readonly visorDocumento = viewChild('visorDocumento', { read: VisorPdf });
   private readonly botaoAtribuir = viewChild<ElementRef<HTMLButtonElement>>('botaoAtribuir');
   private readonly selectTecnico = viewChild<ElementRef<HTMLSelectElement>>('selectTecnico');
+  private readonly botaoSalvarTecnico = viewChild<ElementRef<HTMLButtonElement>>('botaoSalvarTecnico');
+  private readonly botaoResponsavel = viewChild<ElementRef<HTMLButtonElement>>('botaoResponsavel');
+  private readonly selectResponsavel = viewChild<ElementRef<HTMLSelectElement>>('selectResponsavel');
+  private readonly botaoSalvarResponsavel = viewChild<ElementRef<HTMLButtonElement>>('botaoSalvarResponsavel');
+  private readonly botaoIniciar = viewChild<ElementRef<HTMLButtonElement>>('botaoIniciar');
+  private readonly botaoRegerar = viewChild<ElementRef<HTMLButtonElement>>('botaoRegerar');
+  private readonly inputGaleria = viewChild<ElementRef<HTMLInputElement>>('inputGaleria');
+  private readonly botaoGaleria = viewChild<ElementRef<HTMLButtonElement>>('botaoGaleria');
 
   protected readonly os = signal<OsLocal | undefined>(undefined);
   private readonly carregou = signal(false);
@@ -740,6 +793,9 @@ export class OsExecucaoPage {
   protected readonly dialogoEscritorio = signal<DialogoEscritorio | null>(null);
   protected readonly atribuindo = signal(false);
   protected readonly tecnicoEscolhido = signal('');
+  /** FW-R4: o responsável da OS avulsa em edição (ADMIN). */
+  protected readonly trocandoResponsavel = signal(false);
+  protected readonly responsavelEscolhido = signal('');
   private readonly statusProposta = signal<StatusProposta | null>(null);
   /** M2: a OS cujo "Aceitar o trabalho" já foi para a fila: até o sync reabrir a proposta, não se oferece de novo. */
   protected readonly aceiteEnviado = signal<string | null>(null);
@@ -747,11 +803,12 @@ export class OsExecucaoPage {
   protected readonly uploadAnexo = TIPO_UPLOAD_ANEXO_OS;
   protected readonly momentos = MOMENTOS;
   protected readonly rotuloMomento = ROTULO_MOMENTO;
-  protected readonly maxFotos = MAX_FOTOS_OS;
-  protected readonly maxNota = MAX_NOTA;
-  protected readonly maxLegenda = MAX_LEGENDA;
+  protected readonly maxFotos = FOTOS_MAX_OS;
+  protected readonly maxNota = NOTA_MAX_OS;
+  protected readonly maxLegenda = LEGENDA_MAX_OS;
   protected readonly maxResumo = RESUMO_MAX_OS;
   protected readonly iconeCamera = LucideCamera;
+  protected readonly iconeGaleria = LucideImage;
   protected readonly iconeMapa = LucideMapPin;
   protected readonly iconeTelefone = LucidePhone;
   protected readonly data = dataBr;
@@ -854,21 +911,46 @@ export class OsExecucaoPage {
     const o = this.os();
     return !!o?.propostaId && o.status !== 'CANCELADA' && this.statusProposta() === 'CANCELADA';
   });
-  /** M2-R4: só o ADMIN aceita o trabalho; uma vez (M2: o aceite enviado espera o sync reabrir a proposta). */
+  /**
+   * M2-R4: só o ADMIN aceita o trabalho; uma vez (M2: o aceite enviado espera o sync reabrir a proposta). FW-R3: não com
+   * a OS ainda ABERTA (nenhum trabalho feito, como o selo "Trabalho em proposta cancelada"): a faixa sugere cancelá-la.
+   */
   protected readonly aceito = computed(() => this.aceiteEnviado() === this.id());
-  protected readonly podeAceitar = computed(() => this.admin() && this.propostaCancelada() && !this.aceito());
+  protected readonly podeAceitar = computed(
+    () => this.admin() && this.propostaCancelada() && this.os()?.status !== 'ABERTA' && !this.aceito(),
+  );
   /** Como o DELETE do servidor: ABERTA sem técnico (com técnico, cancela-se), pelo ADMIN ou o COMERCIAL responsável. */
   protected readonly podeExcluir = computed(() => {
     const o = this.os();
     return !!o && o.status === 'ABERTA' && o.tecnicoId === null && (this.admin() || (this.escritorio() && this.ehResponsavel()));
   });
-  protected readonly temAcaoTravada = computed(() => this.podeAtribuir() || this.podeCancelar() || this.podeReabrir() || this.podeAceitar());
+  /**
+   * FW-R4: o responsável da OS avulsa, só pelo ADMIN, em ABERTA e EM_ANDAMENTO (a matriz, `camposEditaveisOs`). Na OS
+   * de proposta ele segue o da proposta (M2P1-R16): nunca aqui.
+   */
+  protected readonly podeTrocarResponsavel = computed(() => {
+    const o = this.os();
+    const u = this.usuario();
+    return !!o && !!u && o.propostaId === null && this.admin()
+      && camposEditaveisOs(o.status, u.perfil, this.ehResponsavel(), false).includes('responsavelId');
+  });
+  protected readonly temAcaoTravada = computed(
+    () => this.podeAtribuir() || this.podeTrocarResponsavel() || this.podeCancelar() || this.podeReabrir() || this.podeAceitar(),
+  );
   protected readonly temAcoesEscritorio = computed(() => this.temAcaoTravada() || this.podeEditar() || this.podeExcluir());
   /** Os técnicos para a atribuição: os ativos e, se for o caso, o atual inativo (marcado). */
   protected readonly tecnicos = computed(() => {
     const atual = this.os()?.tecnicoId ?? null;
     return this.usuarios()
       .filter((u) => u.perfil === 'TECNICO' && (u.ativo !== false || u.id === atual))
+      .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
+      .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
+  });
+  /** Os responsáveis possíveis: ADMIN e COMERCIAL ativos e, se for o caso, o atual inativo (marcado). */
+  protected readonly responsaveis = computed(() => {
+    const atual = this.os()?.responsavelId ?? null;
+    return this.usuarios()
+      .filter((u) => (u.perfil === 'ADMIN' || u.perfil === 'COMERCIAL') && (u.ativo !== false || u.id === atual))
       .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
       .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
   });
@@ -939,17 +1021,17 @@ export class OsExecucaoPage {
   );
   protected readonly tamanhoNota = computed(() => tamanhoTextoOs(this.nota()));
   protected readonly tamanhoLegenda = computed(() => tamanhoTextoOs(this.legenda()));
-  protected readonly legendaLonga = computed(() => this.tamanhoLegenda() > MAX_LEGENDA);
+  protected readonly legendaLonga = computed(() => this.tamanhoLegenda() > LEGENDA_MAX_OS);
   protected readonly tamanhoResumo = computed(() => tamanhoTextoOs(this.resumo()));
   protected readonly fotos = computed(() => this.anexos().filter((a) => a.tipo === 'FOTO'));
-  protected readonly limiteFotos = computed(() => this.fotos().length >= MAX_FOTOS_OS);
+  protected readonly limiteFotos = computed(() => this.fotos().length >= FOTOS_MAX_OS);
   /**
    * T2 carry: por que o "Tirar foto" está desabilitado, à vista e ligado ao botão: o limite, ou a ação em curso que o
    * trava (a conclusão, o PDF de novo, o compartilhamento, o registro da recusa ou outra). A foto gravando já diz
    * "Gravando foto…" no próprio botão.
    */
   protected readonly dicaFoto = computed(() => {
-    if (this.limiteFotos()) return `Esta OS já tem o máximo de ${MAX_FOTOS_OS} fotos.`;
+    if (this.limiteFotos()) return `Esta OS já tem o máximo de ${FOTOS_MAX_OS} fotos.`;
     if (this.gravandoFoto() || !this.ocupado()) return null;
     if (this.concluindo()) return 'Aguarde a conclusão da OS para tirar outra foto.';
     if (this.regerando()) return 'Aguarde o PDF ficar pronto para tirar outra foto.';
@@ -996,20 +1078,25 @@ export class OsExecucaoPage {
       this.anexos.set([]);
       this.pendencias.set([]);
       this.limparFormulario();
+      // FW-R2: o rascunho desta OS (fora do rastreio: a renovação do token reemite o usuário e não apaga o digitado)
+      const usuarioId = untracked(this.usuario)?.id ?? null;
+      const rascunho = usuarioId ? lerRascunhoOs(usuarioId, id) : {};
+      this.nota.set(rascunho.nota ?? '');
       let primeira = true;
-      const assinaturas = [
+      // fora do rastreio: uma fonte que emite na hora da inscrição (o `podeVer` lê o usuário) não liga o effect a ele
+      const assinaturas = untracked(() => [
         this.repo.observarOs(id).subscribe((lida) => {
           // T4: o COMERCIAL não abre a OS de outro comercial (o filtro do `observarTodas`)
           const o = lida && this.podeVer(lida) ? lida : undefined;
-          // a OS reaberta traz o resumo da conclusão anterior: ele vem preenchido
-          if (primeira) this.resumo.set(o?.resumoExecucao ?? '');
+          // o rascunho vale mais; sem ele, a OS reaberta traz o resumo da conclusão anterior preenchido
+          if (primeira) this.resumo.set(rascunho.resumo ?? o?.resumoExecucao ?? '');
           primeira = false;
           this.os.set(o);
           this.carregou.set(true);
         }),
         this.repo.observarAnexos(id).subscribe((a) => this.anexos.set(a)),
         this.repo.observarPendencias(id).subscribe((x) => this.pendencias.set(x)),
-      ];
+      ]);
       aoLimpar(() => assinaturas.forEach((a) => a.unsubscribe()));
     });
     // T4: o status da proposta da OS (o "Aceitar o trabalho" e a faixa da proposta cancelada), só no escritório
@@ -1066,6 +1153,7 @@ export class OsExecucaoPage {
   }
 
   protected abrirAtribuir(): void {
+    this.trocandoResponsavel.set(false);
     this.tecnicoEscolhido.set(this.os()?.tecnicoId ?? '');
     this.atribuindo.set(true);
     afterNextRender(() => this.selectTecnico()?.nativeElement.focus(), { injector: this.injector });
@@ -1087,7 +1175,36 @@ export class OsExecucaoPage {
     await this.acaoEscritorio((id) => this.repo.atribuir(id, { tecnicoId }), 'Técnico atualizado.', () => {
       this.atribuindo.set(false);
       this.devolverFoco(() => this.botaoAtribuir()?.nativeElement);
-    });
+    }, () => this.devolverFoco(() => this.botaoSalvarTecnico()?.nativeElement));
+  }
+
+  /** FW-R4: o editor do responsável da OS avulsa (um editor de cada vez: fecha o do técnico). */
+  protected abrirResponsavel(): void {
+    this.atribuindo.set(false);
+    this.responsavelEscolhido.set(this.os()?.responsavelId ?? '');
+    this.trocandoResponsavel.set(true);
+    afterNextRender(() => this.selectResponsavel()?.nativeElement.focus(), { injector: this.injector });
+  }
+
+  protected fecharResponsavel(): void {
+    this.trocandoResponsavel.set(false);
+    this.devolverFoco(() => this.botaoResponsavel()?.nativeElement);
+  }
+
+  /**
+   * FW-R4: o responsável novo (`atribuir` com `responsavelId`: ADMIN ou COMERCIAL ativo, só na avulsa; a trava do
+   * CONFLITO e o id guardado, como o técnico). O mesmo responsável só fecha.
+   */
+  protected async salvarResponsavel(): Promise<void> {
+    const responsavelId = this.responsavelEscolhido();
+    if (!responsavelId || responsavelId === (this.os()?.responsavelId ?? '')) {
+      this.fecharResponsavel();
+      return;
+    }
+    await this.acaoEscritorio((id) => this.repo.atribuir(id, { responsavelId }), 'Responsável atualizado.', () => {
+      this.trocandoResponsavel.set(false);
+      this.devolverFoco(() => this.botaoResponsavel()?.nativeElement);
+    }, () => this.devolverFoco(() => this.botaoSalvarResponsavel()?.nativeElement));
   }
 
   protected async cancelarOs(motivo: string | null): Promise<void> {
@@ -1118,9 +1235,12 @@ export class OsExecucaoPage {
 
   /**
    * Uma ação do escritório: guarda o id no começo e, se a rota trocou de OS enquanto ela gravava, não escreve nada na
-   * tela (nem o aviso, nem o erro): o resultado não é desta OS. Na recusa, o diálogo fica aberto (com o motivo).
+   * tela (nem o aviso, nem o erro): o resultado não é desta OS. Na recusa, o diálogo fica aberto (com o motivo), e
+   * `aoFalhar` devolve o foco ao botão que se desabilitou (M2).
    */
-  private async acaoEscritorio(fazer: (id: string) => Promise<void>, aviso: string, depois: () => void): Promise<void> {
+  private async acaoEscritorio(
+    fazer: (id: string) => Promise<void>, aviso: string, depois: () => void, aoFalhar?: () => void,
+  ): Promise<void> {
     if (this.ocupado()) return;
     const id = this.id();
     this.ocupado.set(true);
@@ -1131,7 +1251,9 @@ export class OsExecucaoPage {
       this.avisar(aviso);
       depois();
     } catch (e) {
-      if (this.id() === id) this.toasts.erro(mensagemErroOs(e));
+      if (this.id() !== id) return;
+      this.toasts.erro(mensagemErroOs(e));
+      aoFalhar?.();
     } finally {
       this.ocupado.set(false);
     }
@@ -1151,7 +1273,10 @@ export class OsExecucaoPage {
       // o botão some com a OS em andamento: o foco vai ao título, não ao body
       this.focarTitulo();
     } catch (e) {
-      if (this.id() === id) this.toasts.erro(mensagemErroOs(e));
+      if (this.id() !== id) return;
+      this.toasts.erro(mensagemErroOs(e));
+      // M2: o botão fica (a OS segue aberta) e se desabilitou com o foco nele
+      this.devolverFoco(() => this.botaoIniciar()?.nativeElement);
     } finally {
       this.iniciando.set(false);
       this.ocupado.set(false);
@@ -1162,6 +1287,7 @@ export class OsExecucaoPage {
 
   protected digitarNota(valor: string): void {
     this.nota.set(valor);
+    this.guardarRascunho('nota', valor);
     if (this.erroNota() && this.validarNota(valor) === null) this.erroNota.set(null);
   }
 
@@ -1178,6 +1304,8 @@ export class OsExecucaoPage {
     this.gravandoNota.set(true);
     try {
       await this.repo.adicionarNota(id, texto);
+      // FW-R2: a nota gravada sai do rascunho (mesmo que a rota já seja de outra OS)
+      this.guardarRascunho('nota', null, id);
       if (this.id() !== id) return;
       this.nota.set('');
       this.avisar('Nota adicionada.');
@@ -1194,7 +1322,7 @@ export class OsExecucaoPage {
   private validarNota(texto: string): string | null {
     const n = tamanhoTextoOs(texto);
     if (n === 0) return 'Escreva a nota.';
-    if (n > MAX_NOTA) return `Máximo de ${MAX_NOTA} caracteres.`;
+    if (n > NOTA_MAX_OS) return `Máximo de ${NOTA_MAX_OS} caracteres.`;
     return null;
   }
 
@@ -1210,8 +1338,8 @@ export class OsExecucaoPage {
   }
 
   /**
-   * "Tirar foto": abre a câmera pelo input, ainda dentro do toque. A legenda longa demais é recusada antes: a foto
-   * tirada não se perderia, mas teria de ser tirada de novo.
+   * "Tirar foto" (a câmera) e "Escolher da galeria" (FW-R1, o input sem `capture`): abre o input ainda dentro do toque.
+   * A legenda longa demais é recusada antes: a foto tirada não se perderia, mas teria de ser tirada de novo.
    */
   protected tirarFoto(input: HTMLInputElement): void {
     if (this.gravandoFoto() || this.ocupado()) return;
@@ -1244,9 +1372,12 @@ export class OsExecucaoPage {
       return;
     }
     const antes = this.fotos().length;
-    // M2: o "Tirar foto" se desabilita com o foco nele; o foco fica no título da seção e volta ao botão no fim
+    // M2: o botão que abriu o input ("Tirar foto" ou, FW-R1, "Escolher da galeria") se desabilita com o foco nele; o
+    // foco fica no título da seção e volta a ele no fim
+    const daGaleria = input === this.inputGaleria()?.nativeElement;
+    const origem = () => (daGaleria ? this.botaoGaleria() : this.botaoFoto())?.nativeElement;
     const documento = this.host.nativeElement.ownerDocument;
-    const botao = this.botaoFoto()?.nativeElement;
+    const botao = origem();
     if (documento.activeElement === botao || documento.activeElement === documento.body) this.tituloFotos()?.nativeElement.focus();
     const id = this.id();
     this.gravandoFoto.set(true);
@@ -1256,7 +1387,7 @@ export class OsExecucaoPage {
       await this.repo.adicionarFoto(id, arquivo, { legenda: legenda === '' ? null : legenda, momento: this.momento() });
       if (this.id() !== id) return;
       this.legenda.set('');
-      this.anuncio.set(`Foto gravada (${antes + 1} de ${MAX_FOTOS_OS}).`);
+      this.anuncio.set(`Foto gravada (${antes + 1} de ${FOTOS_MAX_OS}).`);
     } catch (e) {
       if (this.id() !== id) return;
       // o técnico não entende um erro interno (Dexie, decodificador): a mensagem genérica é a da foto
@@ -1264,7 +1395,7 @@ export class OsExecucaoPage {
       this.anuncio.set('');
     } finally {
       this.gravandoFoto.set(false);
-      this.devolverFoco(() => this.botaoFoto()?.nativeElement, () => this.tituloFotos()?.nativeElement);
+      this.devolverFoco(origem, () => this.tituloFotos()?.nativeElement);
     }
   }
 
@@ -1353,6 +1484,7 @@ export class OsExecucaoPage {
 
   protected digitarResumo(valor: string): void {
     this.resumo.set(valor);
+    this.guardarRascunho('resumo', valor);
     if (this.erroResumo() && textoOsValido(valor, RESUMO_MIN_OS, RESUMO_MAX_OS)) this.erroResumo.set(null);
   }
 
@@ -1390,6 +1522,8 @@ export class OsExecucaoPage {
     this.anuncio.set('Gerando o PDF da OS…');
     try {
       const { blob, codigoExibido } = await this.repo.concluir(id, resumo, (e) => this.pdf.gerarBlobOs(e), { precisaVoltar });
+      // FW-R2: a OS concluída leva o resumo; o rascunho dele sai
+      this.guardarRascunho('resumo', null, id);
       // a rota trocou de OS: o PDF é da outra (ela o mostra em "PDF da OS"); nada desta tela muda
       if (this.id() !== id) return;
       this.precisaVoltar.set(false);
@@ -1436,7 +1570,10 @@ export class OsExecucaoPage {
       this.focarTitulo();
       await this.compartilhar(arquivoPdf(blob, nomeDoPdfOs(codigoExibido)), blob);
     } catch (e) {
-      if (this.id() === id) this.toasts.erro(mensagemErroOs(e));
+      if (this.id() !== id) return;
+      this.toasts.erro(mensagemErroOs(e));
+      // M2: a faixa fica (o PDF não saiu) e o botão se desabilitou com o foco nele
+      this.devolverFoco(() => this.botaoRegerar()?.nativeElement);
     } finally {
       this.regerando.set(false);
       this.ocupado.set(false);
@@ -1459,7 +1596,8 @@ export class OsExecucaoPage {
       .catch((e: unknown) => this.toasts.erro(this.erroDoDownload(e, SEM_INTERNET_PDF, FALHA_PDF)));
   }
 
-  protected async compartilharDocumento(d: AnexoOsVisivel): Promise<void> {
+  /** M2: o "Compartilhar" se desabilita durante a leitura e o compartilhamento: o foco sempre volta a ele (`botao`). */
+  protected async compartilharDocumento(d: AnexoOsVisivel, botao?: HTMLElement | null): Promise<void> {
     if (!this.alcancavel(d)) {
       this.toasts.erro(SEM_INTERNET_PDF);
       return;
@@ -1477,6 +1615,7 @@ export class OsExecucaoPage {
     } finally {
       this.emCurso.set(null);
       this.ocupado.set(false);
+      if (this.id() === id && botao) this.devolverFoco(() => (botao.isConnected ? botao : undefined));
     }
   }
 
@@ -1535,6 +1674,15 @@ export class OsExecucaoPage {
     );
   }
 
+  /**
+   * FW-R2: guarda o texto digitado (null esquece) no rascunho da OS `osId` (a da rota, por padrão) do usuário. Só o
+   * resumo e a nota; sem usuário, nada.
+   */
+  private guardarRascunho(campo: CampoRascunhoOs, texto: string | null, osId = this.id()): void {
+    const usuarioId = this.usuario()?.id;
+    if (usuarioId) gravarRascunhoOs(usuarioId, osId, campo, texto);
+  }
+
   /** M4: o que é desta OS na tela (campos, erros, diálogos e o painel do PDF) não passa para outra. */
   private limparFormulario(): void {
     this.nota.set('');
@@ -1553,6 +1701,7 @@ export class OsExecucaoPage {
     this.documentoAberto.set(null);
     this.dialogoEscritorio.set(null);
     this.atribuindo.set(false);
+    this.trocandoResponsavel.set(false);
   }
 
   /** O foco vai ao título depois do próximo desenho (o botão da ação some com a mudança de status). */

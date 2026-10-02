@@ -31,8 +31,9 @@ const instante = (o: OsLocal) => (o.atualizadoEm ? Date.parse(o.atualizadoEm) : 
 /**
  * Lista de OS (`/os`, spec M2 §9).
  * - TECNICO: "Minhas OS" (`observarDoTecnico`), na ordem do `ordenarParaTecnico` (data prevista, urgentes primeiro no
- *   mesmo dia; a urgente sem data conta como de hoje, M2P3-R8, e a normal sem data vai para o fim). As encerradas ficam ocultas até "Mostrar encerradas" e então vêm depois das abertas,
- *   as mais recentes primeiro: as concluídas, de datas passadas, não empurram o trabalho do dia para baixo.
+ *   mesmo dia; a urgente sem data conta como de hoje, M2P3-R8, e a normal sem data vai para o fim). As encerradas
+ *   ficam ocultas até "Mostrar encerradas" e então vêm depois das abertas, as mais recentes primeiro: as concluídas,
+ *   de datas passadas, não empurram o trabalho do dia para baixo.
  * - ADMIN e COMERCIAL: `observarTodas` (o repositório já filtra o que o perfil vê), busca, chips de status, tipo, o
  *   técnico (só o ADMIN) e "Nova OS avulsa". M2P3-R6 (Q15): as concluídas dos últimos 7 dias aparecem por padrão, com
  *   o status "Concluída"; as mais antigas e as canceladas, só com "Mostrar encerradas".

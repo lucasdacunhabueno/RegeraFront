@@ -503,6 +503,17 @@ export const RESUMO_MIN_OS = 3;
 export const RESUMO_MAX_OS = 4000;
 export const MOTIVO_MIN_OS = 3;
 export const MOTIVO_MAX_OS = 500;
+/**
+ * Os limites da nota, da foto e da assinatura (os do servidor: `NotaOsDados`, `AnexoOsService`), em code points: um
+ * lugar só, para o repositório e as telas recusarem o mesmo texto.
+ */
+export const NOTA_MAX_OS = 2000;
+export const LEGENDA_MAX_OS = 200;
+export const ASSINANTE_NOME_MIN_OS = 2;
+export const ASSINANTE_NOME_MAX_OS = 120;
+export const ASSINANTE_PAPEL_MAX_OS = 60;
+/** No máximo 20 fotos por OS (o `LIMITE_FOTOS` do servidor). */
+export const FOTOS_MAX_OS = 20;
 
 const ADMIN_E_COMERCIAL: readonly Perfil[] = ['ADMIN', 'COMERCIAL'];
 const ADMIN_E_TECNICO: readonly Perfil[] = ['ADMIN', 'TECNICO'];

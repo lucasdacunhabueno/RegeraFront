@@ -29,16 +29,22 @@ import { bloqueioDoPdfOs } from './pdf-regeravel';
 import {
   AnexoOsLocal,
   AnexoOsServidor,
+  ASSINANTE_NOME_MAX_OS,
+  ASSINANTE_NOME_MIN_OS,
+  ASSINANTE_PAPEL_MAX_OS,
   BytesAnexoOs,
   CampoEdicaoOs,
   codigoOsExibido,
   ComandosOs,
   ContextoTransicaoOs,
   dadosDaOs,
+  FOTOS_MAX_OS,
   ItemOsLocal,
+  LEGENDA_MAX_OS,
   MOTIVO_MAX_OS,
   MOTIVO_MIN_OS,
   MomentoFoto,
+  NOTA_MAX_OS,
   NotaOsLocal,
   OsDados,
   OsLocal,
@@ -82,18 +88,13 @@ const QUANTIDADE_MAX_MILESIMOS = 999_999_999; // 999.999,999
 const MAX_CODIGO = 40;
 const MAX_NOME = 160;
 const MAX_UNIDADE = 10;
-const MAX_NOTA = 2000;
 /** `NotaOsDados.MAX_NOVAS_POR_ENVIO`: notas novas numa mutação. */
 const MAX_NOTAS_NOVAS = 200;
 const LIMITE: Readonly<Record<TipoAnexoOs, { max: number; codigo: string; mensagem: string }>> = {
-  FOTO: { max: 20, codigo: 'LIMITE_FOTOS', mensagem: 'Esta OS já tem o máximo de 20 fotos.' },
+  FOTO: { max: FOTOS_MAX_OS, codigo: 'LIMITE_FOTOS', mensagem: `Esta OS já tem o máximo de ${FOTOS_MAX_OS} fotos.` },
   ASSINATURA: { max: 10, codigo: 'LIMITE_ASSINATURAS', mensagem: 'Esta OS já tem o máximo de 10 assinaturas.' },
   DOCUMENTO: { max: 20, codigo: 'LIMITE_DOCUMENTOS', mensagem: 'Esta OS já tem o máximo de 20 PDFs.' },
 };
-const MAX_LEGENDA = 200;
-const ASSINANTE_NOME_MIN = 2;
-const ASSINANTE_NOME_MAX = 120;
-const ASSINANTE_PAPEL_MAX = 60;
 const ASSINATURA_MAX_BYTES = 512 * 1024;
 const SNAPSHOT_MAX_BYTES = 512 * 1024;
 /** `ArquivoService.MAX_BYTES` do servidor (o PDF): acima disso o upload volta 413. */
@@ -921,7 +922,7 @@ export class OsRepo {
       const campo = `notas[${novo.notas.length - 1}].texto`;
       const tamanho = tamanhoTextoOs(nota.texto);
       if (tamanho === 0) validacao({ [campo]: 'Escreva a nota.' });
-      if (tamanho > MAX_NOTA) validacao({ [campo]: `Máximo de ${MAX_NOTA} caracteres.` });
+      if (tamanho > NOTA_MAX_OS) validacao({ [campo]: `Máximo de ${NOTA_MAX_OS} caracteres.` });
       return { novo, base: atual.version };
     });
     return nota.id;
@@ -955,10 +956,10 @@ export class OsRepo {
     const campos: Record<string, string> = {};
     const tamanhoNome = tamanhoTextoOs(nome);
     if (tamanhoNome === 0) campos['assinanteNome'] = 'Informe o nome de quem assina.';
-    else if (tamanhoNome < ASSINANTE_NOME_MIN || tamanhoNome > ASSINANTE_NOME_MAX) {
-      campos['assinanteNome'] = `O nome tem de ${ASSINANTE_NOME_MIN} a ${ASSINANTE_NOME_MAX} caracteres.`;
+    else if (tamanhoNome < ASSINANTE_NOME_MIN_OS || tamanhoNome > ASSINANTE_NOME_MAX_OS) {
+      campos['assinanteNome'] = `O nome tem de ${ASSINANTE_NOME_MIN_OS} a ${ASSINANTE_NOME_MAX_OS} caracteres.`;
     }
-    if (tamanhoTextoOs(papel) > ASSINANTE_PAPEL_MAX) campos['assinantePapel'] = `Máximo de ${ASSINANTE_PAPEL_MAX} caracteres.`;
+    if (tamanhoTextoOs(papel) > ASSINANTE_PAPEL_MAX_OS) campos['assinantePapel'] = `Máximo de ${ASSINANTE_PAPEL_MAX_OS} caracteres.`;
     validacao(campos);
     if (assinatura.png.bytes.byteLength > ASSINATURA_MAX_BYTES) {
       throw new ErroOs('ASSINATURA_GRANDE', 'assinatura', 'A assinatura ficou grande demais. Limpe e assine de novo.');
@@ -1389,7 +1390,7 @@ export class OsRepo {
     const atual = await this.carregar(id);
     this.exigirAnexoDeCampo(atual, u);
     const legenda = texto(opcoes.legenda);
-    if (tamanhoTextoOs(legenda) > MAX_LEGENDA) validacao({ legenda: `Máximo de ${MAX_LEGENDA} caracteres.` });
+    if (tamanhoTextoOs(legenda) > LEGENDA_MAX_OS) validacao({ legenda: `Máximo de ${LEGENDA_MAX_OS} caracteres.` });
     await this.exigirLimite(atual, 'FOTO');
     const foto = await this.preparar(arquivo);
     const anexo = this.anexo(id, 'FOTO', foto.sha256, {

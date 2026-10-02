@@ -13,6 +13,7 @@ import { RegeraDb } from '../../core/db/regera-db';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { Pendencia, TIPO_UPLOAD_ANEXO_OS, UsuarioResumo } from '../../core/sync/sync-models';
 import { SyncService } from '../../core/sync/sync-service';
+import { gravarRascunhoOs, lerRascunhoOs } from '../../core/util/rascunho-os';
 import { Toasts } from '../../shared/ui/toasts';
 import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import { ClientesRepo } from '../clientes/clientes-repo';
@@ -37,6 +38,7 @@ const USUARIOS: UsuarioResumo[] = [
   { id: TECNICO.id, nome: TECNICO.nome, perfil: 'TECNICO' },
   { id: OUTRO_TECNICO.id, nome: OUTRO_TECNICO.nome, perfil: 'TECNICO' },
   { id: 'u-tec-off', nome: 'Tito Inativo', perfil: 'TECNICO', ativo: false },
+  { id: 'u-com-off', nome: 'Cris Inativa', perfil: 'COMERCIAL', ativo: false },
 ];
 
 /** 2026-10-02 01:30 UTC ainda é 2026-10-01 em São Paulo. */
@@ -151,10 +153,11 @@ async function montar(o: Opcoes = {}) {
   const remoto = new Blob(['%PDF-remoto'], { type: 'application/pdf' });
   const arquivos = { baixarSemCache: vi.fn<(id: string) => Promise<Blob>>(async () => remoto) };
   const online = signal(o.online ?? true);
+  const usuario = signal(o.usuario ?? TECNICO);
   TestBed.configureTestingModule({
     providers: [
       provideRouter([]),
-      { provide: AuthService, useValue: { usuario: signal(o.usuario ?? TECNICO) } },
+      { provide: AuthService, useValue: { usuario } },
       { provide: OsRepo, useValue: repo },
       { provide: ClientesRepo, useValue: { observarTodos: () => of(o.clientes ?? [CLIENTE]) } },
       { provide: PropostasRepo, useValue: propostas },
@@ -171,8 +174,10 @@ async function montar(o: Opcoes = {}) {
   fixture.detectChanges();
   const el = fixture.nativeElement as HTMLElement;
   await ate(fixture, () => expect(el.querySelector('[data-testid=carregando]')).toBeNull());
-  return { fixture, el, repo, propostas, pdf, arquivos, online, toast, toastErro, navegar, pdfBlob, gerado, remoto };
+  return { fixture, el, repo, propostas, pdf, arquivos, online, usuario, toast, toastErro, navegar, pdfBlob, gerado, remoto };
 }
+
+type Montagem = Awaited<ReturnType<typeof montar>>;
 
 async function ate(fixture: ComponentFixture<unknown>, verificar: () => void) {
   await vi.waitFor(() => {
@@ -192,8 +197,8 @@ function digitar(fixture: ComponentFixture<unknown>, campo: HTMLTextAreaElement 
   fixture.detectChanges();
 }
 
-function escolherFoto(fixture: ComponentFixture<unknown>, el: HTMLElement, arquivo: File) {
-  const input = el.querySelector<HTMLInputElement>('input[type=file]')!;
+function escolherFoto(fixture: ComponentFixture<unknown>, el: HTMLElement, arquivo: File, seletor = 'input[type=file][capture]') {
+  const input = el.querySelector<HTMLInputElement>(seletor)!;
   Object.defineProperty(input, 'files', { configurable: true, value: [arquivo] });
   input.dispatchEvent(new Event('change'));
   fixture.detectChanges();
@@ -243,9 +248,11 @@ describe('OsExecucaoPage', () => {
     URL.revokeObjectURL = vi.fn();
     semShareNoNavegador();
     vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => undefined);
+    sessionStorage.clear();
   });
 
   afterEach(() => {
+    sessionStorage.clear();
     URL.createObjectURL = criarUrl;
     URL.revokeObjectURL = revogarUrl;
     vi.useRealTimers();
@@ -355,6 +362,8 @@ describe('OsExecucaoPage', () => {
     it.each(casos)('%s em %s', async (_quem, status, usuario, esperado) => {
       const { el } = await montar({ usuario, os: osLocal(status) });
       expect(controles(el)).toEqual(esperado);
+      // FW-R1: a galeria vai junto com a câmera
+      expect(!!botao(el, 'Escolher da galeria')).toBe(esperado.foto);
     });
 
     it('M2P3-R9: o técnico atribuído acrescenta nota e foto na OS cancelada', async () => {
@@ -1245,8 +1254,10 @@ describe('OsExecucaoPage', () => {
       reabrir: !!botao(el, 'Reabrir'),
       aceitar: !!botao(el, 'Aceitar o trabalho'),
       excluir: !!botao(el, 'Excluir OS'),
+      responsavel: !!botao(el, 'Trocar responsável'),
     });
-    const nada = { editar: false, atribuir: false, cancelar: false, reabrir: false, aceitar: false, excluir: false };
+    const nada = { editar: false, atribuir: false, cancelar: false, reabrir: false, aceitar: false, excluir: false, responsavel: false };
+    const avulsa = { propostaId: null, propostaNumero: null, propostaCodigoExibido: null };
     type Linha = [string, StatusOs, UsuarioSessao, Partial<OsDados>, StatusProposta, typeof nada];
     const sem = { tecnicoId: null };
     const casos: Linha[] = [
@@ -1266,7 +1277,8 @@ describe('OsExecucaoPage', () => {
       ['técnico atribuído', 'EM_ANDAMENTO', TECNICO, {}, 'CANCELADA', nada],
       ['técnico atribuído', 'CONCLUIDA', TECNICO, {}, 'CANCELADA', nada],
       // M2-R4: "Aceitar o trabalho" para o ADMIN com a proposta cancelada e a OS não cancelada
-      ['ADMIN, proposta cancelada', 'ABERTA', ADMIN, {}, 'CANCELADA', { ...nada, editar: true, atribuir: true, cancelar: true, aceitar: true }],
+      // FW-R3: com a OS ainda aberta não há trabalho a aceitar (a faixa sugere cancelar a OS)
+      ['ADMIN, proposta cancelada', 'ABERTA', ADMIN, {}, 'CANCELADA', { ...nada, editar: true, atribuir: true, cancelar: true }],
       ['ADMIN, proposta cancelada', 'EM_ANDAMENTO', ADMIN, {}, 'CANCELADA', { ...nada, editar: true, atribuir: true, cancelar: true, aceitar: true }],
       ['ADMIN, proposta cancelada', 'CONCLUIDA', ADMIN, {}, 'CANCELADA', { ...nada, reabrir: true, aceitar: true }],
       ['ADMIN, proposta cancelada', 'CANCELADA', ADMIN, {}, 'CANCELADA', nada],
@@ -1274,8 +1286,13 @@ describe('OsExecucaoPage', () => {
       // a recusada não tem aceite (o servidor só reabre a cancelada)
       ['ADMIN, proposta recusada', 'EM_ANDAMENTO', ADMIN, {}, 'RECUSADA', { ...nada, editar: true, atribuir: true, cancelar: true }],
       // a avulsa não tem proposta a reabrir
-      ['ADMIN, OS avulsa', 'EM_ANDAMENTO', ADMIN, { propostaId: null, propostaCodigoExibido: null }, 'CANCELADA',
-        { ...nada, editar: true, atribuir: true, cancelar: true }],
+      ['ADMIN, OS avulsa', 'EM_ANDAMENTO', ADMIN, avulsa, 'CANCELADA',
+        { ...nada, editar: true, atribuir: true, cancelar: true, responsavel: true }],
+      // FW-R4: só o ADMIN troca o responsável, só na avulsa, em ABERTA e EM_ANDAMENTO (a matriz)
+      ['ADMIN, OS avulsa', 'ABERTA', ADMIN, avulsa, 'APROVADA', { ...nada, editar: true, atribuir: true, cancelar: true, responsavel: true }],
+      ['ADMIN, OS avulsa', 'CONCLUIDA', ADMIN, avulsa, 'APROVADA', { ...nada, reabrir: true }],
+      ['ADMIN, OS avulsa', 'CANCELADA', ADMIN, avulsa, 'APROVADA', nada],
+      ['COMERCIAL responsável, OS avulsa', 'ABERTA', COMERCIAL, avulsa, 'APROVADA', { ...nada, editar: true, atribuir: true, cancelar: true }],
     ];
 
     it.each(casos)('%s em %s', async (_quem, status, usuario, extra, propostaStatus, esperado) => {
@@ -1454,7 +1471,7 @@ describe('OsExecucaoPage', () => {
 
     it('trava do CONFLITO: atribuir, cancelar, reabrir e aceitar desabilitados com "Resolva a pendência primeiro"; editar e excluir não', async () => {
       let { el } = await montar({ usuario: ADMIN, os: osLocal('ABERTA', { tecnicoId: null }), pendencias: [conflito()], propostaStatus: 'CANCELADA' });
-      for (const rotulo of ['Atribuir técnico', 'Cancelar OS', 'Aceitar o trabalho']) {
+      for (const rotulo of ['Atribuir técnico', 'Cancelar OS']) {
         const b = botao(el, rotulo)!;
         expect(b.disabled, rotulo).toBe(true);
         expect(el.querySelector(`#${b.getAttribute('aria-describedby')}`)!.textContent).toContain('Resolva a pendência primeiro.');
@@ -1462,8 +1479,12 @@ describe('OsExecucaoPage', () => {
       expect(botao(el, 'Excluir OS')!.disabled).toBe(false);
       expect(el.querySelector('a[href="/os/o1/editar"]')).not.toBeNull();
       TestBed.resetTestingModule();
-      ({ el } = await montar({ usuario: ADMIN, os: osLocal('CONCLUIDA'), pendencias: [conflito()] }));
-      expect(botao(el, 'Reabrir')!.disabled).toBe(true);
+      ({ el } = await montar({ usuario: ADMIN, os: osLocal('CONCLUIDA'), pendencias: [conflito()], propostaStatus: 'CANCELADA' }));
+      for (const rotulo of ['Reabrir', 'Aceitar o trabalho']) {
+        const b = botao(el, rotulo)!;
+        expect(b.disabled, rotulo).toBe(true);
+        expect(el.querySelector(`#${b.getAttribute('aria-describedby')}`)!.textContent).toContain('Resolva a pendência primeiro.');
+      }
     });
 
     it('o resultado de uma ação de outra OS não escreve nesta (a rota trocou de OS no meio)', async () => {
@@ -1590,6 +1611,491 @@ describe('OsExecucaoPage', () => {
         const { el } = await montar({ usuario: COMERCIAL, os: osLocal(status) });
         expect(el.querySelector('textarea[name=nota]'), status).toBeNull();
       }
+    });
+  });
+
+  // ------------------------------------------------------------------ onda final (M2-P3)
+
+  describe('FW-R1: escolher da galeria (Q13: câmera ou galeria)', () => {
+    const GALERIA = '[data-testid=input-galeria]';
+    const inputGaleria = (el: HTMLElement) => el.querySelector<HTMLInputElement>(GALERIA)!;
+
+    it('um segundo input só de imagem e sem capture (abre a galeria); "Escolher da galeria" abre esse, não a câmera', async () => {
+      const { el } = await montar();
+      const galeria = inputGaleria(el);
+      expect(galeria.type).toBe('file');
+      expect(galeria.getAttribute('accept')).toBe('image/*');
+      expect(galeria.hasAttribute('capture')).toBe(false);
+      expect(galeria.multiple).toBe(false);
+      const camera = el.querySelector<HTMLInputElement>('input[type=file][capture]')!;
+      const abrirGaleria = vi.spyOn(galeria, 'click').mockImplementation(() => undefined);
+      const abrirCamera = vi.spyOn(camera, 'click').mockImplementation(() => undefined);
+      const escolher = botao(el, 'Escolher da galeria')!;
+      expect(escolher.className).toMatch(/\bh-12\b/);
+      escolher.click();
+      expect(abrirGaleria).toHaveBeenCalledTimes(1);
+      expect(abrirCamera).not.toHaveBeenCalled();
+    });
+
+    it('a foto da galeria vai pelo mesmo adicionarFoto, com o momento e a legenda, e anuncia o contador', async () => {
+      const { fixture, el, repo } = await montar();
+      botao(el, 'Durante')!.click();
+      fixture.detectChanges();
+      digitar(fixture, el.querySelector<HTMLInputElement>('input[name=legenda]')!, 'Fiação nova');
+      const arquivo = foto();
+      const input = escolherFoto(fixture, el, arquivo, GALERIA);
+      await vi.waitFor(() => expect(repo.adicionarFoto).toHaveBeenCalledWith('o1', arquivo, { legenda: 'Fiação nova', momento: 'DURANTE' }));
+      await ate(fixture, () => expect(anuncio(el)).toBe('Foto gravada (1 de 20).'));
+      expect(input.value).toBe('');
+    });
+
+    it('as mesmas travas: a legenda longa recusa antes de abrir; uma de cada vez; o limite de 20 com a dica', async () => {
+      const { fixture, el: tela, repo } = await montar();
+      let el = tela;
+      const abrir = vi.spyOn(inputGaleria(el), 'click').mockImplementation(() => undefined);
+      digitar(fixture, el.querySelector<HTMLInputElement>('input[name=legenda]')!, 'x'.repeat(201));
+      botao(el, 'Escolher da galeria')!.click();
+      fixture.detectChanges();
+      expect(abrir).not.toHaveBeenCalled();
+      expect(el.querySelector('[data-testid=erro-foto]')!.textContent).toContain('A legenda tem no máximo 200 caracteres.');
+      digitar(fixture, el.querySelector<HTMLInputElement>('input[name=legenda]')!, '');
+      let terminar!: (id: string) => void;
+      repo.adicionarFoto.mockImplementation(() => new Promise<string>((r) => (terminar = r)));
+      escolherFoto(fixture, el, foto(), GALERIA);
+      await vi.waitFor(() => expect(repo.adicionarFoto).toHaveBeenCalledTimes(1));
+      fixture.detectChanges();
+      expect(botao(el, 'Escolher da galeria')!.disabled).toBe(true);
+      escolherFoto(fixture, el, foto(), GALERIA);
+      escolherFoto(fixture, el, foto());
+      expect(repo.adicionarFoto).toHaveBeenCalledTimes(1);
+      terminar('f1');
+      await ate(fixture, () => expect(botao(el, 'Escolher da galeria')!.disabled).toBe(false));
+      TestBed.resetTestingModule();
+      ({ el } = await montar({ anexos: Array.from({ length: 20 }, (_, i) => anexo(`f${i}`)) }));
+      const escolher = botao(el, 'Escolher da galeria')!;
+      expect(escolher.disabled).toBe(true);
+      expect(el.querySelector(`#${escolher.getAttribute('aria-describedby')}`)!.textContent).toContain('20 fotos');
+    });
+
+    it('durante a geração do PDF: desabilitado com a dica, e a foto que chegar da galeria não é gravada', async () => {
+      const { fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] });
+      let terminar!: (r: { blob: Blob; codigoExibido: string }) => void;
+      repo.concluir.mockImplementation(() => new Promise((r) => (terminar = r)));
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('textarea[name=resumo]')!, 'Feito.');
+      botao(el, 'Concluir e gerar PDF')!.click();
+      await ate(fixture, () => expect(botao(el, 'Gerando PDF…')).toBeTruthy());
+      const escolher = botao(el, 'Escolher da galeria')!;
+      expect(escolher.disabled).toBe(true);
+      expect(el.querySelector(`#${escolher.getAttribute('aria-describedby')}`)!.textContent).toContain('Aguarde a conclusão');
+      const abrir = vi.spyOn(inputGaleria(el), 'click').mockImplementation(() => undefined);
+      escolher.disabled = false;
+      escolher.click();
+      expect(abrir).not.toHaveBeenCalled();
+      escolherFoto(fixture, el, foto(), GALERIA);
+      expect(repo.adicionarFoto).not.toHaveBeenCalled();
+      expect(el.querySelector('[data-testid=erro-foto]')!.textContent).toContain('não foi gravada');
+      terminar({ blob: new Blob(['x']), codigoExibido: 'OS-000123' });
+      await fixture.whenStable();
+    });
+
+    it('o foco sai do botão desabilitado para o título da seção e volta ao "Escolher da galeria" no fim', async () => {
+      const { fixture, el, repo } = await montar();
+      let terminar!: (id: string) => void;
+      repo.adicionarFoto.mockImplementation(() => new Promise<string>((r) => (terminar = r)));
+      const escolher = botao(el, 'Escolher da galeria')!;
+      escolher.focus();
+      escolherFoto(fixture, el, foto(), GALERIA);
+      fixture.detectChanges();
+      expect(escolher.disabled).toBe(true);
+      expect(document.activeElement).toBe(el.querySelector('#fotos-titulo'));
+      terminar('f1');
+      await ate(fixture, () => expect(document.activeElement).toBe(escolher));
+    });
+  });
+
+  describe('FW-R2: rascunho do resumo e da nota (sessionStorage)', () => {
+    const resumo = (el: HTMLElement) => el.querySelector<HTMLTextAreaElement>('textarea[name=resumo]')!;
+    const nota = (el: HTMLElement) => el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!;
+
+    it('o resumo e a nota digitados voltam quando a OS abre de novo (a página saiu da memória ou o usuário navegou)', async () => {
+      const primeira = await montar();
+      digitar(primeira.fixture, resumo(primeira.el), 'Quadro trocado e testado');
+      digitar(primeira.fixture, nota(primeira.el), 'Falta o disjuntor de 40 A');
+      primeira.fixture.destroy();
+      TestBed.resetTestingModule();
+      const { el } = await montar();
+      expect(resumo(el).value).toBe('Quadro trocado e testado');
+      expect(nota(el).value).toBe('Falta o disjuntor de 40 A');
+    });
+
+    it('o rascunho vale mais que o resumo da conclusão anterior (OS reaberta); apagado de propósito, fica vazio', async () => {
+      gravarRascunhoOs(TECNICO.id, 'o1', 'resumo', 'Segunda visita: aterramento feito');
+      const { fixture, el: tela } = await montar({ os: osLocal('EM_ANDAMENTO', { revisao: 2, resumoExecucao: 'Primeira visita' }) });
+      let el = tela;
+      expect(resumo(el).value).toBe('Segunda visita: aterramento feito');
+      digitar(fixture, resumo(el), '');
+      fixture.destroy();
+      TestBed.resetTestingModule();
+      ({ el } = await montar({ os: osLocal('EM_ANDAMENTO', { revisao: 2, resumoExecucao: 'Primeira visita' }) }));
+      expect(resumo(el).value).toBe('');
+    });
+
+    it('por usuário e por OS: o rascunho de um não aparece para outro usuário nem em outra OS', async () => {
+      gravarRascunhoOs(TECNICO.id, 'o1', 'nota', 'Do técnico');
+      gravarRascunhoOs(TECNICO.id, 'o2', 'nota', 'Da outra OS');
+      const { fixture, el } = await montar({ usuario: ADMIN });
+      expect(nota(el).value).toBe('');
+      fixture.componentRef.setInput('id', 'o2');
+      await ate(fixture, () => expect(el.querySelector('[data-testid=carregando]')).toBeNull());
+      expect(nota(el).value).toBe('');
+      TestBed.resetTestingModule();
+      const tecnico = await montar();
+      expect(nota(tecnico.el).value).toBe('Do técnico');
+      tecnico.fixture.componentRef.setInput('id', 'o2');
+      await ate(tecnico.fixture, () => expect(nota(tecnico.el).value).toBe('Da outra OS'));
+    });
+
+    it('a nota adicionada sai do rascunho (o resumo fica); a recusa mantém o texto guardado', async () => {
+      const { fixture, el, repo } = await montar();
+      digitar(fixture, resumo(el), 'Em andamento');
+      digitar(fixture, nota(el), 'Primeira');
+      repo.adicionarNota.mockRejectedValueOnce(new ErroOs('SEM_ESPACO', 'nota', 'Pouco espaço no aparelho.'));
+      botao(el, 'Adicionar')!.click();
+      await ate(fixture, () => expect(el.querySelector('[data-testid=erro-nota]')).not.toBeNull());
+      expect(lerRascunhoOs(TECNICO.id, 'o1')).toEqual({ resumo: 'Em andamento', nota: 'Primeira' });
+      botao(el, 'Adicionar')!.click();
+      await ate(fixture, () => expect(anuncio(el)).toBe('Nota adicionada.'));
+      expect(lerRascunhoOs(TECNICO.id, 'o1')).toEqual({ resumo: 'Em andamento' });
+    });
+
+    it('a OS concluída tira o resumo do rascunho; a recusa do concluir o mantém', async () => {
+      comShare();
+      const { fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] });
+      digitar(fixture, resumo(el), 'Quadro instalado.');
+      repo.concluir.mockRejectedValueOnce(new ErroOs('OS_ALTERADA', 'os', 'A OS mudou enquanto o PDF era gerado. Conclua de novo.'));
+      botao(el, 'Concluir e gerar PDF')!.click();
+      await vi.waitFor(() => expect(repo.concluir).toHaveBeenCalledTimes(1));
+      await fixture.whenStable();
+      expect(lerRascunhoOs(TECNICO.id, 'o1')).toEqual({ resumo: 'Quadro instalado.' });
+      await ate(fixture, () => expect(botao(el, 'Concluir e gerar PDF')!.disabled).toBe(false));
+      botao(el, 'Concluir e gerar PDF')!.click();
+      await vi.waitFor(() => expect(repo.concluir).toHaveBeenCalledTimes(2));
+      await vi.waitFor(() => expect(lerRascunhoOs(TECNICO.id, 'o1')).toEqual({}));
+    });
+
+    it('só os dois textos vão para o sessionStorage (nem a legenda, nem o momento, nem dados da OS)', async () => {
+      const { fixture, el } = await montar();
+      digitar(fixture, resumo(el), 'Resumo');
+      digitar(fixture, nota(el), 'Nota');
+      digitar(fixture, el.querySelector<HTMLInputElement>('input[name=legenda]')!, 'Legenda');
+      botao(el, 'Antes')!.click();
+      fixture.detectChanges();
+      const chaves = Object.keys(sessionStorage);
+      expect(chaves).toHaveLength(1);
+      expect(chaves[0]).toContain(TECNICO.id);
+      expect(chaves[0]).toContain('o1');
+      expect(JSON.parse(sessionStorage.getItem(chaves[0])!)).toEqual({ resumo: 'Resumo', nota: 'Nota' });
+      expect(sessionStorage.getItem(chaves[0])).not.toContain(DOCUMENTO_CLIENTE);
+    });
+
+    it('a renovação do token (o mesmo usuário de novo no sinal) não apaga o que está sendo digitado', async () => {
+      const { fixture, el, usuario } = await montar();
+      digitar(fixture, nota(el), 'Digitando');
+      usuario.set({ ...TECNICO });
+      fixture.detectChanges();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(nota(el).value).toBe('Digitando');
+    });
+  });
+
+  describe('M2: o foco volta ao botão que se desabilitou', () => {
+    const botaoEm = (raiz: Element, rotulo: string) =>
+      [...raiz.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === rotulo)!;
+    /** O navegador tira o foco do botão que se desabilita (o jsdom não): simulado com um elemento focado que sai. */
+    function perderFoco() {
+      const temporario = document.body.appendChild(document.createElement('button'));
+      temporario.focus();
+      temporario.remove();
+      expect(document.activeElement).toBe(document.body);
+    }
+    const concluida = () =>
+      osLocal('CONCLUIDA', { resumoExecucao: 'Quadro instalado.', assinaturaAnexoId: 'as1', assinanteNome: 'Maria Souza' });
+
+    it('iniciar: na recusa, o foco volta a "Iniciar OS"', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ os: osLocal('ABERTA') });
+      let recusar!: (e: unknown) => void;
+      repo.iniciar.mockImplementationOnce(() => new Promise<void>((_, rej) => (recusar = rej)));
+      const iniciar = botao(el, 'Iniciar OS')!;
+      iniciar.focus();
+      iniciar.click();
+      await ate(fixture, () => expect(botao(el, 'Iniciando…')!.disabled).toBe(true));
+      perderFoco();
+      recusar(new ErroOs('OS_SINCRONIZANDO', 'os', 'A OS está sendo sincronizada. Tente de novo em instantes.'));
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalled());
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Iniciar OS')));
+    });
+
+    it('"Gerar PDF novamente": na recusa, o foco volta ao botão', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ os: concluida(), anexos: [] });
+      let recusar!: (e: unknown) => void;
+      repo.regerarPdf.mockImplementationOnce(() => new Promise((_, rej) => (recusar = rej)));
+      const regerar = botao(el, 'Gerar PDF novamente')!;
+      regerar.focus();
+      regerar.click();
+      await ate(fixture, () => expect(botao(el, 'Gerando PDF…')!.disabled).toBe(true));
+      perderFoco();
+      recusar(new ErroOs('OS_ALTERADA', 'os', 'A OS mudou enquanto o PDF era gerado.'));
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalled());
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Gerar PDF novamente')));
+    });
+
+    it('"Salvar técnico": na recusa, o foco volta ao botão (o editor continua aberto)', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ usuario: ADMIN, os: osLocal('ABERTA') });
+      let recusar!: (e: unknown) => void;
+      repo.atribuir.mockImplementationOnce(() => new Promise<void>((_, rej) => (recusar = rej)));
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      const select = el.querySelector<HTMLSelectElement>('#tecnico-atribuir-os')!;
+      select.value = OUTRO_TECNICO.id;
+      select.dispatchEvent(new Event('change'));
+      const salvar = botao(el, 'Salvar técnico')!;
+      salvar.focus();
+      salvar.click();
+      fixture.detectChanges();
+      expect(salvar.disabled).toBe(true);
+      perderFoco();
+      recusar(new ErroOs('RESOLVA_A_PENDENCIA', 'os', 'Resolva a pendência desta OS antes de atribuí-la.'));
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalled());
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Salvar técnico')));
+    });
+
+    it.each(['ok', 'erro'] as const)('"Compartilhar" do PDF (%s): o foco sempre volta ao botão', async (fim) => {
+      const { fixture, el, repo } = await montar({ os: concluida(), anexos: [documentoPdf()] });
+      let liberar!: (b: Blob) => void;
+      let recusar!: (e: unknown) => void;
+      repo.blobDoAnexo.mockImplementationOnce(() => new Promise<Blob>((r, rej) => ((liberar = r), (recusar = rej))));
+      const compartilhar = el.querySelector<HTMLButtonElement>('[aria-label="Compartilhar OS-000123"]')!;
+      compartilhar.focus();
+      compartilhar.click();
+      fixture.detectChanges();
+      expect(compartilhar.disabled).toBe(true);
+      perderFoco();
+      if (fim === 'ok') liberar(new Blob(['%PDF'], { type: 'application/pdf' }));
+      else recusar(new Error('falhou'));
+      await ate(fixture, () => expect(document.activeElement).toBe(el.querySelector('[aria-label="Compartilhar OS-000123"]')));
+    });
+
+    it('o foco só volta se tiver se perdido (no body): quem já foi para outro lugar fica lá', async () => {
+      const { fixture, el, repo } = await montar({ os: osLocal('ABERTA') });
+      let recusar!: (e: unknown) => void;
+      repo.iniciar.mockImplementationOnce(() => new Promise<void>((_, rej) => (recusar = rej)));
+      botao(el, 'Iniciar OS')!.click();
+      fixture.detectChanges();
+      const campo = el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!;
+      campo.focus();
+      recusar(new ErroOs('OS_SINCRONIZANDO', 'os', 'Tente de novo.'));
+      await ate(fixture, () => expect(botao(el, 'Iniciar OS')!.disabled).toBe(false));
+      await fixture.whenStable();
+      expect(document.activeElement).toBe(campo);
+      expect(botaoEm(el, 'Iniciar OS')).toBeTruthy();
+    });
+  });
+
+  describe('FW-R3: "Aceitar o trabalho" só com trabalho (a OS em andamento ou concluída)', () => {
+    it('a OS aberta numa proposta cancelada: sem o aceite; a faixa sugere cancelar a OS se o serviço não vai acontecer', async () => {
+      const { el } = await montar({ usuario: ADMIN, os: osLocal('ABERTA'), propostaStatus: 'CANCELADA' });
+      expect(botao(el, 'Aceitar o trabalho')).toBeUndefined();
+      const faixa = el.querySelector('[data-testid=proposta-cancelada]')!;
+      expect(faixa.textContent).toContain('A proposta desta OS foi cancelada.');
+      expect(faixa.textContent).toContain('A OS ainda não começou: se o serviço não vai acontecer, cancele a OS.');
+      expect(faixa.textContent).not.toContain('Aceite o trabalho');
+      expect(botao(el, 'Cancelar OS')).toBeTruthy();
+    });
+
+    it('o COMERCIAL responsável, com a OS aberta, também é orientado a cancelar (ele cancela em ABERTA)', async () => {
+      const { el } = await montar({ usuario: COMERCIAL, os: osLocal('ABERTA'), propostaStatus: 'CANCELADA' });
+      expect(el.querySelector('[data-testid=proposta-cancelada]')!.textContent).toContain('cancele a OS');
+    });
+
+    it.each(['EM_ANDAMENTO', 'CONCLUIDA'] as StatusOs[])('em %s o ADMIN aceita o trabalho, como antes', async (status) => {
+      const { el } = await montar({ usuario: ADMIN, os: osLocal(status), propostaStatus: 'CANCELADA' });
+      expect(botao(el, 'Aceitar o trabalho')).toBeTruthy();
+      expect(el.querySelector('[data-testid=proposta-cancelada]')!.textContent).toContain('Aceite o trabalho para reabrir a proposta.');
+    });
+  });
+
+  describe('FW-R4: "Trocar responsável" na OS avulsa (ADMIN)', () => {
+    const avulsa = (status: StatusOs = 'EM_ANDAMENTO', extra: Partial<OsDados> = {}) =>
+      osLocal(status, { propostaId: null, propostaNumero: null, propostaCodigoExibido: null, ...extra });
+    const opcoes = (el: HTMLElement) => [...el.querySelectorAll<HTMLOptionElement>('#responsavel-os option')].map((x) => x.textContent?.trim());
+
+    it('lista os ADMIN e COMERCIAL ativos (o atual escolhido); salvar chama atribuir só com o responsável', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, os: avulsa() });
+      const trocar = botao(el, 'Trocar responsável')!;
+      expect(trocar.className).toMatch(/\bh-12\b/);
+      trocar.click();
+      fixture.detectChanges();
+      const select = el.querySelector<HTMLSelectElement>('#responsavel-os')!;
+      expect(el.querySelector('label[for=responsavel-os]')!.textContent).toContain('Responsável da OS');
+      await ate(fixture, () => expect(document.activeElement).toBe(select));
+      expect(opcoes(el)).toEqual(['Ana Admin', 'Carla Comercial']);
+      expect(select.value).toBe(COMERCIAL.id);
+      select.value = ADMIN.id;
+      select.dispatchEvent(new Event('change'));
+      botao(el, 'Salvar responsável')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledExactlyOnceWith('o1', { responsavelId: ADMIN.id }));
+      await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('Responsável atualizado.'));
+      await ate(fixture, () => expect(el.querySelector('#responsavel-os')).toBeNull());
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Trocar responsável')));
+    });
+
+    it('o responsável atual inativo aparece marcado; salvar o mesmo só fecha, sem gravar', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, os: avulsa('ABERTA', { responsavelId: 'u-com-off' }) });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(opcoes(el)).toEqual(['Ana Admin', 'Carla Comercial', 'Cris Inativa (inativo)']);
+      expect(el.querySelector<HTMLSelectElement>('#responsavel-os')!.value).toBe('u-com-off');
+      botao(el, 'Salvar responsável')!.click();
+      fixture.detectChanges();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(toast).not.toHaveBeenCalled();
+      expect(el.querySelector('#responsavel-os')).toBeNull();
+    });
+
+    it('nunca na OS de proposta: "O responsável segue o da proposta."; nem para o COMERCIAL', async () => {
+      let { el } = await montar({ usuario: ADMIN, os: osLocal('EM_ANDAMENTO') });
+      expect(botao(el, 'Trocar responsável')).toBeUndefined();
+      expect(el.querySelector('[data-testid=responsavel]')!.textContent).toContain('O responsável segue o da proposta.');
+      TestBed.resetTestingModule();
+      ({ el } = await montar({ usuario: COMERCIAL, os: avulsa() }));
+      expect(botao(el, 'Trocar responsável')).toBeUndefined();
+    });
+
+    it('trava do CONFLITO: desabilitado com "Resolva a pendência primeiro"', async () => {
+      const { el } = await montar({ usuario: ADMIN, os: avulsa(), pendencias: [conflito()] });
+      const trocar = botao(el, 'Trocar responsável')!;
+      expect(trocar.disabled).toBe(true);
+      expect(el.querySelector(`#${trocar.getAttribute('aria-describedby')}`)!.textContent).toContain('Resolva a pendência primeiro.');
+    });
+
+    it('a recusa vira toast pelo mensagemErroOs; o editor fica aberto e o foco volta a "Salvar responsável"', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ usuario: ADMIN, os: avulsa() });
+      repo.atribuir.mockRejectedValueOnce(ErroOs.de({
+        codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { responsavelId: 'Responsável inválido: escolha um administrador ou comercial ativo.' },
+      }));
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      const select = el.querySelector<HTMLSelectElement>('#responsavel-os')!;
+      select.value = ADMIN.id;
+      select.dispatchEvent(new Event('change'));
+      const salvar = botao(el, 'Salvar responsável')!;
+      salvar.focus();
+      salvar.click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Responsável inválido: escolha um administrador ou comercial ativo.'));
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Salvar responsável')));
+      expect(el.querySelector('#responsavel-os')).not.toBeNull();
+    });
+
+    it('um editor de cada vez: abrir o do responsável fecha o do técnico, e o contrário', async () => {
+      const { fixture, el } = await montar({ usuario: ADMIN, os: avulsa() });
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#tecnico-atribuir-os')).toBeNull();
+      expect(el.querySelector('#responsavel-os')).not.toBeNull();
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#responsavel-os')).toBeNull();
+      expect(el.querySelector('#tecnico-atribuir-os')).not.toBeNull();
+    });
+
+    it('a troca que termina com outra OS aberta não escreve nesta', async () => {
+      const { fixture, el, repo, toast, toastErro } = await montar({ usuario: ADMIN, os: avulsa() });
+      let liberar!: () => void;
+      repo.atribuir.mockImplementationOnce(() => new Promise<void>((r) => (liberar = r)));
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      const select = el.querySelector<HTMLSelectElement>('#responsavel-os')!;
+      select.value = ADMIN.id;
+      select.dispatchEvent(new Event('change'));
+      botao(el, 'Salvar responsável')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalled());
+      fixture.componentRef.setInput('id', 'o2');
+      fixture.detectChanges();
+      liberar();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(toast).not.toHaveBeenCalled();
+      expect(toastErro).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('NR3: a ação que termina com outra OS aberta não escreve nesta', () => {
+    const concluida = () =>
+      osLocal('CONCLUIDA', { resumoExecucao: 'Quadro instalado.', assinaturaAnexoId: 'as1', assinanteNome: 'Maria Souza' });
+    type Metodo = 'adicionarFoto' | 'assinar' | 'recusarAssinatura' | 'concluir' | 'regerarPdf' | 'blobDoAnexo';
+    const pdfFeito = () => ({ blob: new Blob(['%PDF'], { type: 'application/pdf' }), codigoExibido: 'OS-000123' });
+    const casos: [string, () => Opcoes, Metodo, unknown, (m: Montagem) => void][] = [
+      ['foto', () => ({}), 'adicionarFoto', 'f1', ({ fixture, el }) => {
+        escolherFoto(fixture, el, foto());
+      }],
+      ['assinar', () => ({}), 'assinar', 'as1', ({ fixture, el }) => {
+        vi.spyOn(AssinaturaCanvas.prototype, 'paraPng').mockResolvedValue(PNG);
+        botao(el, 'Colher assinatura')!.click();
+        fixture.detectChanges();
+        const tela = el.querySelector<HTMLElement>('app-assinatura-tela')!;
+        tela.querySelector('canvas')!.dispatchEvent(Object.assign(new Event('pointerdown', { cancelable: true }), {
+          pointerId: 1, isPrimary: true, pointerType: 'touch', button: 0, clientX: 10, clientY: 10,
+        }));
+        fixture.detectChanges();
+        digitar(fixture, tela.querySelector<HTMLInputElement>('input[name=nome]')!, 'Maria Souza');
+        botao(tela, 'Confirmar')!.click();
+      }],
+      ['recusar', () => ({}), 'recusarAssinatura', undefined, ({ fixture, el }) => {
+        botao(el, 'Cliente não pôde assinar')!.click();
+        fixture.detectChanges();
+        const dialogo = el.querySelector<HTMLElement>('app-dialogo-motivo')!;
+        digitar(fixture, dialogo.querySelector('textarea')!, 'Cliente ausente');
+        botao(dialogo, 'Registrar')!.click();
+      }],
+      ['concluir', () => ({ anexos: [assinaturaPendente()] }), 'concluir', pdfFeito(), ({ fixture, el }) => {
+        digitar(fixture, el.querySelector<HTMLTextAreaElement>('textarea[name=resumo]')!, 'Feito.');
+        botao(el, 'Concluir e gerar PDF')!.click();
+      }],
+      ['regerar', () => ({ os: concluida(), anexos: [] }), 'regerarPdf', pdfFeito(), ({ el }) => {
+        botao(el, 'Gerar PDF novamente')!.click();
+      }],
+      ['compartilhar', () => ({ os: concluida(), anexos: [documentoPdf()] }), 'blobDoAnexo', new Blob(['%PDF'], { type: 'application/pdf' }), ({ el }) => {
+        el.querySelector<HTMLButtonElement>('[aria-label="Compartilhar OS-000123"]')!.click();
+      }],
+    ];
+    const linhas = casos.flatMap(([nome, opcoes, metodo, valor, disparar]) =>
+      (['ok', 'erro'] as const).map((fim) => [nome, fim, opcoes, metodo, valor, disparar] as const));
+
+    it.each(linhas)('%s (%s)', async (_nome, fim, opcoes, metodo, valor, disparar) => {
+      const montagem = await montar(opcoes());
+      const { fixture, el, repo, toast, toastErro } = montagem;
+      let liberar!: (v: unknown) => void;
+      let recusar!: (e: unknown) => void;
+      (repo[metodo] as unknown as { mockImplementationOnce(f: () => Promise<unknown>): void })
+        .mockImplementationOnce(() => new Promise((r, rej) => ((liberar = r), (recusar = rej))));
+      disparar(montagem);
+      await vi.waitFor(() => expect(repo[metodo]).toHaveBeenCalled());
+      fixture.componentRef.setInput('id', 'o2');
+      fixture.detectChanges();
+      const antes = anuncio(el);
+      if (fim === 'ok') liberar(valor);
+      else recusar(new ErroOs('SEM_ESPACO', 'os', 'Pouco espaço no aparelho.'));
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(toast).not.toHaveBeenCalled();
+      expect(toastErro).not.toHaveBeenCalled();
+      expect(anuncio(el)).toBe(antes);
+      expect(el.querySelector('[data-testid=erro-foto], [data-testid=erro-resumo], [data-testid=erro-assinatura-os]')).toBeNull();
+      expect(el.querySelector('app-pdf-pronto, app-assinatura-tela, app-dialogo-motivo')).toBeNull();
+      expect(HTMLAnchorElement.prototype.click).not.toHaveBeenCalled();
     });
   });
 });
