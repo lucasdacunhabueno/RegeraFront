@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { Component, computed, effect, ElementRef, inject, signal, viewChild } from '@angular/core';
+import { afterNextRender, Component, computed, effect, ElementRef, inject, Injector, signal, viewChild } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { map } from 'rxjs';
 import { Router, RouterLink } from '@angular/router';
@@ -52,6 +52,14 @@ const RECUSAS_PDF_OS_QUE_SE_REGERAM: Readonly<Record<string, string>> = {
 const RECUSAS_PDF_OS_REABERTA: ReadonlySet<string> = new Set(['REVISAO_INVALIDA', 'STATUS_INVALIDO']);
 const CONCLUIR_DE_NOVO = 'Depois, abra a OS: se ela voltou para em andamento, conclua de novo.';
 
+/**
+ * A recusa `VALIDACAO` da OS (ex.: o técnico desativado, a proposta cancelada lá): não há "Corrigir e reenviar" da OS.
+ * A alteração feita na tela antes de descartar fica retida atrás da recusada, e o Descartar a leva junto (tira da fila
+ * tudo da OS e aplica o servidor); a criação recusada some do aparelho. Então a ordem é descartar e depois refazer.
+ */
+const VALIDACAO_OS_EDICAO = 'Descarte esta pendência e depois refaça a alteração na OS: o que for alterado antes de descartar se perde.';
+const VALIDACAO_OS_CRIACAO = 'Descarte e crie a OS de novo.';
+
 /** M2P1-R19: o "Manter a minha" tirou notas que o perfil não acrescenta na OS encerrada no servidor. */
 const NOTAS_DESCARTADAS = 'As notas não puderam ser acrescentadas: a OS está encerrada.';
 
@@ -102,7 +110,7 @@ interface Confirmacao {
       @for (p of itens(); track p.mutationId) {
         <li class="rounded-xl bg-white p-4">
           <p class="font-medium">{{ titulo(p) }}</p>
-          <p class="mt-1 text-sm" [class.text-amber-800]="p.tipo === 'CONFLITO'" [class.text-red-700]="p.tipo === 'REJEITADO'">
+          <p data-testid="mensagem" class="mt-1 text-sm" [class.text-amber-800]="p.tipo === 'CONFLITO'" [class.text-red-700]="p.tipo === 'REJEITADO'">
             {{ mensagem(p) }}
           </p>
           @if (p.erro?.campos; as campos) {
@@ -133,7 +141,7 @@ interface Confirmacao {
                   <!-- P4c-R15: como no detalhe e na tela da OS, o PDF novo espera o CONFLITO da proposta ou da OS -->
                   <p [id]="'dica-conflito-' + p.mutationId" class="w-full text-sm text-amber-800">Resolva a pendência primeiro.</p>
                 }
-                <button type="button" data-testid="regerar" (click)="regerar(p)" [disabled]="ocupada(p) || comConflito(p)"
+                <button type="button" data-testid="regerar" (click)="regerar(p, $any($event.currentTarget))" [disabled]="ocupada(p) || comConflito(p)"
                         [attr.aria-describedby]="comConflito(p) ? 'dica-conflito-' + p.mutationId : null"
                         class="h-12 rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white disabled:opacity-60">
                   {{ regerando(p) ? 'Gerando PDF…' : 'Gerar PDF novamente' }}
@@ -203,6 +211,7 @@ export class PendenciasPage {
 
   private readonly propostasRepo = inject(PropostasRepo);
   private readonly osRepo = inject(OsRepo);
+  private readonly injector = inject(Injector);
   private readonly pdf = inject(PdfService);
   /** As propostas do aparelho por id: o código exibido e o status dos títulos e das ações. */
   private readonly propostas = toSignal(
@@ -390,6 +399,10 @@ export class PendenciasPage {
     if (p.entidade === 'os' && p.erro?.codigo === 'ACESSO_NEGADO' && this.auth.usuario()?.perfil === 'TECNICO') {
       return MENSAGEM_OS_NAO_ESTA_COM_VOCE;
     }
+    if (p.entidade === 'os' && p.tipo === 'REJEITADO' && p.erro?.codigo === 'VALIDACAO') {
+      const ordem = p.mutacao.baseVersion === null ? VALIDACAO_OS_CRIACAO : VALIDACAO_OS_EDICAO;
+      return p.erro.mensagem ? `${p.erro.mensagem} ${ordem}` : ordem;
+    }
     if (p.tipo !== 'CONFLITO') return p.erro?.mensagem;
     if (this.excluidoNoServidor(p)) return 'Excluído por outra pessoa.';
     if (p.entidade === 'os' && this.reabertaNoServidor(p)) {
@@ -433,26 +446,29 @@ export class PendenciasPage {
   /**
    * "Gerar PDF novamente", depois compartilhar ou o painel "PDF pronto": na proposta, o mesmo caminho do detalhe
    * (`regerarPdf`); na OS, o da tela dela (`OsRepo.regerarPdf` com o PDF da OS), e os erros pela `mensagemErroOs`.
+   * `gatilho`: o botão, que recebe o foco de volta se a geração falha (desabilitado durante ela, ele o perde).
    */
-  protected regerar(p: Pendencia): Promise<void> {
+  protected regerar(p: Pendencia, gatilho: HTMLElement | null = null): Promise<void> {
     if (p.entidade !== TIPO_UPLOAD_ANEXO_OS) {
-      return this.regerarCom(p, 'Gerando o PDF da proposta…', mensagemErroProposta,
+      return this.regerarCom(p, gatilho, 'Gerando o PDF da proposta…', mensagemErroProposta,
         () => regerarPdf(this.propostasRepo, this.pdf, p.agregadoId));
     }
-    return this.regerarCom(p, 'Gerando o PDF da OS…', mensagemErroOs, async () => {
+    return this.regerarCom(p, gatilho, 'Gerando o PDF da OS…', mensagemErroOs, async () => {
       const { blob, codigoExibido } = await this.osRepo.regerarPdf(p.agregadoId, (e) => this.pdf.gerarBlobOs(e));
       // o nome é o código impresso nele, como no upload e na tela da OS
       return { arquivo: arquivoPdf(blob, `${codigoExibido}.pdf`), blob };
     });
   }
 
-  private regerarCom(
+  private async regerarCom(
     p: Pendencia,
+    gatilho: HTMLElement | null,
     gerando: string,
     mensagemErro: (e: unknown) => string,
     gerar: () => Promise<{ arquivo: File; blob: Blob }>,
   ): Promise<void> {
-    return this.agir(p, async () => {
+    let falhou = false;
+    await this.agir(p, async () => {
       this.regerandoIds.update((s) => new Set(s).add(p.mutationId));
       try {
         this.anuncio.set(gerando);
@@ -465,6 +481,7 @@ export class PendenciasPage {
         if (r === 'precisa-toque') this.pdfPronto.set(arquivo);
         else this.aposCompartilhar(r, arquivo);
       } catch (e) {
+        falhou = true;
         this.anuncio.set('');
         this.toasts.erro(mensagemErro(e));
       } finally {
@@ -475,6 +492,11 @@ export class PendenciasPage {
         });
       }
     });
+    // N3: com a pendência ainda na lista, o botão volta a ficar habilitado no próximo render e retoma o foco
+    if (!falhou || !gatilho) return;
+    afterNextRender(() => {
+      if (gatilho.isConnected) gatilho.focus();
+    }, { injector: this.injector });
   }
 
   private readonly regerandoIds = signal<ReadonlySet<string>>(new Set());

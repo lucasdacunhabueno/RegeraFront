@@ -25,9 +25,9 @@ interface Linha {
     <section data-testid="os-do-cliente" aria-labelledby="os-cliente-titulo" class="mt-4 space-y-3 rounded-xl bg-white p-4">
       <h2 id="os-cliente-titulo" class="font-semibold">Ordens de serviço</h2>
       @if (lista() === undefined) {
-        <p class="text-sm text-slate-500">Carregando…</p>
+        <p role="status" class="text-sm text-slate-500">Carregando…</p>
       } @else if (linhas().length === 0) {
-        <p class="text-sm text-slate-500">Nenhuma OS para este cliente.</p>
+        <p role="status" class="text-sm text-slate-500">Nenhuma OS para este cliente.</p>
       } @else {
         <ul class="space-y-3">
           @for (l of linhas(); track l.os.id) {

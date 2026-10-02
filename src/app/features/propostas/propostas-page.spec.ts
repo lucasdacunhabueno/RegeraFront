@@ -61,7 +61,6 @@ interface Opcoes {
 function montar(o: Opcoes = {}) {
   const repo = {
     observarTodas: vi.fn(() => o.todas ?? of(LISTA)),
-    observarDoTecnico: vi.fn(() => of(LISTA)),
     observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set(['b']), comPendencia: new Set(['c']), comConflito: new Set<string>() }),
     observarUsuarios: () => of(USUARIOS),
   };
@@ -106,7 +105,6 @@ describe('PropostasPage', () => {
       const { el, repo } = montar();
       expect(el.querySelector('h1')?.textContent?.trim()).toBe('Propostas');
       expect(repo.observarTodas).toHaveBeenCalled();
-      expect(repo.observarDoTecnico).not.toHaveBeenCalled();
       expect(codigos(el)).toEqual(['000277-R2', 'PROV-B00000', '000012', 'PROV-F00000']);
     });
 

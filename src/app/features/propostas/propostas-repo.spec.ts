@@ -1368,7 +1368,7 @@ describe('PropostasRepo', () => {
   });
 
   describe('consultas', () => {
-    it('observarTodas, observarDoCliente e observarDoTecnico, por atualizadoEm desc (sem data por último)', async () => {
+    it('observarTodas e observarDoCliente, por atualizadoEm desc (sem data por último)', async () => {
       const base = await existente('RASCUNHO');
       await db.propostas.delete('p1');
       await db.propostas.bulkPut([
@@ -1379,7 +1379,6 @@ describe('PropostasRepo', () => {
       ]);
       expect((await firstValueFrom(repo.observarTodas())).map((p) => p.id)).toEqual(['b', 'd', 'a', 'c']);
       expect((await firstValueFrom(repo.observarDoCliente('c1'))).map((p) => p.id)).toEqual(['d', 'a', 'c']);
-      expect((await firstValueFrom(repo.observarDoTecnico(TECNICO.id))).map((p) => p.id)).toEqual(['d', 'a', 'c']);
     });
 
     it('P4b-R19: toda escrita local marca atualizadoEm = agora (o servidor sobrescreve no retorno)', async () => {

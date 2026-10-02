@@ -459,11 +459,6 @@ export class PropostasRepo {
     return observar(async () => ordenarPorAtualizacao(await this.db.propostas.where('clienteId').equals(clienteId).toArray()));
   }
 
-  /** As atribuídas ao técnico (a lista dele no P4c). */
-  observarDoTecnico(usuarioId: string): Observable<PropostaLocal[]> {
-    return observar(async () => ordenarPorAtualizacao(await this.db.propostas.where('tecnicoId').equals(usuarioId).toArray()));
-  }
-
   observarNaoSincronizados(): Observable<Set<string>> {
     return observarNaoSincronizados(this.db);
   }

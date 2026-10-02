@@ -719,7 +719,7 @@ describe('PendenciasPage', () => {
       } as const;
       const p = uploadOs('d1', tipoUploadDe(TIPO_UPLOAD_ANEXO_OS)!.erro(resposta, { ...pdf }));
       const { el, svc } = montar([p], 0, 'TECNICO', { os: [osLocal({ status: 'CONCLUIDA' })], anexos: [['d1', 'DOCUMENTO']] });
-      expect(el.querySelector('li p:nth-of-type(2)')?.textContent?.trim()).toBe(mensagem);
+      expect(el.querySelector('[data-testid="mensagem"]')?.textContent?.trim()).toBe(mensagem);
       expect(botao(el, 'Manter a minha')).toBeUndefined();
       botao(el, 'Descartar').click();
       await vi.waitFor(() => expect(svc.descartar).toHaveBeenCalledWith(p));
@@ -861,7 +861,7 @@ describe('PendenciasPage', () => {
         URL.createObjectURL = criarUrl;
         URL.revokeObjectURL = revogarUrl;
       });
-      const mensagemDe = (el: HTMLElement) => el.querySelector('li p:nth-of-type(2)')?.textContent?.trim();
+      const mensagemDe = (el: HTMLElement) => el.querySelector('[data-testid="mensagem"]')?.textContent?.trim();
 
       it.each<[string, Perfil]>([['CODIGO_EXIBIDO_INVALIDO', 'ADMIN'], ['ANEXO_AUSENTE', 'TECNICO']])(
         '%s (%s): regera pelo OsRepo com o PdfService da OS e compartilha (sem share: baixa o código.pdf)',
@@ -918,16 +918,23 @@ describe('PendenciasPage', () => {
           os: [concluida()], anexos: [['d1', 'DOCUMENTO']], regerarOs,
         });
         const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
-        botao(el, 'Gerar PDF novamente').click();
+        const gatilho = botao(el, 'Gerar PDF novamente');
+        gatilho.focus();
+        gatilho.click();
         fixture.detectChanges();
         expect(botao(el, 'Gerando PDF…').disabled).toBe(true);
         expect(botao(el, 'Descartar').disabled).toBe(true);
         botao(el, 'Gerando PDF…').click();
         expect(regerarOs).toHaveBeenCalledTimes(1);
+        // N3: desabilitado, o botão perde o foco no navegador (o jsdom não o tira: o foco vai para outro lugar)
+        el.querySelector<HTMLElement>('h1')!.focus();
+        expect(document.activeElement).not.toBe(gatilho);
         falhar(new ErroOs('OS_SINCRONIZANDO', 'os', ''));
         await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('A OS está sendo sincronizada. Tente de novo em instantes.'));
         await fixture.whenStable();
         expect(botao(el, 'Gerar PDF novamente').disabled).toBe(false);
+        // o foco volta ao botão
+        await vi.waitFor(() => expect(document.activeElement).toBe(botao(el, 'Gerar PDF novamente')));
         expect(cliques).toEqual([]);
       });
 
@@ -963,7 +970,8 @@ describe('PendenciasPage', () => {
         ['o PDF é de outra revisão (o regerar troca só o da atual)', { revisao: 2 }, 'ADMIN', [['d1', 'DOCUMENTO']], [['d1', 1]]],
         ['o anexo não é o PDF', {}, 'ADMIN', [['d1', 'FOTO']], undefined],
         ['o anexo não está no aparelho', {}, 'ADMIN', [], undefined],
-        ['o COMERCIAL não executa a OS', {}, 'COMERCIAL', [['d1', 'DOCUMENTO']], undefined],
+        // o COMERCIAL é o responsável: a exclusão é pelo perfil, não pela posse
+        ['o COMERCIAL (responsável) não executa a OS', { responsavelId: 'u' }, 'COMERCIAL', [['d1', 'DOCUMENTO']], undefined],
         ['o TECNICO não é o atribuído', { tecnicoId: 'outro' }, 'TECNICO', [['d1', 'DOCUMENTO']], undefined],
       ])('sem "Gerar PDF novamente" quando %s', (_caso, extra, perfil, anexos, revisoesPdf) => {
         const { el } = montar([pdfRecusado('CODIGO_EXIBIDO_INVALIDO', 'd1', 'O código impresso no PDF não é o desta OS.')], 0, perfil, {
@@ -972,6 +980,16 @@ describe('PendenciasPage', () => {
         expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
         expect(mensagemDe(el)).toBe('O código impresso no PDF não é o desta OS.');
         expect(botao(el, 'Descartar')).toBeDefined();
+      });
+
+      it('STATUS_INVALIDO de uma foto ou assinatura: só a mensagem do servidor, sem o "conclua de novo"', () => {
+        const texto = 'No servidor, a OS não está em andamento, e o anexo não foi aceito. Descarte este envio para liberar a sincronização da OS.';
+        for (const tipo of ['FOTO', 'ASSINATURA'] as const) {
+          const { el } = montar([pdfRecusado('STATUS_INVALIDO', 'f1', texto)], 0, 'TECNICO', { os: [concluida()], anexos: [['f1', tipo]] });
+          expect(mensagemDe(el)).toBe(texto);
+          expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+          TestBed.resetTestingModule();
+        }
       });
 
       it('sem a OS no aparelho: sem "Gerar PDF novamente" nem "Abrir OS"', () => {
@@ -998,11 +1016,30 @@ describe('PendenciasPage', () => {
         },
       );
 
+      it('I1: a criação da OS recusada por VALIDACAO manda descartar e criar de novo; outra recusa da OS, só a mensagem', () => {
+        const criacao = pendenciaOs({ tipo: 'REJEITADO', dadosServidor: undefined, erro: {
+          codigo: 'VALIDACAO', mensagem: 'Técnico inválido: escolha um técnico ativo.', campos: { tecnicoId: 'Técnico inválido.' },
+        } });
+        criacao.mutacao = { ...criacao.mutacao, baseVersion: null };
+        const { el } = montar([criacao], 0, 'ADMIN', { os: [osLocal()] });
+        expect(mensagemDe(el)).toBe('Técnico inválido: escolha um técnico ativo. Descarte e crie a OS de novo.');
+        TestBed.resetTestingModule();
+        const semMensagem = pendenciaOs({ tipo: 'REJEITADO', dadosServidor: undefined, erro: { codigo: 'VALIDACAO', mensagem: '' } });
+        expect(mensagemDe(montar([semMensagem], 0, 'ADMIN', { os: [osLocal()] }).el))
+          .toBe('Descarte esta pendência e depois refaça a alteração na OS: o que for alterado antes de descartar se perde.');
+        TestBed.resetTestingModule();
+        const outra = pendenciaOs({ tipo: 'REJEITADO', dadosServidor: undefined, erro: { codigo: 'OS_NAO_EDITAVEL', mensagem: 'A OS não pode mais ser alterada.' } });
+        expect(mensagemDe(montar([outra], 0, 'ADMIN', { os: [osLocal()] }).el)).toBe('A OS não pode mais ser alterada.');
+      });
+
       it('"Corrigir e reenviar" da OS: a recusa VALIDACAO lista os campos e leva à tela da OS por "Abrir OS"', () => {
         const recusa = pendenciaOs({ tipo: 'REJEITADO', dadosServidor: undefined, erro: {
           codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { resumoExecucao: 'Máximo de 4000 caracteres.' },
         } });
         const { el } = montar([recusa], 0, 'TECNICO', { os: [osLocal()] });
+        // I1: a correção feita na tela antes de descartar se perde (fica retida e o Descartar a leva): a ordem certa
+        expect(mensagemDe(el)).toBe('Dados inválidos. Descarte esta pendência e depois refaça a alteração na OS: '
+          + 'o que for alterado antes de descartar se perde.');
         expect(el.textContent).toContain('Resumo da execução: Máximo de 4000 caracteres.');
         expect(abrirOs(el).map((a) => a.getAttribute('href'))).toEqual(['/os/o1']);
         expect(botao(el, 'Corrigir e reenviar')).toBeUndefined();

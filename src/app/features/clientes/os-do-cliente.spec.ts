@@ -80,14 +80,14 @@ describe('OsDoCliente', () => {
 
   it('sem OS: o estado vazio', () => {
     const { el } = montar();
-    expect(secao(el).textContent).toContain('Nenhuma OS para este cliente.');
+    expect(secao(el).querySelector('[role=status]')?.textContent?.trim()).toBe('Nenhuma OS para este cliente.');
     expect(el.querySelector('app-os-card')).toBeNull();
   });
 
   it('"Carregando…" antes da primeira leitura; troca de cliente relê', async () => {
     const lista = new Subject<OsLocal[]>();
     const { el, fixture, repo } = montar({ lista });
-    expect(secao(el).textContent).toContain('Carregando…');
+    expect(secao(el).querySelector('[role=status]')?.textContent?.trim()).toBe('Carregando…');
     expect(secao(el).textContent).not.toContain('Nenhuma OS');
     lista.next([os('a', { numero: 1 })]);
     fixture.detectChanges();
