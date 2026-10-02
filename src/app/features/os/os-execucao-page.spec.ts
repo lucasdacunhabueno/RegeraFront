@@ -1963,6 +1963,19 @@ describe('OsExecucaoPage', () => {
       expect(el.querySelector('#responsavel-os')).toBeNull();
     });
 
+    it('N1: o responsável atual fora da lista do aparelho vem primeiro, escolhido; salvar com ele só fecha', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, os: avulsa('ABERTA', { responsavelId: 'u-sumido' }) });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(opcoes(el)).toEqual(['Responsável atual (não está neste aparelho)', 'Ana Admin', 'Carla Comercial']);
+      expect(el.querySelector<HTMLSelectElement>('#responsavel-os')!.value).toBe('u-sumido');
+      botao(el, 'Salvar responsável')!.click();
+      fixture.detectChanges();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(toast).not.toHaveBeenCalled();
+      expect(el.querySelector('#responsavel-os')).toBeNull();
+    });
+
     it('nunca na OS de proposta: "O responsável segue o da proposta."; nem para o COMERCIAL', async () => {
       let { el } = await montar({ usuario: ADMIN, os: osLocal('EM_ANDAMENTO') });
       expect(botao(el, 'Trocar responsável')).toBeUndefined();

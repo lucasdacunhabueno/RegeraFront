@@ -16,6 +16,7 @@ export interface RegistroLocal {
 export interface Adaptador {
   tabela(db: RegeraDb): Table<RegistroLocal, string>;
   paraLocal(id: string, version: number | null, dados: unknown): RegistroLocal;
+  /** O registro de volta ao formato do sync, só para regravá-lo no aparelho (`manterMinha`); a rede usa a mutação. */
   dadosDe(local: RegistroLocal): unknown;
 }
 
@@ -43,7 +44,8 @@ export const ADAPTADORES: Record<Entidade, Adaptador> = {
   proposta: {
     tabela: (db) => db.propostas as unknown as Table<RegistroLocal, string>,
     paraLocal: (id, version, dados) => paraPropostaLocal(id, version, dados as PropostaDados),
-    dadosDe: (local) => dadosDaProposta(local as PropostaLocal),
+    // só local (a regravação do "Manter a minha"): leva a `origem` [srv], que `dadosDaProposta` não põe na rede
+    dadosDe: (local) => ({ ...dadosDaProposta(local as PropostaLocal), origem: (local as PropostaLocal).origem ?? null }),
   },
   // lido campo a campo: o que um servidor mais novo mandar a mais não entra no registro
   os: {

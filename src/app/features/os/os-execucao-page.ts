@@ -15,6 +15,7 @@ import { DadosUploadAnexoOs, Pendencia, TIPO_UPLOAD_ANEXO_OS } from '../../core/
 import { ErroCampo } from '../../core/util/erro-campo';
 import { CampoRascunhoOs, gravarRascunhoOs, lerRascunhoOs } from '../../core/util/rascunho-os';
 import { formatarTelefone, somenteDigitos } from '../../core/util/formatos';
+import { opcoesDeResponsavel } from '../../core/util/responsaveis';
 import { Toasts } from '../../shared/ui/toasts';
 import { VisorPdf } from '../../shared/ui/visor-pdf';
 import { ClientesRepo } from '../clientes/clientes-repo';
@@ -946,14 +947,8 @@ export class OsExecucaoPage {
       .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
       .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
   });
-  /** Os responsáveis possíveis: ADMIN e COMERCIAL ativos e, se for o caso, o atual inativo (marcado). */
-  protected readonly responsaveis = computed(() => {
-    const atual = this.os()?.responsavelId ?? null;
-    return this.usuarios()
-      .filter((u) => (u.perfil === 'ADMIN' || u.perfil === 'COMERCIAL') && (u.ativo !== false || u.id === atual))
-      .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
-      .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
-  });
+  /** Os responsáveis possíveis (`opcoesDeResponsavel`, a mesma regra na proposta e na OS). */
+  protected readonly responsaveis = computed(() => opcoesDeResponsavel(this.usuarios(), this.os()?.responsavelId ?? null));
   private readonly propostaDaOs = computed(() => this.os()?.propostaId ?? null);
 
   // ---- cabeçalho ----

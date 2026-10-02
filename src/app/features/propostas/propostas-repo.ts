@@ -21,6 +21,7 @@ import type { TemplateLocal, TipoProposta } from '../templates/template-models';
 import { TemplatesRepo } from '../templates/templates-repo';
 import { calcular, deCentesimos, deMilesimos, paraCentavos } from './calculo';
 import { gerarCodigoProvisorio } from './codigo-provisorio';
+import { MENSAGEM_PROPOSTA_SIGEM } from './formatos-proposta';
 import {
   codigoBase,
   codigoExibido,
@@ -28,6 +29,7 @@ import {
   dadosDaProposta,
   DocumentoLocal,
   exigeMotivo,
+  importadaDoSigem,
   ItemPropostaLocal,
   ordenarPorAtualizacao,
   paraPropostaLocal,
@@ -316,15 +318,16 @@ export type MotivoRegerar = 'CODIGO_EXIBIDO_INVALIDO' | 'SEM_DOCUMENTO';
  * - o upload de um PDF dela voltou `CODIGO_EXIBIDO_INVALIDO` (o PROV mudou depois de o PDF ser gerado offline); ou
  * - ela já foi enviada e não há documento da revisão atual, nem do servidor nem do aparelho (ex.: o upload recusado
  *   foi descartado em Pendências).
+ * A proposta importada do SIGEM (`origem`) nunca vale: ela não tem PDF, e o servidor recusa o upload.
  * `documentos`: os do aparelho (ou `observarDocumentos`); `pendencias`: as da proposta. A tela e `regerarDocumento`
  * decidem por aqui.
  */
 export function motivoParaRegerar(
-  p: Pick<PropostaLocal, 'status' | 'revisao' | 'documentos' | 'historico'>,
+  p: Pick<PropostaLocal, 'status' | 'revisao' | 'documentos' | 'historico' | 'origem'>,
   documentos: readonly { revisao: number }[],
   pendencias: readonly Pendencia[],
 ): MotivoRegerar | null {
-  if (p.status === 'RASCUNHO') return null;
+  if (p.status === 'RASCUNHO' || importadaDoSigem(p)) return null;
   if (pendencias.some((x) => x.entidade === TIPO_UPLOAD_DOCUMENTO && x.erro?.codigo === CODIGO_INVALIDO)) return CODIGO_INVALIDO;
   if (!jaFoiEnviada(p)) return null;
   const revisao = p.revisao ?? 1;
@@ -546,6 +549,7 @@ export class PropostasRepo {
       historico: [],
       documentos: [],
       atualizadoEm: null,
+      origem: null,
     });
     await this.gravar(p, null);
     return p.id;
@@ -681,6 +685,7 @@ export class PropostasRepo {
       historico: [],
       documentos: [],
       atualizadoEm: null,
+      origem: null,
     });
     // última barreira: as mesmas regras da edição, com todas as linhas como novas
     validacao(await this.validarEdicao({ ...p, itens: [] }, p));
@@ -1040,10 +1045,12 @@ export class PropostasRepo {
   }
 
   /**
-   * Recusa com um CONFLITO da proposta (`RESOLVA_A_PENDENCIA`, P4c-R15) e quando `motivoParaRegerar` não vale para `p`
-   * (`DOCUMENTO_EM_DIA`); devolve as pendências dela.
+   * Recusa a importada do SIGEM (`PROPOSTA_SIGEM`, o mesmo texto do servidor), com um CONFLITO da proposta
+   * (`RESOLVA_A_PENDENCIA`, P4c-R15) e quando `motivoParaRegerar` não vale para `p` (`DOCUMENTO_EM_DIA`); devolve as
+   * pendências dela.
    */
   private async exigirMotivoParaRegerar(p: PropostaLocal): Promise<Pendencia[]> {
+    if (importadaDoSigem(p)) throw new ErroProposta('PROPOSTA_SIGEM', 'proposta', MENSAGEM_PROPOSTA_SIGEM);
     const pendencias = await this.pendenciasDa(p.id);
     exigirSemConflito(pendencias, 'regerar');
     const locais = await this.db.documentos.where('propostaId').equals(p.id).toArray();

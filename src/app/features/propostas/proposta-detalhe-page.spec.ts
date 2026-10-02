@@ -30,6 +30,7 @@ const USUARIOS: UsuarioResumo[] = [
   { id: TECNICO.id, nome: TECNICO.nome, perfil: 'TECNICO' },
   { id: 'u-tec2', nome: 'Tina Técnica', perfil: 'TECNICO' },
   { id: 'u-tec-off', nome: 'Tito Inativo', perfil: 'TECNICO', ativo: false },
+  { id: 'u-com-off', nome: 'Cris Inativa', perfil: 'COMERCIAL', ativo: false },
 ];
 
 /** 2026-10-02 01:30 UTC ainda é 2026-10-01 em São Paulo. */
@@ -63,7 +64,7 @@ function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
       { statusDe: null, statusPara: 'RASCUNHO', usuarioId: COMERCIAL.id, em: '2026-09-20T13:00:00Z', observacao: null },
       { statusDe: 'RASCUNHO', statusPara: 'ENVIADA', usuarioId: COMERCIAL.id, em: '2026-09-20T17:30:00Z', observacao: null },
     ],
-    documentos: [], atualizadoEm: '2026-09-20T17:30:00Z', ...p,
+    documentos: [], atualizadoEm: '2026-09-20T17:30:00Z', origem: null, ...p,
   };
 }
 
@@ -113,7 +114,7 @@ async function montar(o: Opcoes = {}) {
     observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() }),
     observarUsuarios: () => of(USUARIOS),
     transicionar: vi.fn<(id: string, para: StatusProposta, motivo?: string | null) => Promise<void>>(async () => undefined),
-    atribuir: vi.fn<(id: string, m: { tecnicoId?: string | null }) => Promise<void>>(async () => undefined),
+    atribuir: vi.fn<(id: string, m: { responsavelId?: string; tecnicoId?: string | null }) => Promise<void>>(async () => undefined),
     duplicar: vi.fn<(id: string) => Promise<{ id: string; linhasDescartadas: number }>>(async () => ({ id: 'dup-1', linhasDescartadas: 0 })),
     excluir: vi.fn<(id: string) => Promise<void>>(async () => undefined),
     entradaPrevia: vi.fn<(id: string) => Promise<EntradaPdf>>(async () => ({ previa: true }) as EntradaPdf),
@@ -379,6 +380,8 @@ describe('PropostaDetalhePage', () => {
       const { el } = await montar({ usuario: usuario as UsuarioSessao, proposta: proposta({ status: status as StatusProposta, numero: null }) });
       expect(acoes(el)).toEqual(esperadas);
       expect(!!botao(el, 'Trocar técnico')).toBe(atribui);
+      // SO-P6 (P4b-R3): o responsável, só o ADMIN e fora dos terminais
+      expect(!!botao(el, 'Trocar responsável')).toBe(atribui && usuario === ADMIN);
     });
 
     it('v1: resumo (cliente, total, validade, selos) antes das ações; a principal em largura total, as outras em duas colunas', async () => {
@@ -542,6 +545,240 @@ describe('PropostaDetalhePage', () => {
     });
   });
 
+  describe('SO-P6: "Trocar responsável" (ADMIN, P4b-R3)', () => {
+    const opcoes = (el: HTMLElement) =>
+      [...el.querySelectorAll<HTMLOptionElement>('#responsavel-proposta option')].map((x) => x.textContent?.trim());
+    const escolher = (fixture: ComponentFixture<unknown>, el: HTMLElement, id: string) => {
+      const select = el.querySelector<HTMLSelectElement>('#responsavel-proposta')!;
+      select.value = id;
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+    };
+
+    it('lista os ADMIN e COMERCIAL ativos (o atual escolhido); salvar chama atribuir só com o responsável', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, proposta: proposta({ status: 'APROVADA' }) });
+      const trocar = botao(el, 'Trocar responsável')!;
+      expect(trocar.className).toMatch(/\bh-12\b/);
+      trocar.click();
+      fixture.detectChanges();
+      const select = el.querySelector<HTMLSelectElement>('#responsavel-proposta')!;
+      expect(el.querySelector('label[for=responsavel-proposta]')!.textContent).toContain('Responsável da proposta');
+      expect(document.getElementById(select.getAttribute('aria-describedby')!)!.textContent).toContain('As ordens de serviço');
+      await ate(fixture, () => expect(document.activeElement).toBe(select));
+      expect(opcoes(el)).toEqual(['Ana Admin', 'Caio Comercial', 'Carla Comercial']);
+      expect(select.value).toBe(COMERCIAL.id);
+      escolher(fixture, el, OUTRO_COMERCIAL.id);
+      botao(el, 'Salvar responsável')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledExactlyOnceWith('p1', { responsavelId: OUTRO_COMERCIAL.id }));
+      await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('Responsável atualizado.'));
+      await ate(fixture, () => expect(el.querySelector('#responsavel-proposta')).toBeNull());
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Trocar responsável')));
+    });
+
+    it('a do SIGEM (do admin) também passa a um comercial', async () => {
+      const { fixture, el, repo } = await montar({
+        usuario: ADMIN, proposta: proposta({ status: 'APROVADA', origem: 'SIGEM', responsavelId: ADMIN.id, tecnicoId: null }),
+      });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLSelectElement>('#responsavel-proposta')!.value).toBe(ADMIN.id);
+      escolher(fixture, el, COMERCIAL.id);
+      botao(el, 'Salvar responsável')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledExactlyOnceWith('p1', { responsavelId: COMERCIAL.id }));
+    });
+
+    it('o responsável atual inativo aparece marcado; salvar o mesmo só fecha, sem gravar, e o foco volta ao botão', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, proposta: proposta({ responsavelId: 'u-com-off' }) });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(opcoes(el)).toEqual(['Ana Admin', 'Caio Comercial', 'Carla Comercial', 'Cris Inativa (inativo)']);
+      expect(el.querySelector<HTMLSelectElement>('#responsavel-proposta')!.value).toBe('u-com-off');
+      botao(el, 'Salvar responsável')!.click();
+      fixture.detectChanges();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(toast).not.toHaveBeenCalled();
+      expect(el.querySelector('#responsavel-proposta')).toBeNull();
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Trocar responsável')));
+    });
+
+    it('N1: o responsável atual fora da lista do aparelho vem primeiro, escolhido; salvar com ele só fecha', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, proposta: proposta({ responsavelId: 'u-sumido' }) });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(opcoes(el)).toEqual(['Responsável atual (não está neste aparelho)', 'Ana Admin', 'Caio Comercial', 'Carla Comercial']);
+      expect(el.querySelector<HTMLSelectElement>('#responsavel-proposta')!.value).toBe('u-sumido');
+      botao(el, 'Salvar responsável')!.click();
+      fixture.detectChanges();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(toast).not.toHaveBeenCalled();
+      expect(el.querySelector('#responsavel-proposta')).toBeNull();
+    });
+
+    it('com o responsável atual na lista, nenhuma opção a mais', async () => {
+      const { fixture, el } = await montar({ usuario: ADMIN });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(opcoes(el)).not.toContain('Responsável atual (não está neste aparelho)');
+    });
+
+    it('Cancelar fecha sem gravar e devolve o foco ao botão', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      escolher(fixture, el, ADMIN.id);
+      const editor = el.querySelector('#responsavel-proposta')!.closest('div')!;
+      [...editor.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Cancelar')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#responsavel-proposta')).toBeNull();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Trocar responsável')));
+    });
+
+    it('trava do CONFLITO: desabilitado com "Resolva a pendência primeiro."', async () => {
+      const { el } = await montar({ usuario: ADMIN, pendencias: [conflito()] });
+      const trocar = botao(el, 'Trocar responsável')!;
+      expect(trocar.disabled).toBe(true);
+      expect(document.getElementById(trocar.getAttribute('aria-describedby')!)!.textContent).toContain('Resolva a pendência primeiro.');
+    });
+
+    it('o CONFLITO que chega com o editor aberto desabilita o "Salvar responsável"', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      repo.pendencias$.next([conflito()]);
+      await ate(fixture, () => expect(botao(el, 'Salvar responsável')!.disabled).toBe(true));
+    });
+
+    it('a recusa vira toast pelo mensagemErroProposta; o editor fica aberto e o foco volta a "Salvar responsável"', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ usuario: ADMIN });
+      let recusar!: (e: unknown) => void;
+      repo.atribuir.mockImplementationOnce(() => new Promise<void>((_, x) => (recusar = x)));
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      escolher(fixture, el, ADMIN.id);
+      const salvar = botao(el, 'Salvar responsável')!;
+      salvar.focus();
+      salvar.click();
+      // o navegador tira o foco do botão desligado durante a gravação; o jsdom o mantém (e não tira o foco de um botão
+      // já desligado): sai antes do próximo desenho
+      salvar.blur();
+      expect(document.activeElement).toBe(document.body);
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalled());
+      fixture.detectChanges();
+      expect(salvar.disabled).toBe(true);
+      recusar(ErroProposta.de({
+        codigo: 'VALIDACAO', mensagem: 'Dados inválidos.',
+        campos: { responsavelId: 'O responsável tem de ser um administrador ou comercial ativo.' },
+      }));
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('O responsável tem de ser um administrador ou comercial ativo.'));
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Salvar responsável')));
+      expect(el.querySelector('#responsavel-proposta')).not.toBeNull();
+    });
+
+    it('um toque só: o segundo "Salvar responsável" com a gravação em curso não grava de novo', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN });
+      let liberar!: () => void;
+      repo.atribuir.mockImplementationOnce(() => new Promise<void>((r) => (liberar = r)));
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      escolher(fixture, el, ADMIN.id);
+      const salvar = botao(el, 'Salvar responsável')!;
+      salvar.click();
+      salvar.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledTimes(1));
+      fixture.detectChanges();
+      expect(salvar.disabled).toBe(true);
+      liberar();
+      await fixture.whenStable();
+      expect(repo.atribuir).toHaveBeenCalledTimes(1);
+    });
+
+    it('um editor de cada vez: abrir o do responsável fecha o do técnico, e o contrário', async () => {
+      const { fixture, el } = await montar({ usuario: ADMIN });
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#tecnico-atribuir')).toBeNull();
+      expect(el.querySelector('#responsavel-proposta')).not.toBeNull();
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#responsavel-proposta')).toBeNull();
+      expect(el.querySelector('#tecnico-atribuir')).not.toBeNull();
+    });
+
+    it('a troca que termina com outra proposta aberta não escreve nela (sucesso ou recusa); o editor não passa para ela', async () => {
+      for (const falha of [false, true]) {
+        const { fixture, el, repo, toast, toastErro } = await montar({ usuario: ADMIN });
+        let liberar!: () => void;
+        let recusar!: (e: unknown) => void;
+        repo.atribuir.mockImplementationOnce(() => new Promise<void>((r, x) => ((liberar = r), (recusar = x))));
+        botao(el, 'Trocar responsável')!.click();
+        fixture.detectChanges();
+        escolher(fixture, el, ADMIN.id);
+        botao(el, 'Salvar responsável')!.click();
+        await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledWith('p1', { responsavelId: ADMIN.id }));
+        fixture.componentRef.setInput('id', 'p2');
+        repo.proposta$.next(proposta({ id: 'p2' }));
+        fixture.detectChanges();
+        if (falha) recusar(new ErroProposta('VALIDACAO', 'responsavelId', 'Recusada.'));
+        else liberar();
+        await fixture.whenStable();
+        fixture.detectChanges();
+        expect(toast).not.toHaveBeenCalled();
+        expect(toastErro).not.toHaveBeenCalled();
+        expect(el.querySelector('#responsavel-proposta')).toBeNull();
+        expect(botao(el, 'Trocar responsável')!.disabled).toBe(false);
+        TestBed.resetTestingModule();
+      }
+    });
+  });
+
+  describe('atribuição e troca de proposta na rota', () => {
+    it('os editores do técnico e do responsável fecham quando a rota troca de proposta', async () => {
+      for (const [abrir, editor] of [['Trocar técnico', '#tecnico-atribuir'], ['Trocar responsável', '#responsavel-proposta']]) {
+        const { fixture, el, repo } = await montar({ usuario: ADMIN });
+        botao(el, abrir)!.click();
+        fixture.detectChanges();
+        expect(el.querySelector(editor)).not.toBeNull();
+        fixture.componentRef.setInput('id', 'p2');
+        repo.proposta$.next(proposta({ id: 'p2' }));
+        await ate(fixture, () => expect(el.querySelector('[data-testid=carregando]')).toBeNull());
+        expect(botao(el, abrir)).toBeDefined();
+        expect(el.querySelector(editor)).toBeNull();
+        TestBed.resetTestingModule();
+      }
+    });
+
+    it('"Salvar técnico" que termina com outra proposta aberta não escreve nela (sucesso ou recusa)', async () => {
+      for (const falha of [false, true]) {
+        const { fixture, el, repo, toast, toastErro } = await montar({ usuario: ADMIN });
+        let liberar!: () => void;
+        let recusar!: (e: unknown) => void;
+        repo.atribuir.mockImplementationOnce(() => new Promise<void>((r, x) => ((liberar = r), (recusar = x))));
+        botao(el, 'Trocar técnico')!.click();
+        fixture.detectChanges();
+        const select = el.querySelector<HTMLSelectElement>('#tecnico-atribuir')!;
+        select.value = 'u-tec2';
+        select.dispatchEvent(new Event('change'));
+        botao(el, 'Salvar técnico')!.click();
+        await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledWith('p1', { tecnicoId: 'u-tec2' }));
+        fixture.componentRef.setInput('id', 'p2');
+        repo.proposta$.next(proposta({ id: 'p2' }));
+        fixture.detectChanges();
+        if (falha) recusar(new ErroProposta('VALIDACAO', 'tecnicoId', 'Recusada.'));
+        else liberar();
+        await fixture.whenStable();
+        fixture.detectChanges();
+        expect(toast).not.toHaveBeenCalled();
+        expect(toastErro).not.toHaveBeenCalled();
+        expect(el.querySelector('#tecnico-atribuir')).toBeNull();
+        expect(botao(el, 'Trocar técnico')!.disabled).toBe(false);
+        TestBed.resetTestingModule();
+      }
+    });
+  });
+
   describe('pendências (§11.5)', () => {
     it('CONFLITO: faixa com link para Pendências; as transições ficam desabilitadas com a dica', async () => {
       const { el } = await montar({ pendencias: [conflito()] });
@@ -662,6 +899,44 @@ describe('PropostaDetalhePage', () => {
       repo.regerarDocumento.mockRejectedValueOnce(new ErroProposta('PDF_GRANDE', 'proposta', 'O PDF passou de 10 MB. Reduza imagens do template.'));
       botao(el, 'Gerar PDF novamente')!.click();
       await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('O PDF passou de 10 MB. Reduza imagens do template.'));
+    });
+  });
+
+  describe('proposta importada do SIGEM (origem)', () => {
+    const HISTORICO_SIGEM = [
+      { statusDe: null, statusPara: 'FINALIZADA' as StatusProposta, usuarioId: ADMIN.id, em: '2026-10-01T10:00:00Z', observacao: 'Importada do SIGEM' },
+    ];
+    const sigem = (p: Partial<PropostaLocal> = {}) =>
+      proposta({ numero: 12, status: 'FINALIZADA', responsavelId: ADMIN.id, tecnicoId: null, origem: 'SIGEM', historico: HISTORICO_SIGEM, ...p });
+
+    it('FINALIZADA: sem "Ver prévia", sem "Gerar PDF novamente", Documentos diz que não tem PDF e o selo SIGEM aparece', async () => {
+      const { el } = await montar({ usuario: ADMIN, proposta: sigem(), documentos: [] });
+      expect(acoes(el)).toEqual(['Duplicar']);
+      expect(botao(el, 'Ver prévia')).toBeUndefined();
+      expect(el.querySelector('[data-testid=regerar]')).toBeNull();
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      const docs = texto(el.querySelector<HTMLElement>('[data-testid=documentos]')!);
+      expect(docs).toContain('Importada do SIGEM: sem PDF.');
+      expect(docs).not.toContain('Nenhum PDF ainda.');
+      const selos = [...el.querySelectorAll('[data-testid=resumo] [data-selo]')];
+      expect(selos.map((s) => [s.getAttribute('data-selo'), texto(s as HTMLElement).trim()])).toEqual([['sigem', 'Importada do SIGEM']]);
+      expect(selos[0].querySelector('.sr-only')?.textContent).toBe('Importada do ');
+    });
+
+    it('APROVADA: segue o fluxo (Iniciar execução, Cancelar, Duplicar), só sem a prévia', async () => {
+      const { el } = await montar({ usuario: ADMIN, proposta: sigem({ status: 'APROVADA' }), documentos: [] });
+      expect(acoes(el)).toEqual(['Iniciar execução', 'Cancelar proposta', 'Duplicar']);
+      expect(el.querySelector('[data-testid=regerar]')).toBeNull();
+    });
+
+    it('a nativa no mesmo estado continua igual: "Ver prévia", "Gerar PDF novamente" e "Nenhum PDF ainda."', async () => {
+      const { el } = await montar({ usuario: ADMIN, proposta: sigem({ origem: null }), documentos: [] });
+      expect(acoes(el)).toEqual(['Ver prévia', 'Duplicar']);
+      expect(el.querySelector('[data-testid=regerar]')).not.toBeNull();
+      const docs = texto(el.querySelector<HTMLElement>('[data-testid=documentos]')!);
+      expect(docs).toContain('Nenhum PDF ainda. O PDF é gerado no envio.');
+      expect(docs).not.toContain('SIGEM');
+      expect(el.querySelector('[data-selo=sigem]')).toBeNull();
     });
   });
 

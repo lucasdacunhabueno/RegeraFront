@@ -20,6 +20,7 @@ import { ID_EMPRESA, paraEmpresaLocal } from '../empresa/empresa-models';
 import { blocosIniciais, paraTemplateLocal } from '../templates/template-models';
 import { calcular } from './calculo';
 import { codigoProvisorioValido } from './codigo-provisorio';
+import { mensagemErroProposta } from './formatos-proposta';
 import {
   dadosDaProposta, DocumentoLocal, ItemPropostaLocal, PropostaDados, PropostaLocal, StatusProposta,
 } from './proposta-models';
@@ -161,7 +162,7 @@ describe('PropostasRepo', () => {
       clienteId: 'c1', templateId: 't-venda', responsavelId: COMERCIAL.id, tecnicoId: null, dataEmissao: '2026-09-20',
       validadeAte: '2026-09-30', condicoesPagamento: 'À vista', prazoExecucao: '10 dias', observacoes: null,
       descontoGeralCentesimos: 0, totalItensCentavos: 20000, totalDescontosCentavos: 0, totalCentavos: 20000,
-      motivoEncerramento: null, itens: [linha], historico: [], documentos: [], atualizadoEm: '2026-09-20T10:00:00Z', ...p,
+      motivoEncerramento: null, itens: [linha], historico: [], documentos: [], atualizadoEm: '2026-09-20T10:00:00Z', origem: null, ...p,
     };
     await db.propostas.put(proposta);
     return proposta;
@@ -535,6 +536,20 @@ describe('PropostasRepo', () => {
       expect((await fila())[0].baseVersion).toBe(5);
     });
 
+    it('SO-P6: o ADMIN passa a aprovada do SIGEM a um comercial: um UPSERT com o responsável novo e a base local, o resto igual', async () => {
+      await existente('APROVADA', { version: 7, numero: 12, origem: 'SIGEM', responsavelId: ADMIN.id });
+      usuario.set(ADMIN);
+      await repo.atribuir('p1', { responsavelId: COMERCIAL.id });
+      const fila1 = await fila();
+      expect(fila1).toHaveLength(1);
+      expect(fila1[0]).toMatchObject({ entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: 7 });
+      expect(fila1[0].dados).toMatchObject({
+        responsavelId: COMERCIAL.id, tecnicoId: null, status: 'APROVADA', codigoProvisorio: 'PROV-ABCDEF', clienteId: 'c1',
+      });
+      expect('origem' in (fila1[0].dados as object)).toBe(false);
+      expect(await db.propostas.get('p1')).toMatchObject({ responsavelId: COMERCIAL.id, origem: 'SIGEM', status: 'APROVADA', numero: 12 });
+    });
+
     it('recusa em status terminal e técnico que não é TECNICO', async () => {
       await existente('APROVADA');
       expect((await erroDe(repo.atribuir('p1', { tecnicoId: COMERCIAL.id }))).campo).toBe('tecnicoId');
@@ -648,6 +663,21 @@ describe('PropostasRepo', () => {
       expect(p.itens[3].precoUnitarioCentavos).toBe(777); // o preço da proposta original é mantido
       expect(p.tecnicoId).toBeNull();
       expect((await fila())[0].dados).toMatchObject({ tecnicoId: null });
+    });
+
+    it('duplicar uma proposta do SIGEM dá um rascunho nativo (origem nula, também na fila)', async () => {
+      await existente('FINALIZADA', {
+        numero: 12, origem: 'SIGEM', responsavelId: ADMIN.id,
+        historico: [{ statusDe: null, statusPara: 'FINALIZADA', usuarioId: ADMIN.id, em: '2026-10-01T10:00:00Z', observacao: 'SIGEM' }],
+      });
+      usuario.set(ADMIN);
+      const { id } = await repo.duplicar('p1');
+      const p = (await db.propostas.get(id))!;
+      expect(p).toMatchObject({ status: 'RASCUNHO', numero: null, origem: null, historico: [], documentos: [] });
+      expect((await db.propostas.get('p1'))!.origem).toBe('SIGEM');
+      const [m] = await fila();
+      expect(m).toMatchObject({ entidade: 'proposta', agregadoId: id, op: 'UPSERT' });
+      expect('origem' in (m.dados as object)).toBe(false);
     });
 
     it('técnico e comercial de outra proposta não duplicam', async () => {
@@ -1073,7 +1103,7 @@ describe('PropostasRepo', () => {
     });
 
     it('motivoParaRegerar: CODIGO_EXIBIDO_INVALIDO, falta do documento da revisão, ou nada', () => {
-      const base = { status: 'ENVIADA' as StatusProposta, revisao: 2, documentos: [], historico: [] };
+      const base = { status: 'ENVIADA' as StatusProposta, revisao: 2, documentos: [], historico: [], origem: null };
       const recusa = { ...pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1'), erro: { codigo: 'CODIGO_EXIBIDO_INVALIDO', mensagem: '' } };
       const outra = { ...pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1'), erro: { codigo: 'SHA_DIVERGENTE', mensagem: '' } };
       expect(motivoParaRegerar(base, [{ revisao: 2 }], [recusa])).toBe('CODIGO_EXIBIDO_INVALIDO');
@@ -1082,6 +1112,31 @@ describe('PropostasRepo', () => {
       expect(motivoParaRegerar({ ...base, status: 'RASCUNHO' }, [], [recusa])).toBeNull();
       // cancelada direto do rascunho: nunca houve envio, não falta documento
       expect(motivoParaRegerar({ ...base, status: 'CANCELADA', revisao: 1 }, [], [])).toBeNull();
+    });
+
+    it('SIGEM: a proposta importada nunca tem PDF a regerar (motivoParaRegerar nulo; regerarDocumento recusa com PROPOSTA_SIGEM sem gerar)', async () => {
+      const sigem = {
+        status: 'FINALIZADA' as StatusProposta, revisao: 1, documentos: [], origem: 'SIGEM' as const,
+        historico: [{ statusDe: null, statusPara: 'FINALIZADA' as StatusProposta, usuarioId: ADMIN.id, em: '2026-10-01T10:00:00Z', observacao: null }],
+      };
+      const recusa = { ...pendencia(TIPO_UPLOAD_DOCUMENTO, 'p1'), erro: { codigo: 'CODIGO_EXIBIDO_INVALIDO', mensagem: '' } };
+      // a nativa no mesmo estado pediria o PDF
+      expect(motivoParaRegerar({ ...sigem, origem: null }, [], [])).toBe('SEM_DOCUMENTO');
+      expect(motivoParaRegerar(sigem, [], [])).toBeNull();
+      expect(motivoParaRegerar(sigem, [], [recusa])).toBeNull();
+      await existente('FINALIZADA', { numero: 12, origem: 'SIGEM', responsavelId: ADMIN.id, historico: sigem.historico });
+      usuario.set(ADMIN);
+      const gerar = vi.fn<(e: EntradaPdf) => Promise<Blob>>(async () => new Blob([ABC], { type: 'application/pdf' }));
+      const e = await erroDe(repo.regerarDocumento('p1', gerar));
+      expect(e.codigo).toBe('PROPOSTA_SIGEM');
+      expect(e.message).toBe('Proposta importada do SIGEM não tem PDF.');
+      expect(mensagemErroProposta(e)).toBe('Proposta importada do SIGEM não tem PDF.');
+      // também com um CONFLITO da proposta: a origem é o motivo definitivo
+      await db.pendencias.put({ ...pendencia('proposta', 'p1'), tipo: 'CONFLITO' });
+      expect((await erroDe(repo.regerarDocumento('p1', gerar))).codigo).toBe('PROPOSTA_SIGEM');
+      expect(gerar).not.toHaveBeenCalled();
+      expect(await db.documentos.count()).toBe(0);
+      expect(await fila()).toEqual([]);
     });
   });
 

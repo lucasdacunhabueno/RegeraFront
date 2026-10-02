@@ -260,7 +260,7 @@ describe('OsRepo', () => {
       clienteId: 'c1', templateId: 't1', responsavelId: COMERCIAL.id, tecnicoId: null, dataEmissao: '2026-09-20',
       validadeAte: '2026-09-30', condicoesPagamento: '30 dias', prazoExecucao: '10 dias úteis', observacoes: 'Ligar antes.',
       descontoGeralCentesimos: 0, totalItensCentavos: 25000, totalDescontosCentavos: 2500, totalCentavos: 22500,
-      motivoEncerramento: null, historico: [], documentos: [], atualizadoEm: '2026-09-20T10:00:00Z',
+      motivoEncerramento: null, historico: [], documentos: [], atualizadoEm: '2026-09-20T10:00:00Z', origem: null,
       itens: [linha('l1'), linha('l2', { itemCatalogoId: 'i-inativo', codigo: 'S-9', nome: 'Velho', unidade: 'h', natureza: 'SERVICO', quantidadeMilesimos: 1000, ordem: 1 })],
       ...p,
     };

@@ -4,7 +4,7 @@ import { ErroCampo } from '../../core/util/erro-campo';
 import { normalizarBusca } from '../../core/util/formatos';
 import type { ClienteLocal } from '../clientes/cliente-models';
 import { TIPOS_PROPOSTA, TipoProposta } from '../templates/template-models';
-import { codigoExibido, PropostaLocal } from './proposta-models';
+import { codigoExibido, importadaDoSigem, PropostaLocal } from './proposta-models';
 
 /**
  * Exibição das propostas nas telas (lista, kanban, detalhe, cliente). Funções puras: quem chama passa o `hoje`
@@ -13,7 +13,7 @@ import { codigoExibido, PropostaLocal } from './proposta-models';
  */
 
 export interface Selo {
-  tipo: 'expirada' | 'nao-sincronizada' | 'pendencia';
+  tipo: 'sigem' | 'expirada' | 'nao-sincronizada' | 'pendencia';
   rotulo: string;
 }
 
@@ -66,14 +66,16 @@ export function rotuloTipo(tipo: TipoProposta): string {
 }
 
 /**
- * Selos do card, sempre nesta ordem. `naoSincronizada` = tem mutação na outbox (inclui o upload do PDF);
- * `pendente` = tem pendência de sync (conflito ou rejeição).
+ * Selos do card, sempre nesta ordem: SIGEM (a proposta importada, `origem`), Expirada, Não sincronizada, Pendência.
+ * `naoSincronizada` = tem mutação na outbox (inclui o upload do PDF); `pendente` = tem pendência de sync (conflito ou
+ * rejeição).
  */
 export function selosDaProposta(
-  p: Pick<PropostaLocal, 'status' | 'validadeAte'>,
+  p: Pick<PropostaLocal, 'status' | 'validadeAte' | 'origem'>,
   estado: { pendente: boolean; naoSincronizada: boolean; hoje: string },
 ): Selo[] {
   const selos: Selo[] = [];
+  if (importadaDoSigem(p)) selos.push({ tipo: 'sigem', rotulo: 'SIGEM' });
   if (expirada(p, estado.hoje)) selos.push({ tipo: 'expirada', rotulo: 'Expirada' });
   if (estado.naoSincronizada) selos.push({ tipo: 'nao-sincronizada', rotulo: 'Não sincronizada' });
   if (estado.pendente) selos.push({ tipo: 'pendencia', rotulo: 'Pendência' });
@@ -95,6 +97,9 @@ export function correspondeABusca(p: PropostaLocal, cliente: ClienteLocal | unde
   return doc.length >= 3 && cliente.documento !== null && cliente.documento.includes(doc);
 }
 
+/** O texto do `PROPOSTA_SIGEM` do servidor (SO-R6): o repositório recusa com ele, e o erro sem mensagem cai nele. */
+export const MENSAGEM_PROPOSTA_SIGEM = 'Proposta importada do SIGEM não tem PDF.';
+
 const POR_CODIGO: ReadonlyMap<string, string> = new Map([
   ['PROPOSTA_JA_ENVIADA', 'Esta proposta já foi enviada.'],
   ['PDF_GRANDE', 'O PDF passou de 10 MB. Reduza imagens do template.'],
@@ -104,6 +109,7 @@ const POR_CODIGO: ReadonlyMap<string, string> = new Map([
   ['RESOLVA_A_PENDENCIA', 'Resolva a pendência desta proposta antes de editá-la.'],
   ['VALIDACAO', 'Revise os campos destacados.'],
   ['ACESSO_NEGADO', 'Você não tem permissão para esta ação.'],
+  ['PROPOSTA_SIGEM', MENSAGEM_PROPOSTA_SIGEM],
 ]);
 
 const GENERICA = 'Não foi possível concluir. Tente de novo.';

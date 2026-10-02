@@ -70,7 +70,7 @@ function propostaLocal(id: string, p: Partial<PropostaLocal> = {}): PropostaLoca
     id, version: 1, codigoProvisorio: 'PROV-ABC123', numero: null, revisao: null, tipo: 'VENDA', status: 'ENVIADA', clienteId: 'c1',
     templateId: null, responsavelId: 'u', tecnicoId: null, dataEmissao: '2026-09-20', validadeAte: '2026-10-05', condicoesPagamento: null,
     prazoExecucao: null, observacoes: null, descontoGeralCentesimos: null, totalItensCentavos: 0, totalDescontosCentavos: 0,
-    totalCentavos: 0, motivoEncerramento: null, itens: [], historico: [], documentos: [], atualizadoEm: null, ...p,
+    totalCentavos: 0, motivoEncerramento: null, itens: [], historico: [], documentos: [], atualizadoEm: null, origem: null, ...p,
   };
 }
 

@@ -1,7 +1,7 @@
 import { Component, computed, input } from '@angular/core';
 import {
-  LucideBan, LucideCircleCheck, LucideClock, LucideDynamicIcon, LucideIcon, LucideRefreshCw, LucideRotateCcw, LucideTriangleAlert,
-  LucideWrench,
+  LucideBan, LucideCircleCheck, LucideClock, LucideDynamicIcon, LucideHistory, LucideIcon, LucideRefreshCw, LucideRotateCcw,
+  LucideTriangleAlert, LucideWrench,
 } from '@lucide/angular';
 import { RouterLink } from '@angular/router';
 import type { SeloOsProposta } from '../os/formatos-os';
@@ -10,6 +10,7 @@ import { PropostaLocal, STATUS_PROPOSTA } from './proposta-models';
 
 /** Cor e ícone de cada selo (o card e o cabeçalho do detalhe). */
 export const ESTILO_SELO: Readonly<Record<Selo['tipo'], { cor: string; icone: LucideIcon }>> = {
+  sigem: { cor: 'bg-slate-100 text-slate-700', icone: LucideHistory },
   expirada: { cor: 'bg-orange-100 text-orange-800', icone: LucideClock },
   'nao-sincronizada': { cor: 'bg-amber-100 text-amber-800', icone: LucideRefreshCw },
   pendencia: { cor: 'bg-red-100 text-red-800', icone: LucideTriangleAlert },
@@ -58,7 +59,7 @@ export const ESTILO_SELO_OS_PROPOSTA: Readonly<Record<SeloOsProposta['tipo'], { 
           @for (s of selos(); track s.tipo) {
             <li [attr.data-selo]="s.tipo" [attr.class]="'inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-xs ' + estilo(s).cor">
               <svg [lucideIcon]="estilo(s).icone" [size]="12" aria-hidden="true"></svg>
-              {{ s.rotulo }}
+              @if (s.tipo === 'sigem') {<span class="sr-only">Importada do </span>}{{ s.rotulo }}
             </li>
           }
           @for (s of selosOs(); track s.tipo) {
