@@ -21,7 +21,9 @@ import { semViolacaoCsp, VigiaCsp } from './apoio';
  * 7. Q21: "Precisa voltar" deixa a proposta EM_EXECUCAO, com o selo "Retorno pendente"; 7b. Q17: a OS gerada sem
  *    concluir a proposta também, e a OS seguinte, que conclui, a finaliza;
  * 8. reatribuição (M2-R3): as notas e a foto offline de T chegam ao servidor depois de o admin passar a OS a T2, e a
- *    OS sai do aparelho de T.
+ *    OS sai do aparelho de T;
+ * 9. OS cancelada (foco 4 da revisão, Q11): o admin gera a OS de uma proposta aprovada e a cancela com o motivo; a
+ *    proposta não muda (nem status, nem versão) e o kanban do comercial dono mostra "OS cancelada" em APROVADA.
  * Zero violação de CSP em todos os aparelhos, conferida no fim de cada passo.
  */
 test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, executada em modo avião', () => {
@@ -43,6 +45,7 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
   let tecnico2: UsuarioE2E;
   let item: ItemE2E;
   let clienteId: string;
+  let templateId: string;
   let logoId: string | null;
   /** p1: a do caminho completo; p2: a do "Precisa voltar" (Q21); p3: a da OS gerada sem concluir a proposta (Q17). */
   let p1: string;
@@ -136,7 +139,7 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     tecnico = await admin.criarUsuario(`Tecnico M2 T ${ts}`, `m2.t.${ts}@regera.local`, 'TECNICO');
     tecnico2 = await admin.criarUsuario(`Tecnico M2 T2 ${ts}`, `m2.t2.${ts}@regera.local`, 'TECNICO');
     item = await admin.criarItem(`M2-${ts}`, nomeItem, 300, 480.25);
-    const templateId = await admin.criarTemplate(`Template M2 ${ts}`, 'VENDA');
+    templateId = await admin.criarTemplate(`Template M2 ${ts}`, 'VENDA');
     clienteId = await admin.criarClientePf(nomeCliente, cpf, { telefone, endereco });
     const apiA = await Api.entrar(comercialA.email, comercialA.senha);
     try {
@@ -597,5 +600,60 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     await expect(pageAdmin.getByTestId('contador-fotos')).toHaveText('1/20', { timeout: 30_000 });
     await cspT.verificar();
     await cspAdmin.verificar();
+  });
+
+  test('9. OS cancelada (Q11): o admin gera e cancela com o motivo; a proposta não muda e o kanban de A mostra "OS cancelada"', async () => {
+    test.setTimeout(120_000);
+    const motivo = `Cliente desistiu do serviço ${ts}`;
+    const apiA = await Api.entrar(comercialA.email, comercialA.senha);
+    let p4: string;
+    try {
+      p4 = await apiA.criarPropostaAprovada(comercialA.id, clienteId, templateId, item);
+    } finally {
+      await apiA.fechar();
+    }
+    const antes = (await admin.agregado('proposta', p4))!;
+    expect((await admin.proposta(p4))?.status).toBe('APROVADA');
+
+    // o admin gera a OS na tela da proposta (o aparelho dele ainda não tem p4: relê)
+    await pageAdmin.goto(`/propostas/${p4}`);
+    await recarregarESincronizar(pageAdmin);
+    const secao = pageAdmin.getByTestId('os-da-proposta');
+    await secao.getByRole('button', { name: 'Gerar OS' }).click({ timeout: 30_000 });
+    const gerar = pageAdmin.getByRole('dialog', { name: 'Gerar OS' });
+    await expect(gerar.getByLabel('Esta OS conclui a proposta?')).toBeChecked();
+    await gerar.getByRole('button', { name: 'Gerar OS' }).click();
+    await expect(pageAdmin).toHaveURL(/\/os\/[0-9a-f-]+$/, { timeout: 30_000 });
+    const canceladaId = /\/os\/([0-9a-f-]+)$/.exec(pageAdmin.url())![1];
+    const criada = await aguardarOs(canceladaId, (o) => typeof o.numero === 'number');
+    expect(criada.propostaId).toBe(p4);
+    await expect(pageAdmin.getByRole('heading', { level: 1 })).toHaveText(codigoOs(criada.numero!), { timeout: 30_000 });
+
+    // FW-R3: com a OS aberta não há trabalho a aceitar; e o cancelamento com o motivo, na tela
+    await pageAdmin.getByRole('button', { name: 'Cancelar OS' }).click();
+    const cancelar = pageAdmin.getByRole('dialog', { name: 'Cancelar OS' });
+    await cancelar.getByLabel('Motivo').fill(motivo);
+    await cancelar.getByRole('button', { name: 'Cancelar OS' }).click();
+    await expect(cancelar).toHaveCount(0);
+    await expect(pageAdmin.getByTestId('cancelada')).toContainText(motivo);
+    await expect(pageAdmin.locator('[data-status]').first()).toHaveText('Cancelada');
+
+    const cancelada = await aguardarOs(canceladaId, (o) => o.status === 'CANCELADA');
+    expect(cancelada.motivoCancelamento).toBe(motivo);
+    // a proposta não se move sozinha (Q11): o comercial decide
+    const depois = (await admin.agregado('proposta', p4))!;
+    expect((depois.dados as { status: string }).status).toBe('APROVADA');
+    expect(depois.version).toBe(antes.version);
+
+    // o kanban do comercial dono: o card fica em APROVADA, com o selo "OS cancelada"
+    await pageA.goto('/kanban');
+    await recarregarESincronizar(pageA);
+    await pageA.getByRole('tab', { name: /^Aprovada/ }).click();
+    await pageA.locator('#busca-kanban').fill(nomeCliente);
+    const card = pageA.locator(`[data-coluna="APROVADA"] [data-proposta="${p4}"]`);
+    await expect(card.locator('[data-selo="os-cancelada"]')).toHaveText('OS cancelada', { timeout: 30_000 });
+    await expect(pageA.locator(`[data-proposta="${p4}"]`)).toHaveCount(1);
+    await cspAdmin.verificar();
+    await cspA.verificar();
   });
 });
