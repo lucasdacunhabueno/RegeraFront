@@ -350,7 +350,7 @@ export interface OsServidor {
   motivoRecusa?: string;
   assinanteNome?: string;
   notas: { id: string; texto: string; autorId?: string }[];
-  anexos: { id: string; tipo: 'FOTO' | 'ASSINATURA' | 'DOCUMENTO'; arquivoId: string; codigoExibido?: string }[];
+  anexos: { id: string; tipo: 'FOTO' | 'ASSINATURA' | 'DOCUMENTO'; arquivoId: string; codigoExibido?: string; autorId?: string }[];
   historico: { statusDe?: string; statusPara: string }[];
 }
 
@@ -387,7 +387,9 @@ export async function entrar(page: Page, email: string, senha: string, destino =
   await page.getByLabel('E-mail').fill(email);
   await page.getByLabel('Senha').fill(senha);
   await page.getByRole('button', { name: 'Entrar' }).click();
-  await expect(page).toHaveURL(destino);
+  // o login confere a senha com bcrypt: com os outros testes criando usuários e entrando ao mesmo tempo, ele passa dos
+  // 5 s padrão do expect (o botão fica em "Entrando…"); a espera é a mesma das outras respostas do servidor
+  await expect(page).toHaveURL(destino, { timeout: 30_000 });
 }
 
 /**
@@ -566,9 +568,9 @@ export async function tirarFoto(page: Page, jpeg: Buffer, nome: string, esperada
 
 /**
  * M2: a assinatura em tela cheia: desenha dois traços com o ponteiro no quadro (o canvas), preenche o nome e confirma;
- * espera a tela fechar.
+ * espera a tela fechar. `comTelaAberta` roda antes de confirmar (ex.: conferir o que a tela mostra).
  */
-export async function assinarNaTela(page: Page, nome: string): Promise<void> {
+export async function assinarNaTela(page: Page, nome: string, comTelaAberta?: () => Promise<void>): Promise<void> {
   await page.getByRole('button', { name: 'Colher assinatura' }).click();
   const dialogo = page.getByRole('dialog', { name: 'Assinatura' });
   await expect(dialogo).toBeVisible();
@@ -587,6 +589,7 @@ export async function assinarNaTela(page: Page, nome: string): Promise<void> {
   await traco([[0.2, 0.75], [0.8, 0.72]]);
   await expect(confirmar).toBeEnabled();
   await dialogo.getByLabel('Nome de quem assina').fill(nome);
+  await comTelaAberta?.();
   await confirmar.click();
   await expect(dialogo).toHaveCount(0, { timeout: 30_000 });
 }

@@ -18,9 +18,10 @@ import { semViolacaoCsp, VigiaCsp } from './apoio';
  * 4. o comercial dono vê a OS; o outro comercial não a vê (nem a API, nem a tela);
  * 5. T não vê `R$` nem o CPF do cliente em nenhuma tela da OS (vê telefone e endereço, Q14);
  * 6. OS avulsa (Q6): o comercial cria, T conclui com a recusa da assinatura, e nenhuma proposta muda;
- * 7. Q21: "Precisa voltar" deixa a proposta EM_EXECUCAO, com o selo "Retorno pendente";
- * 8. reatribuição (M2-R3): as notas offline de T chegam ao servidor depois de o admin passar a OS a T2, e a OS sai
- *    do aparelho de T.
+ * 7. Q21: "Precisa voltar" deixa a proposta EM_EXECUCAO, com o selo "Retorno pendente"; 7b. Q17: a OS gerada sem
+ *    concluir a proposta também, e a OS seguinte, que conclui, a finaliza;
+ * 8. reatribuição (M2-R3): as notas e a foto offline de T chegam ao servidor depois de o admin passar a OS a T2, e a
+ *    OS sai do aparelho de T.
  * Zero violação de CSP em todos os aparelhos, conferida no fim de cada passo.
  */
 test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, executada em modo avião', () => {
@@ -43,9 +44,10 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
   let item: ItemE2E;
   let clienteId: string;
   let logoId: string | null;
-  /** p1: a do caminho completo; p2: a do "Precisa voltar" (Q21). */
+  /** p1: a do caminho completo; p2: a do "Precisa voltar" (Q21); p3: a da OS gerada sem concluir a proposta (Q17). */
   let p1: string;
   let p2: string;
+  let p3: string;
 
   let ctxAdmin: BrowserContext;
   let pageAdmin: Page;
@@ -61,9 +63,17 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
   let osId: string;
   let codigo: string;
 
-  /** O texto da tela do técnico não tem valor nem o CPF do cliente (spec §6, Q14). */
+  /**
+   * A tela do técnico não tem valor nem o CPF do cliente (spec §6, Q14): o texto visível, o título e os atributos que
+   * o leitor de tela lê (`aria-label`, `alt`, `title`, `placeholder`), inclusive de um diálogo aberto.
+   */
   async function semValorNemDocumento(page: Page): Promise<void> {
-    const texto = await textoDaPagina(page);
+    const atributos = await page.evaluate(() =>
+      Array.from(document.querySelectorAll('[aria-label],[alt],[title],[placeholder]'))
+        .flatMap((e) => ['aria-label', 'alt', 'title', 'placeholder'].map((a) => e.getAttribute(a) ?? ''))
+        .join('\n'),
+    );
+    const texto = `${await textoDaPagina(page)}\n${atributos}`;
     expect(texto).not.toContain('R$');
     expect(texto).not.toContain(cpf);
     expect(texto).not.toContain(cpfFormatado);
@@ -85,6 +95,7 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     await page.getByRole('button', { name: 'Cliente não pôde assinar' }).click();
     const dialogo = page.getByRole('dialog', { name: 'Cliente não pôde assinar' });
     await dialogo.getByLabel('Motivo').fill(motivo);
+    await semValorNemDocumento(page);
     await dialogo.getByRole('button', { name: 'Registrar' }).click();
     await expect(dialogo).toHaveCount(0);
     await expect(page.getByTestId('assinatura')).toContainText(`Cliente não pôde assinar: ${motivo}`);
@@ -131,6 +142,7 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     try {
       p1 = await apiA.criarPropostaAprovada(comercialA.id, clienteId, templateId, item);
       p2 = await apiA.criarPropostaAprovada(comercialA.id, clienteId, templateId, item);
+      p3 = await apiA.criarPropostaAprovada(comercialA.id, clienteId, templateId, item);
     } finally {
       await apiA.fechar();
     }
@@ -214,7 +226,7 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     await tirarFoto(pageT, fotoDepois, 'depois.jpg', 2);
     await expect(pageT.locator('[data-nao-sincronizada]')).toHaveCount(2);
 
-    await assinarNaTela(pageT, assinante);
+    await assinarNaTela(pageT, assinante, () => semValorNemDocumento(pageT));
     await expect(pageT.getByTestId('assinatura')).toContainText(`Assinada por ${assinante} (Cliente)`);
 
     // Q17: concluir sem "Precisa voltar" (a OS conclui a proposta)
@@ -369,7 +381,8 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
 
   test('6. OS avulsa (Q6): o comercial cria; T conclui sem assinatura (recusa com motivo); nenhuma proposta muda', async () => {
     test.setTimeout(120_000);
-    const versaoAntes = async () => [(await admin.agregado('proposta', p1))!.version, (await admin.agregado('proposta', p2))!.version];
+    const versaoAntes = async () =>
+      Promise.all([p1, p2, p3].map(async (id) => (await admin.agregado('proposta', id))!.version));
     const antes = await versaoAntes();
 
     await pageA.goto('/os');
@@ -411,6 +424,7 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     expect(await versaoAntes()).toEqual(antes);
     expect((await admin.proposta(p1))?.status).toBe('FINALIZADA');
     expect((await admin.proposta(p2))?.status).toBe('APROVADA');
+    expect((await admin.proposta(p3))?.status).toBe('APROVADA');
     await cspA.verificar();
     await cspT.verificar();
   });
@@ -459,9 +473,71 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     await cspT.verificar();
   });
 
+  test('7b. Q17: OS gerada sem concluir a proposta deixa "Retorno pendente"; a OS seguinte, que conclui, finaliza', async () => {
+    test.setTimeout(150_000);
+    /** Gera a OS de p3 pela tela do comercial, com T; devolve id e código. */
+    const gerar = async (conclui: boolean) => {
+      await pageA.goto(`/propostas/${p3}`);
+      await pageA.getByTestId('os-da-proposta').getByRole('button', { name: 'Gerar OS' }).click();
+      const dialogo = pageA.getByRole('dialog', { name: 'Gerar OS' });
+      const caixa = dialogo.getByLabel('Esta OS conclui a proposta?');
+      await expect(caixa).toBeChecked();
+      if (!conclui) await caixa.uncheck();
+      await dialogo.getByLabel('Técnico').selectOption({ label: tecnico.nome });
+      await dialogo.getByRole('button', { name: 'Gerar OS' }).click();
+      await expect(pageA).toHaveURL(/\/os\/[0-9a-f-]+$/, { timeout: 30_000 });
+      const id = /\/os\/([0-9a-f-]+)$/.exec(pageA.url())![1];
+      const criada = await aguardarOs(id, (o) => typeof o.numero === 'number');
+      expect(criada.concluiProposta).toBe(conclui);
+      return { id, codigo: codigoOs(criada.numero!) };
+    };
+
+    // 1ª OS, desmarcada: T conclui sem "Precisa voltar" (ela já não conclui a proposta)
+    const primeira = await gerar(false);
+    await recarregarESincronizar(pageT);
+    await abrirOsPelaLista(pageT, primeira.id, primeira.codigo);
+    await pageT.getByRole('button', { name: 'Iniciar OS' }).click();
+    await expect(pageT.locator('[data-status]').first()).toHaveText('Em andamento');
+    await expect(pageT.getByLabel('Precisa voltar')).toHaveCount(0);
+    await expect(pageT.getByText('Esta OS não conclui a proposta: ela continua em execução depois da conclusão.')).toBeVisible();
+    await concluirComRecusa(pageT, `Primeira visita ${ts}`);
+    await expect.poll(() => compartilhados.length, { timeout: 30_000 }).toBe(4);
+    await aguardarOs(primeira.id, (o) => o.status === 'CONCLUIDA');
+    expect((await admin.proposta(p3))?.status).toBe('EM_EXECUCAO');
+
+    await pageA.goto('/kanban');
+    await recarregarESincronizar(pageA);
+    await pageA.getByRole('tab', { name: /^Em execução/ }).click();
+    await pageA.locator('#busca-kanban').fill(nomeCliente);
+    const card = pageA.locator(`[data-coluna="EM_EXECUCAO"] [data-proposta="${p3}"]`);
+    await expect(card.locator('[data-selo="retorno-pendente"]')).toHaveText('Retorno pendente', { timeout: 30_000 });
+
+    // 2ª OS, marcada: concluí-la finaliza a proposta (todas as não canceladas concluídas e uma que conclui)
+    const segunda = await gerar(true);
+    await recarregarESincronizar(pageT);
+    await abrirOsPelaLista(pageT, segunda.id, segunda.codigo);
+    await pageT.getByRole('button', { name: 'Iniciar OS' }).click();
+    await expect(pageT.locator('[data-status]').first()).toHaveText('Em andamento');
+    await concluirComRecusa(pageT, `Retorno feito ${ts}`);
+    await expect.poll(() => compartilhados.length, { timeout: 30_000 }).toBe(5);
+    await aguardarOs(segunda.id, (o) => o.status === 'CONCLUIDA');
+    await expect.poll(async () => (await admin.proposta(p3))?.status, { timeout: 30_000 }).toBe('FINALIZADA');
+
+    await pageA.goto('/kanban');
+    await recarregarESincronizar(pageA);
+    await pageA.getByRole('tab', { name: /^Finalizada/ }).click();
+    await pageA.locator('#busca-kanban').fill(nomeCliente);
+    const finalizada = pageA.locator(`[data-coluna="FINALIZADA"] [data-proposta="${p3}"]`);
+    await expect(finalizada.locator('[data-selo="os-concluida"]')).toHaveText('OS concluída', { timeout: 30_000 });
+    await expect(finalizada.locator('[data-selo="retorno-pendente"]')).toHaveCount(0);
+    await cspA.verificar();
+    await cspT.verificar();
+  });
+
   test('8. reatribuição (M2-R3): as notas offline de T chegam depois de o admin passar a OS a T2, e a OS sai do aparelho de T', async () => {
     test.setTimeout(150_000);
     const reatribuidaId = await admin.criarOsAvulsa(clienteId, tecnico.id, `Reatribuição ${ts}`);
+    const fotoOffline = await jpegDeTeste(pageT, '#b45309');
     const criada = await aguardarOs(reatribuidaId, (o) => typeof o.numero === 'number');
     const codigoReatribuida = codigoOs(criada.numero!);
 
@@ -479,6 +555,9 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
       await expect(pageT.getByTestId('notas')).toContainText(nota);
     }
     await expect(pageT.getByTestId('notas').getByText('Não sincronizada')).toHaveCount(2);
+    // e uma foto: o upload fica na fila e protege a OS do tombstone até sair (M2P2-R3/R13; M2P1-R22, 7 dias)
+    await tirarFoto(pageT, fotoOffline, 'offline.jpg', 1);
+    await expect(pageT.locator('[data-nao-sincronizada]')).toHaveCount(1);
 
     // o admin passa a OS para T2
     await pageAdmin.goto(`/os/${reatribuidaId}`);
@@ -490,10 +569,17 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     await expect(pageAdmin.getByTestId('tecnico')).toContainText(tecnico2.nome);
     await aguardarOs(reatribuidaId, (o) => o.tecnicoId === tecnico2.id);
 
-    // T volta: as notas dele chegam ao servidor (M2-R3), e a OS sai do aparelho dele
+    // T volta: as notas e a foto dele chegam ao servidor (M2-R3), e a OS sai do aparelho dele
     await ctxT.setOffline(false);
-    const comNotas = await aguardarOs(reatribuidaId, (o) => notas.every((n) => o.notas.some((x) => x.texto === n)));
+    const comNotas = await aguardarOs(
+      reatribuidaId,
+      (o) => notas.every((n) => o.notas.some((x) => x.texto === n)) && o.anexos.some((a) => a.tipo === 'FOTO'),
+    );
     for (const n of notas) expect(comNotas.notas.find((x) => x.texto === n)?.autorId).toBe(tecnico.id);
+    const foto = comNotas.anexos.filter((a) => a.tipo === 'FOTO');
+    expect(foto).toHaveLength(1);
+    expect(foto[0].autorId).toBe(tecnico.id);
+    expect((await admin.baixarArquivo(foto[0].arquivoId)).inicio.startsWith('\xff\xd8\xff')).toBe(true);
     expect(comNotas.tecnicoId).toBe(tecnico2.id);
     expect(comNotas.status).toBe('EM_ANDAMENTO');
     await expect.poll(async () => await registroNoAparelho(pageT, 'os', reatribuidaId), { timeout: 30_000 }).toBeUndefined();
@@ -505,9 +591,10 @@ test.describe.serial('aceite do M2: OS da proposta aprovada até FINALIZADA, exe
     // as outras OS dele continuam
     await expect(pageT.getByRole('link').filter({ hasText: codigo })).toBeVisible();
 
-    // o admin vê as notas de T
+    // o admin vê as notas e a foto de T
     await recarregarESincronizar(pageAdmin);
     for (const n of notas) await expect(pageAdmin.getByTestId('notas')).toContainText(n, { timeout: 30_000 });
+    await expect(pageAdmin.getByTestId('contador-fotos')).toHaveText('1/20', { timeout: 30_000 });
     await cspT.verificar();
     await cspAdmin.verificar();
   });

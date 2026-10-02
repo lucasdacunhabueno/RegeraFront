@@ -295,9 +295,12 @@ test.describe.serial('aceite do M1: proposta offline do comercial até FINALIZAD
       const local = await registroNoAparelho<{ totalCentavos: number | null; documentos: unknown[]; itens: { precoUnitarioCentavos: number | null }[] }>(
         pageT, 'propostas', propostaId,
       );
-      expect(local?.totalCentavos ?? null).toBeNull();
-      expect(local?.documentos ?? []).toEqual([]);
-      expect((local?.itens ?? []).map((l) => l.precoUnitarioCentavos ?? null).filter((v) => v !== null)).toEqual([]);
+      // a proposta atribuída continua chegando ao aparelho dele (AcessoProposta), só não tem mais tela
+      expect(local).toBeDefined();
+      expect(local!.itens).toHaveLength(1);
+      expect(local!.totalCentavos ?? null).toBeNull();
+      expect(local!.documentos).toEqual([]);
+      expect(local!.itens.map((l) => l.precoUnitarioCentavos ?? null)).toEqual([null]);
       // §19.5: o catálogo do técnico também não tem preço — nem no aparelho, nem no servidor, nem a tela abre
       const itemT = await registroNoAparelho<{ codigo: string; precoVenda: unknown; precoCusto: unknown; precoLocacaoMensal: unknown }>(
         pageT, 'itens', item.id,

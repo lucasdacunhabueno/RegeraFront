@@ -9,7 +9,8 @@ async function entrar(page: Page) {
   await page.getByLabel('E-mail').fill(EMAIL);
   await page.getByLabel('Senha').fill(SENHA);
   await page.getByRole('button', { name: 'Entrar' }).click();
-  await expect(page).toHaveURL(/\/kanban$/);
+  // bcrypt no login: com os outros testes em paralelo, passa dos 5 s padrão (ver `entrar` em aceite-apoio.ts)
+  await expect(page).toHaveURL(/\/kanban$/, { timeout: 30_000 });
 }
 
 test('item salvo enquanto o pull está em curso sincroniza ao fim da rodada, sem esperar o timer', async ({ page, context }) => {

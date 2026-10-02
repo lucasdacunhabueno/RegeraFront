@@ -81,16 +81,46 @@ describe('AuthService', () => {
   it('refresh recusado porque outra página girou o cookie: tenta de novo uma vez e a sessão continua', async () => {
     // a página recarregada no meio de uma renovação: a antiga (pelo service worker) gira o cookie, e a nova, que
     // mandou o cookie velho ao mesmo tempo, recebe o 401 da tolerância do servidor; o cookie novo já está no navegador
+    const request = vi.fn((_nome: string, fn: () => Promise<boolean>) => fn());
+    vi.stubGlobal('navigator', { ...navigator, locks: { request } });
     await db.gravarMeta('sessao', ANA);
 
     await auth.iniciar();
     http.expectOne('/api/auth/refresh').flush({ codigo: 'SESSAO_INVALIDA' }, { status: 401, statusText: 'x' });
+    const segunda = await proximoRefresh();
+    // durante a espera e a segunda tentativa, nada de "Sua sessão expirou" (nem piscando)
     expect(auth.sessaoExpirada()).toBe(false);
-    (await proximoRefresh()).flush(RESPOSTA);
+    segunda.flush(RESPOSTA);
 
     expect(await auth.renovar()).toBe(true);
     expect(auth.sessaoExpirada()).toBe(false);
     expect(auth.token()).toBe('tok-1');
+    // as duas tentativas e a espera ficam dentro da mesma trava: nenhuma outra aba gira o cookie no meio
+    expect(request).toHaveBeenCalledTimes(1);
+  });
+
+  it('a segunda tentativa sai 1 s depois do 401, não antes (espera padrão)', async () => {
+    TestBed.resetTestingModule();
+    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    auth = TestBed.inject(AuthService);
+    http = TestBed.inject(HttpTestingController);
+    db = TestBed.inject(RegeraDb);
+    vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout'] });
+    try {
+      const p = auth.renovar();
+      http.expectOne('/api/auth/refresh').flush({ codigo: 'SESSAO_INVALIDA' }, { status: 401, statusText: 'x' });
+      await vi.advanceTimersByTimeAsync(999);
+      expect(http.match('/api/auth/refresh')).toHaveLength(0);
+      expect(auth.sessaoExpirada()).toBe(false);
+      await vi.advanceTimersByTimeAsync(1);
+      const segunda = http.match('/api/auth/refresh');
+      expect(segunda).toHaveLength(1);
+      vi.useRealTimers();
+      segunda[0].flush(RESPOSTA);
+      expect(await p).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('erro de rede no refresh não repete', async () => {
