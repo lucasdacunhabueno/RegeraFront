@@ -145,6 +145,19 @@ describe('PendenciasPage', () => {
     expect(sincronizar).toHaveBeenCalled();
   });
 
+  it('M3: "Sincronizar agora" sem chegar ao servidor avisa "Sem conexão com o servidor."', async () => {
+    const { el, sincronizar } = montar([], 2);
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    sincronizar.mockResolvedValueOnce('sem-rede');
+    botao(el, 'Sincronizar agora').click();
+    await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('Sem conexão com o servidor.'));
+
+    sincronizar.mockResolvedValueOnce('concluida');
+    botao(el, 'Sincronizar agora').click();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(erro).toHaveBeenCalledTimes(1);
+  });
+
   it('conflito oferece manter a minha ou usar a do servidor', async () => {
     const { el, svc, fixture } = montar([conflito]);
     expect(el.textContent).toContain('Maria');

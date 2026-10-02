@@ -45,6 +45,18 @@ describe('rascunho da OS (sessionStorage)', () => {
     expect(Object.keys(sessionStorage)).toHaveLength(0);
   });
 
+  it('limparRascunhosOs com exceto apaga os rascunhos dos outros usuários e mantém os daquele', () => {
+    gravarRascunhoOs('u1', 'o1', 'resumo', 'Meu');
+    gravarRascunhoOs('u10', 'o1', 'resumo', 'Outro, com o id começando igual');
+    gravarRascunhoOs('u2', 'o2', 'nota', 'De outro');
+    sessionStorage.setItem('outra-chave', 'x');
+    limparRascunhosOs('u1');
+    expect(lerRascunhoOs('u1', 'o1')).toEqual({ resumo: 'Meu' });
+    expect(lerRascunhoOs('u10', 'o1')).toEqual({});
+    expect(lerRascunhoOs('u2', 'o2')).toEqual({});
+    expect(sessionStorage.getItem('outra-chave')).toBe('x');
+  });
+
   it('limparRascunhosOs (logout) apaga só os rascunhos da OS', () => {
     sessionStorage.setItem('outra-coisa', 'fica');
     gravarRascunhoOs('u1', 'o1', 'resumo', 'Feito');

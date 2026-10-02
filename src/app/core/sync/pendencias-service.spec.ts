@@ -135,6 +135,8 @@ describe('PendenciasService', () => {
     expect(await db.clientes.get('c1')).toMatchObject({ nome: 'Servidor', version: 4 });
     expect(await db.pendencias.count()).toBe(0);
     expect(await db.outbox.count()).toBe(0);
+    // o guardado pode estar velho: o agregado fica marcado para reler do servidor (M2P2-R13)
+    expect(await db.lerMeta('relerAoDesproteger')).toEqual(['cliente:c1']);
   });
 
   it('usar a do servidor sem rede pelo service worker (o 504 dele) também cai para os dados guardados', async () => {
@@ -148,6 +150,7 @@ describe('PendenciasService', () => {
 
     expect(await db.clientes.get('c1')).toMatchObject({ nome: 'Servidor', version: 4 });
     expect(await db.pendencias.count()).toBe(0);
+    expect(await db.lerMeta('relerAoDesproteger')).toEqual(['cliente:c1']);
   });
 
   it('descartar criação rejeitada apaga o registro local sem consultar o servidor', async () => {
@@ -776,6 +779,14 @@ describe('PendenciasService', () => {
             expect(await svc.descartaEnvio(p)).toBe(true);
             await db.outbox.add(mutOs('r2', 7, doAparelho({ responsavelId: 'u2', tecnicoId: 'u-tec2' })));
             expect(await svc.perdaDaOs(p)).toEqual(['trocaTecnico', 'trocaResponsavel']);
+          });
+
+          it('N3: o responsável null (o que o aparelho manda na OS de proposta) não conta como troca, nem de ida nem de volta', async () => {
+            const p = rejeitadaSemServidor(doAparelho());
+            await db.pendencias.put(p);
+            await db.outbox.add(mutOs('n1', 6, doAparelho({ responsavelId: 'u1' })));
+            await db.outbox.add(mutOs('n2', 7, doAparelho()));
+            expect(await svc.perdaDaOs(p)).toEqual([]);
           });
 
           it('I1 (T5): o cabeçalho da própria mutação em conflito, diferente do servidor (mudado lá), não conta como perda daqui', async () => {

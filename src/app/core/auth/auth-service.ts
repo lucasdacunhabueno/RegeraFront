@@ -48,10 +48,11 @@ export class AuthService {
     const resp = await firstValueFrom(this.http.post<RespostaSessao>('/api/auth/login', { email, senha }));
     const anterior = await this.db.lerMeta<UsuarioSessao>(CHAVE_SESSAO);
     if (anterior && anterior.id !== resp.usuario.id) {
-      // N-FW1: como no logout, os rascunhos da OS (sessionStorage) do anterior também saem
-      limparRascunhosOs();
       await this.db.limparTudo();
     }
+    // N-FW1 e M7: os rascunhos da OS (sessionStorage) de outro usuário saem, mesmo sem a sessão anterior no banco (a
+    // outra aba que saiu já o apagou)
+    limparRascunhosOs(resp.usuario.id);
     await this.aplicar(resp);
     void navigator.storage?.persist?.();
   }

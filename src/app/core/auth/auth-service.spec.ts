@@ -65,6 +65,18 @@ describe('AuthService', () => {
     expect(lerRascunhoOs('outro', 'o1')).toEqual({});
   });
 
+  it('M7: sem sessão no banco (apagada por outra aba), o login apaga os rascunhos da OS de outros usuários e mantém os dele', async () => {
+    gravarRascunhoOs('outro', 'o1', 'resumo', 'Quadro trocado');
+    gravarRascunhoOs(ANA.id, 'o2', 'nota', 'Falta o disjuntor');
+
+    const p = auth.login('ana@regera.test', 'x');
+    http.expectOne('/api/auth/login').flush(RESPOSTA);
+    await p;
+
+    expect(lerRascunhoOs('outro', 'o1')).toEqual({});
+    expect(lerRascunhoOs(ANA.id, 'o2')).toEqual({ nota: 'Falta o disjuntor' });
+  });
+
   it('N-FW1: o login do mesmo usuário mantém os rascunhos da OS', async () => {
     await db.gravarMeta('sessao', ANA);
     gravarRascunhoOs(ANA.id, 'o1', 'nota', 'Falta o disjuntor');

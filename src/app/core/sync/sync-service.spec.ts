@@ -40,16 +40,18 @@ describe('SyncService', () => {
   const online = signal(true);
   let perfil = 'ADMIN';
   let autenticado = true;
+  let expirada = false;
 
   beforeEach(() => {
     online.set(true);
     perfil = 'ADMIN';
     autenticado = true;
+    expirada = false;
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: AuthService, useValue: { autenticado: () => autenticado, sessaoExpirada: () => false, usuario: () => ({ id: 'u1', perfil }) } },
+        { provide: AuthService, useValue: { autenticado: () => autenticado, sessaoExpirada: () => expirada, usuario: () => ({ id: 'u1', perfil }) } },
         { provide: ConectividadeService, useValue: { online } },
       ],
     });
@@ -262,6 +264,37 @@ describe('SyncService', () => {
 
     online.set(false);
     expect(await sync.sincronizar()).toBe('ignorada');
+  });
+
+  it('M1: 401 sem a sessão expirada (a renovação do interceptor não chegou ao servidor) termina sem-rede, sem aviso', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    const p = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush(null, { status: 401, statusText: 'x' });
+    expect(await p).toBe('sem-rede');
+    expect(erro).not.toHaveBeenCalled();
+  });
+
+  it('M1: 401 com a sessão expirada de verdade termina falhou, sem aviso', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    const p = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'));
+    expirada = true;
+    pull.flush(null, { status: 401, statusText: 'x' });
+    expect(await p).toBe('falhou');
+    expect(erro).not.toHaveBeenCalled();
+  });
+
+  it('M5: o fim do laço é o da última rodada (a pedida durante a primeira)', async () => {
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+    const p = sync.sincronizar();
+    const push1 = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+    const junto = sync.sincronizar();
+    push1.error(new ProgressEvent('error'), { status: 0 });
+    const push2 = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+    push2.flush({ resultados: [{ mutationId: push2.request.body.mutacoes[0].mutationId, status: 'OK', version: 0, dados: dados('A') }] });
+    await pullVazio();
+    expect(await p).toBe('concluida');
+    expect(await junto).toBe('concluida');
   });
 
   it('erro transitório do servidor (ERRO_INTERNO) mantém a outbox, não cria pendência e reenvia o mesmo mutationId', async () => {
@@ -826,6 +859,8 @@ describe('SyncService', () => {
       expect(await p).toBe('sem-rede');
       http.expectNone((r) => r.url === '/api/sync/pull');
       expect(await fila()).toHaveLength(1);
+      // saiu e pode ter chegado: fica em voo, como o push sem rede
+      expect((await fila())[0].enviando).toBe(true);
       expect(await db.pendencias.count()).toBe(0);
       expect(await db.documentos.get('d1')).toMatchObject({ enviado: false });
     });
@@ -1272,6 +1307,29 @@ describe('SyncService', () => {
     const metadadosDe = async (req: TestRequest) =>
       JSON.parse(await ((req.request.body as FormData).get('metadados') as Blob).text()) as Record<string, unknown>;
     const fila = () => db.outbox.orderBy('seq').toArray();
+
+    it('M2: sem rede no primeiro upload do lote, os seguintes (que nem saíram) voltam a ficar fora de voo', async () => {
+      await gravarAnexos(anexoLocal(), anexoLocal({ id: 'f2', osId: 'o2' }));
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrarUploadAnexoOs('o2', 'f2');
+
+      const p = sync.sincronizar();
+      (await upload()).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+      expect(await p).toBe('sem-rede');
+      http.expectNone('/api/os/o2/anexos');
+      expect((await fila()).map((m) => [m.agregadoId, m.enviando])).toEqual([['o1', true], ['o2', false]]);
+    });
+
+    it('M2: sem rede no push do lote, os uploads do mesmo lote (que nem saíram) voltam a ficar fora de voo', async () => {
+      await gravarAnexos(anexoLocal({ id: 'f2', osId: 'o2' }));
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO'), 2, { separada: true });
+      await sync.registrarUploadAnexoOs('o2', 'f2');
+
+      const p = sync.sincronizar();
+      (await push()).error(new ProgressEvent('error'), { status: 0 });
+      expect(await p).toBe('sem-rede');
+      expect((await fila()).map((m) => [m.agregadoId, m.enviando])).toEqual([['o1', true], ['o2', false]]);
+    });
 
     it('pull aplica a OS pelo adaptador', async () => {
       const p = sync.sincronizar();

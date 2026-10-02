@@ -44,8 +44,9 @@ const GERA_CODIGO_PROVISORIO: Readonly<Partial<Record<Entidade, () => string>>> 
 };
 
 /**
- * Como terminou uma sincronização: `sem-rede` quando um pedido não chegou ao servidor (`falhaDeRede`); `falhou` com
- * outro erro (o aviso já saiu, menos no 401); `ignorada` sem internet, sem sessão ou com a sessão expirada.
+ * Como terminou uma sincronização: `sem-rede` quando um pedido não chegou ao servidor (`falhaDeRede`, ou o 401 cuja
+ * renovação não chegou lá: a sessão não expirou); `falhou` com outro erro (o aviso já saiu, menos no 401); `ignorada`
+ * sem internet, sem sessão ou com a sessão expirada.
  */
 export type FimSincronizacao = 'concluida' | 'sem-rede' | 'falhou' | 'ignorada';
 
@@ -310,7 +311,10 @@ export class SyncService {
       return 'concluida';
     } catch (erro) {
       if (falhaDeRede(erro)) return 'sem-rede';
-      if (!(erro instanceof HttpErrorResponse && erro.status === 401)) this.toasts.erro(`Falha ao sincronizar: ${mensagemDeErro(erro)}`);
+      const recusado = erro instanceof HttpErrorResponse && erro.status === 401;
+      // M1: o 401 de verdade já marcou a sessão expirada; sem a marca, a renovação do interceptor é que não chegou
+      if (recusado && !this.auth.sessaoExpirada()) return 'sem-rede';
+      if (!recusado) this.toasts.erro(`Falha ao sincronizar: ${mensagemDeErro(erro)}`);
       return 'falhou';
     } finally {
       this.sincronizando.set(false);
@@ -340,11 +344,21 @@ export class SyncService {
       if (lote.length === 0) return;
 
       const mutacoes = lote.filter((m) => !ehUpload(m));
-      let transitorio = mutacoes.length > 0 && (await this.enviarLote(mutacoes, trocasDeCodigo));
-      for (const m of lote.filter(ehUpload)) {
-        if (!(await this.enviarUpload(m))) transitorio = true;
+      const uploads = lote.filter(ehUpload);
+      let tentados = 0;
+      try {
+        let transitorio = mutacoes.length > 0 && (await this.enviarLote(mutacoes, trocasDeCodigo));
+        for (const m of uploads) {
+          tentados++;
+          if (!(await this.enviarUpload(m))) transitorio = true;
+        }
+        if (transitorio) return;
+      } catch (erro) {
+        // M2: os uploads do lote que nem saíram voltam a ficar fora de voo (senão "está sendo enviado" trava o PDF e a
+        // exclusão até a próxima sincronização chegar ao servidor); o que saiu pode ter chegado e fica em voo
+        for (const m of uploads.slice(tentados)) await this.liberar(m);
+        throw erro;
       }
-      if (transitorio) return;
     }
   }
 

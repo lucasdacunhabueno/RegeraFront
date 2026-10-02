@@ -432,8 +432,9 @@ export class PendenciasPage {
     return rotulo ? `Bloco ${i + 1} (${rotulo})` : `Bloco ${i + 1}`;
   }
 
-  protected sincronizar(): void {
-    void this.sync.sincronizar();
+  protected async sincronizar(): Promise<void> {
+    // M3: a sincronização sem rede não avisa sozinha; aqui a pessoa pediu, e precisa saber que não foi
+    if ((await this.sync.sincronizar()) === 'sem-rede') this.toasts.erro('Sem conexão com o servidor.');
   }
 
   protected editar(rota: string): void {

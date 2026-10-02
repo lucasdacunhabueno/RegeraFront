@@ -59,15 +59,18 @@ export function gravarRascunhoOs(usuarioId: string, osId: string, campo: CampoRa
   }
 }
 
-/** O logout: apaga os rascunhos da OS desta aba (de qualquer usuário), sem tocar no resto do `sessionStorage`. */
-export function limparRascunhosOs(): void {
+/**
+ * Apaga os rascunhos da OS desta aba, sem tocar no resto do `sessionStorage`: no logout, os de todos; no login, os dos
+ * outros usuários (`exceto`, o id de quem entrou).
+ */
+export function limparRascunhosOs(exceto?: string): void {
   try {
     const s = armazem();
     if (!s) return;
     const chaves: string[] = [];
     for (let i = 0; i < s.length; i++) {
       const k = s.key(i);
-      if (k?.startsWith(PREFIXO)) chaves.push(k);
+      if (k?.startsWith(PREFIXO) && (exceto === undefined || !k.startsWith(`${PREFIXO}${exceto}:`))) chaves.push(k);
     }
     for (const k of chaves) s.removeItem(k);
   } catch {
