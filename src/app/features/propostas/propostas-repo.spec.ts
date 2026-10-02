@@ -536,6 +536,20 @@ describe('PropostasRepo', () => {
       expect((await fila())[0].baseVersion).toBe(5);
     });
 
+    it('SO-P6: o ADMIN passa a aprovada do SIGEM a um comercial: um UPSERT com o responsável novo e a base local, o resto igual', async () => {
+      await existente('APROVADA', { version: 7, numero: 12, origem: 'SIGEM', responsavelId: ADMIN.id });
+      usuario.set(ADMIN);
+      await repo.atribuir('p1', { responsavelId: COMERCIAL.id });
+      const fila1 = await fila();
+      expect(fila1).toHaveLength(1);
+      expect(fila1[0]).toMatchObject({ entidade: 'proposta', agregadoId: 'p1', op: 'UPSERT', baseVersion: 7 });
+      expect(fila1[0].dados).toMatchObject({
+        responsavelId: COMERCIAL.id, tecnicoId: null, status: 'APROVADA', codigoProvisorio: 'PROV-ABCDEF', clienteId: 'c1',
+      });
+      expect('origem' in (fila1[0].dados as object)).toBe(false);
+      expect(await db.propostas.get('p1')).toMatchObject({ responsavelId: COMERCIAL.id, origem: 'SIGEM', status: 'APROVADA', numero: 12 });
+    });
+
     it('recusa em status terminal e técnico que não é TECNICO', async () => {
       await existente('APROVADA');
       expect((await erroDe(repo.atribuir('p1', { tecnicoId: COMERCIAL.id }))).campo).toBe('tecnicoId');

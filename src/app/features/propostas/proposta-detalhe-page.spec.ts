@@ -30,6 +30,7 @@ const USUARIOS: UsuarioResumo[] = [
   { id: TECNICO.id, nome: TECNICO.nome, perfil: 'TECNICO' },
   { id: 'u-tec2', nome: 'Tina Técnica', perfil: 'TECNICO' },
   { id: 'u-tec-off', nome: 'Tito Inativo', perfil: 'TECNICO', ativo: false },
+  { id: 'u-com-off', nome: 'Cris Inativa', perfil: 'COMERCIAL', ativo: false },
 ];
 
 /** 2026-10-02 01:30 UTC ainda é 2026-10-01 em São Paulo. */
@@ -113,7 +114,7 @@ async function montar(o: Opcoes = {}) {
     observarEstadoSync: () => of(o.estado ?? { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() }),
     observarUsuarios: () => of(USUARIOS),
     transicionar: vi.fn<(id: string, para: StatusProposta, motivo?: string | null) => Promise<void>>(async () => undefined),
-    atribuir: vi.fn<(id: string, m: { tecnicoId?: string | null }) => Promise<void>>(async () => undefined),
+    atribuir: vi.fn<(id: string, m: { responsavelId?: string; tecnicoId?: string | null }) => Promise<void>>(async () => undefined),
     duplicar: vi.fn<(id: string) => Promise<{ id: string; linhasDescartadas: number }>>(async () => ({ id: 'dup-1', linhasDescartadas: 0 })),
     excluir: vi.fn<(id: string) => Promise<void>>(async () => undefined),
     entradaPrevia: vi.fn<(id: string) => Promise<EntradaPdf>>(async () => ({ previa: true }) as EntradaPdf),
@@ -379,6 +380,8 @@ describe('PropostaDetalhePage', () => {
       const { el } = await montar({ usuario: usuario as UsuarioSessao, proposta: proposta({ status: status as StatusProposta, numero: null }) });
       expect(acoes(el)).toEqual(esperadas);
       expect(!!botao(el, 'Trocar técnico')).toBe(atribui);
+      // SO-P6 (P4b-R3): o responsável, só o ADMIN e fora dos terminais
+      expect(!!botao(el, 'Trocar responsável')).toBe(atribui && usuario === ADMIN);
     });
 
     it('v1: resumo (cliente, total, validade, selos) antes das ações; a principal em largura total, as outras em duas colunas', async () => {
@@ -538,6 +541,166 @@ describe('PropostaDetalhePage', () => {
         expect(pdf.gerarBlob).toHaveBeenCalledWith({ previa: true });
       } finally {
         restaurar();
+      }
+    });
+  });
+
+  describe('SO-P6: "Trocar responsável" (ADMIN, P4b-R3)', () => {
+    const opcoes = (el: HTMLElement) =>
+      [...el.querySelectorAll<HTMLOptionElement>('#responsavel-proposta option')].map((x) => x.textContent?.trim());
+    const escolher = (fixture: ComponentFixture<unknown>, el: HTMLElement, id: string) => {
+      const select = el.querySelector<HTMLSelectElement>('#responsavel-proposta')!;
+      select.value = id;
+      select.dispatchEvent(new Event('change'));
+      fixture.detectChanges();
+    };
+
+    it('lista os ADMIN e COMERCIAL ativos (o atual escolhido); salvar chama atribuir só com o responsável', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, proposta: proposta({ status: 'APROVADA' }) });
+      const trocar = botao(el, 'Trocar responsável')!;
+      expect(trocar.className).toMatch(/\bh-12\b/);
+      trocar.click();
+      fixture.detectChanges();
+      const select = el.querySelector<HTMLSelectElement>('#responsavel-proposta')!;
+      expect(el.querySelector('label[for=responsavel-proposta]')!.textContent).toContain('Responsável da proposta');
+      expect(document.getElementById(select.getAttribute('aria-describedby')!)!.textContent).toContain('As ordens de serviço');
+      await ate(fixture, () => expect(document.activeElement).toBe(select));
+      expect(opcoes(el)).toEqual(['Ana Admin', 'Caio Comercial', 'Carla Comercial']);
+      expect(select.value).toBe(COMERCIAL.id);
+      escolher(fixture, el, OUTRO_COMERCIAL.id);
+      botao(el, 'Salvar responsável')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledExactlyOnceWith('p1', { responsavelId: OUTRO_COMERCIAL.id }));
+      await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('Responsável atualizado.'));
+      await ate(fixture, () => expect(el.querySelector('#responsavel-proposta')).toBeNull());
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Trocar responsável')));
+    });
+
+    it('a do SIGEM (do admin) também passa a um comercial', async () => {
+      const { fixture, el, repo } = await montar({
+        usuario: ADMIN, proposta: proposta({ status: 'APROVADA', origem: 'SIGEM', responsavelId: ADMIN.id, tecnicoId: null }),
+      });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLSelectElement>('#responsavel-proposta')!.value).toBe(ADMIN.id);
+      escolher(fixture, el, COMERCIAL.id);
+      botao(el, 'Salvar responsável')!.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledExactlyOnceWith('p1', { responsavelId: COMERCIAL.id }));
+    });
+
+    it('o responsável atual inativo aparece marcado; salvar o mesmo só fecha, sem gravar, e o foco volta ao botão', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, proposta: proposta({ responsavelId: 'u-com-off' }) });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(opcoes(el)).toEqual(['Ana Admin', 'Caio Comercial', 'Carla Comercial', 'Cris Inativa (inativo)']);
+      expect(el.querySelector<HTMLSelectElement>('#responsavel-proposta')!.value).toBe('u-com-off');
+      botao(el, 'Salvar responsável')!.click();
+      fixture.detectChanges();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(toast).not.toHaveBeenCalled();
+      expect(el.querySelector('#responsavel-proposta')).toBeNull();
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Trocar responsável')));
+    });
+
+    it('Cancelar fecha sem gravar e devolve o foco ao botão', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      escolher(fixture, el, ADMIN.id);
+      const editor = el.querySelector('#responsavel-proposta')!.closest('div')!;
+      [...editor.querySelectorAll('button')].find((b) => b.textContent?.trim() === 'Cancelar')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#responsavel-proposta')).toBeNull();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Trocar responsável')));
+    });
+
+    it('trava do CONFLITO: desabilitado com "Resolva a pendência primeiro."', async () => {
+      const { el } = await montar({ usuario: ADMIN, pendencias: [conflito()] });
+      const trocar = botao(el, 'Trocar responsável')!;
+      expect(trocar.disabled).toBe(true);
+      expect(document.getElementById(trocar.getAttribute('aria-describedby')!)!.textContent).toContain('Resolva a pendência primeiro.');
+    });
+
+    it('o CONFLITO que chega com o editor aberto desabilita o "Salvar responsável"', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      repo.pendencias$.next([conflito()]);
+      await ate(fixture, () => expect(botao(el, 'Salvar responsável')!.disabled).toBe(true));
+    });
+
+    it('a recusa vira toast pelo mensagemErroProposta; o editor fica aberto e o foco volta a "Salvar responsável"', async () => {
+      const { fixture, el, repo, toastErro } = await montar({ usuario: ADMIN });
+      repo.atribuir.mockRejectedValueOnce(ErroProposta.de({
+        codigo: 'VALIDACAO', mensagem: 'Dados inválidos.',
+        campos: { responsavelId: 'O responsável tem de ser um administrador ou comercial ativo.' },
+      }));
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      escolher(fixture, el, ADMIN.id);
+      const salvar = botao(el, 'Salvar responsável')!;
+      salvar.focus();
+      salvar.click();
+      await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('O responsável tem de ser um administrador ou comercial ativo.'));
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Salvar responsável')));
+      expect(el.querySelector('#responsavel-proposta')).not.toBeNull();
+    });
+
+    it('um toque só: o segundo "Salvar responsável" com a gravação em curso não grava de novo', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN });
+      let liberar!: () => void;
+      repo.atribuir.mockImplementationOnce(() => new Promise<void>((r) => (liberar = r)));
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      escolher(fixture, el, ADMIN.id);
+      const salvar = botao(el, 'Salvar responsável')!;
+      salvar.click();
+      salvar.click();
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledTimes(1));
+      fixture.detectChanges();
+      expect(salvar.disabled).toBe(true);
+      liberar();
+      await fixture.whenStable();
+      expect(repo.atribuir).toHaveBeenCalledTimes(1);
+    });
+
+    it('um editor de cada vez: abrir o do responsável fecha o do técnico, e o contrário', async () => {
+      const { fixture, el } = await montar({ usuario: ADMIN });
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#tecnico-atribuir')).toBeNull();
+      expect(el.querySelector('#responsavel-proposta')).not.toBeNull();
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('#responsavel-proposta')).toBeNull();
+      expect(el.querySelector('#tecnico-atribuir')).not.toBeNull();
+    });
+
+    it('a troca que termina com outra proposta aberta não escreve nela (sucesso ou recusa); o editor não passa para ela', async () => {
+      for (const falha of [false, true]) {
+        const { fixture, el, repo, toast, toastErro } = await montar({ usuario: ADMIN });
+        let liberar!: () => void;
+        let recusar!: (e: unknown) => void;
+        repo.atribuir.mockImplementationOnce(() => new Promise<void>((r, x) => ((liberar = r), (recusar = x))));
+        botao(el, 'Trocar responsável')!.click();
+        fixture.detectChanges();
+        escolher(fixture, el, ADMIN.id);
+        botao(el, 'Salvar responsável')!.click();
+        await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledWith('p1', { responsavelId: ADMIN.id }));
+        fixture.componentRef.setInput('id', 'p2');
+        repo.proposta$.next(proposta({ id: 'p2' }));
+        fixture.detectChanges();
+        if (falha) recusar(new ErroProposta('VALIDACAO', 'responsavelId', 'Recusada.'));
+        else liberar();
+        await fixture.whenStable();
+        fixture.detectChanges();
+        expect(toast).not.toHaveBeenCalled();
+        expect(toastErro).not.toHaveBeenCalled();
+        expect(el.querySelector('#responsavel-proposta')).toBeNull();
+        expect(botao(el, 'Trocar responsável')!.disabled).toBe(false);
+        TestBed.resetTestingModule();
       }
     });
   });

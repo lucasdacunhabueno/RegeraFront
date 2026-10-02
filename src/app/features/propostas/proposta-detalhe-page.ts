@@ -24,8 +24,8 @@ import { PdfPronto } from './pdf-pronto';
 import { regerarPdf } from './regerar-pdf';
 import { ESTILO_SELO } from './proposta-card';
 import {
-  importadaDoSigem, ItemPropostaLocal, podeAlterarTecnico, podeEditar, PropostaLocal, STATUS_PROPOSTA, StatusProposta,
-  transicoesPermitidas,
+  importadaDoSigem, ItemPropostaLocal, podeAlterarResponsavel, podeAlterarTecnico, podeEditar, PropostaLocal, STATUS_PROPOSTA,
+  StatusProposta, transicoesPermitidas,
 } from './proposta-models';
 import {
   DocumentoDaProposta, enderecoDoCliente, EstadoSync, motivoParaRegerar, pendenciaCorrigivel, PropostasRepo,
@@ -83,6 +83,10 @@ interface LinhaItem {
  * Detalhe da proposta (`/propostas/:id`, §13): o hub para onde a lista, o kanban e o wizard levam.
  * - Cabeçalho: código (e `(ref. PROV-…)` quando numerada com um PDF provisório), status, tipo, selos, cliente,
  *   responsável e técnico ("Atribuir/Trocar técnico" quando P4b-R3 deixa).
+ * - SO-P6: "Trocar responsável" (P4b-R3: só o ADMIN, fora dos status terminais), entre os ADMIN e COMERCIAL ativos; as
+ *   OS da proposta seguem o novo responsável no servidor (M2P1-R16) e chegam assim no pull. Um editor de cada vez (o do
+ *   técnico ou o do responsável); a trava do CONFLITO vale para os dois, e a troca guarda o id da proposta no começo e
+ *   não escreve na tela se a rota trocou de proposta no meio.
  * - Itens (cards no celular, tabela a partir do lg), totais, condições, histórico e documentos (`observarDocumentos`;
  *   "Abrir" pelo PDF do aparelho ou baixado na hora sem cache, P4b-R6; "Compartilhar").
  * - Importada do SIGEM (`origem`): selo "SIGEM", sem "Ver prévia" nem "Gerar PDF novamente", e Documentos diz que não
@@ -266,7 +270,39 @@ interface LinhaItem {
               <dt class="text-slate-500">Emissão</dt>
               <dd>{{ data(p.dataEmissao) }}</dd>
               <dt class="text-slate-500">Responsável</dt>
-              <dd data-testid="responsavel">{{ nome(p.responsavelId) ?? '—' }}</dd>
+              <dd data-testid="responsavel" class="space-y-2">
+                <span class="block">{{ nome(p.responsavelId) ?? '—' }}</span>
+                @if (podeTrocarResponsavel()) {
+                  @if (trocandoResponsavel()) {
+                    <div class="space-y-2">
+                      <label for="responsavel-proposta" class="block text-sm font-medium">Responsável da proposta</label>
+                      <select #selectResponsavel id="responsavel-proposta" aria-describedby="dica-responsavel-os"
+                              (change)="responsavelEscolhido.set($any($event.target).value)"
+                              class="h-12 w-full rounded-lg border border-slate-300 bg-white px-3 sm:w-72">
+                        @for (r of responsaveis(); track r.id) {
+                          <option [value]="r.id" [selected]="r.id === responsavelEscolhido()">{{ r.rotulo }}</option>
+                        }
+                      </select>
+                      <p id="dica-responsavel-os" class="text-sm text-slate-600">
+                        As ordens de serviço desta proposta passam ao novo responsável quando a troca chegar ao servidor.
+                      </p>
+                      <div class="flex gap-2">
+                        <button #botaoSalvarResponsavel type="button" (click)="salvarResponsavel()" [disabled]="ocupado() || conflito()"
+                                [attr.aria-describedby]="conflito() ? 'dica-pendencia' : null"
+                                class="h-12 flex-1 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 sm:flex-none">Salvar responsável</button>
+                        <button type="button" (click)="fecharResponsavel()"
+                                class="h-12 flex-1 rounded-lg border border-slate-300 px-4 font-semibold sm:flex-none">Cancelar</button>
+                      </div>
+                    </div>
+                  } @else {
+                    <button #botaoResponsavel type="button" (click)="abrirResponsavel()" [disabled]="ocupado() || conflito()"
+                            [attr.aria-describedby]="conflito() ? 'dica-pendencia' : null"
+                            class="h-12 rounded-lg border border-slate-300 px-4 text-sm font-semibold disabled:opacity-60">
+                      Trocar responsável
+                    </button>
+                  }
+                }
+              </dd>
             }
             <dt class="text-slate-500">Técnico</dt>
             <dd data-testid="tecnico" class="space-y-2">
@@ -497,6 +533,9 @@ export class PropostaDetalhePage {
   private readonly visorPrevia = viewChild('visorPrevia', { read: VisorPdf });
   private readonly visorDocumento = viewChild('visorDocumento', { read: VisorPdf });
   private readonly titulo = viewChild<ElementRef<HTMLElement>>('titulo');
+  private readonly botaoResponsavel = viewChild<ElementRef<HTMLButtonElement>>('botaoResponsavel');
+  private readonly selectResponsavel = viewChild<ElementRef<HTMLSelectElement>>('selectResponsavel');
+  private readonly botaoSalvarResponsavel = viewChild<ElementRef<HTMLButtonElement>>('botaoSalvarResponsavel');
 
   /** A visão do técnico (§10): sem valores, documentos, histórico nem ações (também sem sessão ou perfil desconhecido). */
   protected readonly restrito = computed(() => {
@@ -523,6 +562,9 @@ export class PropostaDetalhePage {
   protected readonly dialogo = signal<Dialogo | null>(null);
   protected readonly editandoTecnico = signal(false);
   protected readonly tecnicoEscolhido = signal('');
+  /** SO-P6: o responsável em edição (ADMIN). */
+  protected readonly trocandoResponsavel = signal(false);
+  protected readonly responsavelEscolhido = signal('');
   protected readonly documentoAberto = signal<DocumentoDaProposta | null>(null);
   /** O botão que abriu o diálogo: recebe o foco de volta (o Safari não foca o botão no clique). */
   protected readonly gatilho = signal<HTMLElement | null>(null);
@@ -590,6 +632,20 @@ export class PropostaDetalhePage {
     const u = this.usuario();
     return !!p && !!u && !this.restrito() && podeAlterarTecnico(p.status, u.perfil, this.ehResponsavel());
   });
+  /** SO-P6 (P4b-R3): o responsável, só pelo ADMIN, fora dos status terminais (o servidor aceita em qualquer outro). */
+  protected readonly podeTrocarResponsavel = computed(() => {
+    const p = this.proposta();
+    const u = this.usuario();
+    return !!p && !!u && !this.restrito() && podeAlterarResponsavel(p.status, u.perfil);
+  });
+  /** Os responsáveis possíveis: ADMIN e COMERCIAL ativos e, se for o caso, o atual inativo (marcado). */
+  protected readonly responsaveis = computed(() => {
+    const atual = this.proposta()?.responsavelId ?? null;
+    return this.usuarios()
+      .filter((u) => (u.perfil === 'ADMIN' || u.perfil === 'COMERCIAL') && (u.ativo !== false || u.id === atual))
+      .map((u) => ({ id: u.id, rotulo: u.ativo === false ? `${u.nome} (inativo)` : u.nome }))
+      .sort((a, b) => a.rotulo.localeCompare(b.rotulo, 'pt-BR'));
+  });
 
   protected readonly mostrarCusto = computed(() => this.usuario()?.perfil === 'ADMIN');
   protected readonly comMeses = computed(() => (this.proposta()?.itens ?? []).some((l) => l.meses !== null));
@@ -653,7 +709,9 @@ export class PropostaDetalhePage {
     const p = this.proposta();
     return p && !this.restrito() ? moedaCentavos(p.totalCentavos ?? 0) : null;
   });
-  protected readonly temTransicao = computed(() => this.acoes().some((a) => a.transicao) || this.podeAtribuir());
+  protected readonly temTransicao = computed(
+    () => this.acoes().some((a) => a.transicao) || this.podeAtribuir() || this.podeTrocarResponsavel(),
+  );
 
   constructor() {
     // um effect e não toObservable + switchMap (o bundle inicial); a fonte troca com o id e com o perfil
@@ -664,6 +722,9 @@ export class PropostaDetalhePage {
       this.proposta.set(undefined);
       this.documentos.set([]);
       this.pendencias.set([]);
+      // os editores da atribuição não passam de uma proposta para outra
+      this.editandoTecnico.set(false);
+      this.trocandoResponsavel.set(false);
       const assinaturas = [
         this.repo.observarProposta(id).subscribe((p) => {
           this.proposta.set(p);
@@ -766,7 +827,9 @@ export class PropostaDetalhePage {
     void this.router.navigate(['/propostas', this.id(), 'corrigir']);
   }
 
+  /** Um editor de cada vez: abrir o do técnico fecha o do responsável. */
   protected abrirTecnico(): void {
+    this.trocandoResponsavel.set(false);
     this.tecnicoEscolhido.set(this.proposta()?.tecnicoId ?? '');
     this.editandoTecnico.set(true);
   }
@@ -774,13 +837,56 @@ export class PropostaDetalhePage {
   /** P4b-R3: o técnico, pelo ADMIN ou pelo responsável, fora dos status terminais. */
   protected async salvarTecnico(): Promise<void> {
     if (this.ocupado()) return;
+    const id = this.id();
     this.ocupado.set(true);
     try {
-      await this.repo.atribuir(this.id(), { tecnicoId: this.tecnicoEscolhido() || null });
+      await this.repo.atribuir(id, { tecnicoId: this.tecnicoEscolhido() || null });
+      if (this.id() !== id) return;
       this.editandoTecnico.set(false);
       this.avisar('Técnico atualizado.');
     } catch (e) {
+      if (this.id() === id) this.toasts.erro(mensagemErroProposta(e));
+    } finally {
+      this.ocupado.set(false);
+    }
+  }
+
+  /** SO-P6: o editor do responsável (fecha o do técnico); o foco vai à lista. */
+  protected abrirResponsavel(): void {
+    this.editandoTecnico.set(false);
+    this.responsavelEscolhido.set(this.proposta()?.responsavelId ?? '');
+    this.trocandoResponsavel.set(true);
+    afterNextRender(() => this.selectResponsavel()?.nativeElement.focus(), { injector: this.injector });
+  }
+
+  protected fecharResponsavel(): void {
+    this.trocandoResponsavel.set(false);
+    this.devolverFoco(() => this.botaoResponsavel()?.nativeElement);
+  }
+
+  /**
+   * SO-P6: o responsável novo pelo `atribuir` (um UPSERT da proposta com a `baseVersion` da cópia local, na fila como
+   * as outras ações; ADMIN ou COMERCIAL ativo; a trava do CONFLITO, P4c-R15). O mesmo responsável só fecha. Guarda o
+   * id da proposta: se a rota trocou de proposta no meio, não escreve na tela.
+   */
+  protected async salvarResponsavel(): Promise<void> {
+    if (this.ocupado()) return;
+    const responsavelId = this.responsavelEscolhido();
+    if (!responsavelId || responsavelId === (this.proposta()?.responsavelId ?? '')) {
+      this.fecharResponsavel();
+      return;
+    }
+    const id = this.id();
+    this.ocupado.set(true);
+    try {
+      await this.repo.atribuir(id, { responsavelId });
+      if (this.id() !== id) return;
+      this.avisar('Responsável atualizado.');
+      this.fecharResponsavel();
+    } catch (e) {
+      if (this.id() !== id) return;
       this.toasts.erro(mensagemErroProposta(e));
+      this.devolverFoco(() => this.botaoSalvarResponsavel()?.nativeElement);
     } finally {
       this.ocupado.set(false);
     }
@@ -925,6 +1031,20 @@ export class PropostaDetalhePage {
   private avisar(mensagem: string): void {
     this.toasts.mostrar(mensagem);
     this.anuncio.set(mensagem);
+  }
+
+  /** O foco vai a `alvo` depois do próximo desenho, se ele se perdeu (o botão focado saiu da tela ou foi desligado). */
+  private devolverFoco(alvo: () => HTMLElement | undefined): void {
+    afterNextRender(
+      () => {
+        const documento = this.host.nativeElement.ownerDocument;
+        const ativo = documento.activeElement;
+        const el = alvo();
+        const perdido = !ativo || ativo === documento.body;
+        if (el && perdido && !(el as HTMLButtonElement).disabled) el.focus();
+      },
+      { injector: this.injector },
+    );
   }
 
   /** Depois de uma transição o botão dela pode sumir: o foco vai ao título, não ao body. */
