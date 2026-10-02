@@ -38,7 +38,7 @@ describe('TemplatesRepo', () => {
     });
     repo = TestBed.inject(TemplatesRepo);
     db = TestBed.inject(RegeraDb);
-    sincronizar = vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue();
+    sincronizar = vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue('concluida');
   });
 
   afterEach(async () => {

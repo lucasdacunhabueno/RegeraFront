@@ -14,7 +14,8 @@ export interface EmpresaPdf {
 
 export interface ClientePdf {
   nome: string;
-  documento: string;
+  /** null quando o aparelho não tem o CPF/CNPJ (o TECNICO não o recebe, Q14): sai em branco. */
+  documento: string | null;
   endereco: string | null;
   contato: string | null;
   telefone: string | null;

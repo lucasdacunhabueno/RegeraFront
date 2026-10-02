@@ -26,7 +26,7 @@ describe('RegeraDb v5', () => {
     await Dexie.delete('regera');
   });
 
-  it('upgrade de v4 para v5 apaga o cursor para forçar pull completo, mantém o resto e cria propostas e documentos', async () => {
+  it('upgrade de v4 para v5 apaga o cursor para forçar pull completo, mantém o que a fila protege e cria propostas e documentos', async () => {
     const v4 = new Dexie('regera');
     v4.version(4).stores(V4);
     await v4.table('meta').bulkPut([
@@ -41,8 +41,9 @@ describe('RegeraDb v5', () => {
     expect(await db.lerMeta('cursor')).toBeUndefined();
     expect(await db.lerMeta('cursorDono')).toBeUndefined();
     expect(await db.lerMeta('sessao')).toEqual({ id: 'u1' });
+    // o c1 tem mutação na fila; o template não, e o v6 (N2) o apaga: volta no pull completo
     expect(await db.clientes.count()).toBe(1);
-    expect(await db.templates.count()).toBe(1);
+    expect(await db.templates.count()).toBe(0);
     expect(await db.outbox.count()).toBe(1);
     expect(await db.propostas.count()).toBe(0);
     expect(await db.documentos.count()).toBe(0);

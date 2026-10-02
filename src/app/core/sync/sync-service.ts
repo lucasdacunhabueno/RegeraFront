@@ -1,24 +1,33 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
 import { inject, Injectable, signal } from '@angular/core';
+import type { Table } from 'dexie';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { firstValueFrom } from 'rxjs';
+import { gerarCodigoProvisorioOs } from '../../features/os/codigo-provisorio-os';
+import type { OsDados } from '../../features/os/os-models';
+import { quemNoServidor, rebaseFilaOs, rebaseOsLocal } from '../../features/os/rebase-os';
 import { gerarCodigoProvisorio } from '../../features/propostas/codigo-provisorio';
-import type { PropostaDados } from '../../features/propostas/proposta-models';
 import { Toasts } from '../../shared/ui/toasts';
 import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { observar } from '../db/observar';
 import { RegeraDb } from '../db/regera-db';
-import { mensagemDeErro } from '../http/erro-api';
+import { falhaDeRede, mensagemDeErro } from '../http/erro-api';
 import { ADAPTADORES, adaptadorDe } from './adaptadores';
 import {
-  DadosUpload, Entidade, ErroMutacao, Mudanca, MutacaoLocal, Operacao, Pendencia, RespostaDocumento, RespostaPull,
-  RespostaPush, ResultadoMutacao, TIPO_UPLOAD_DOCUMENTO,
+  Entidade, EntidadeUpload, Mudanca, MutacaoLocal, Operacao, Pendencia, RespostaPull, RespostaPush, ResultadoMutacao,
+  TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO,
 } from './sync-models';
+import {
+  apagarUploadsDoAgregado, ehUpload, tabelasDeUpload, TipoUpload, tiposUpload, tipoUploadDe, TIPOS_UPLOAD,
+} from './tipos-upload';
 
 const CHAVE_CURSOR = 'cursor';
 const CHAVE_CURSOR_DONO = 'cursorDono';
 const CHAVE_ULTIMO_SYNC = 'ultimoSync';
+/** M2P2-R13: `entidade:id` dos agregados a reler do servidor quando não houver nada deles na fila nem nas pendências. */
+const CHAVE_RELER = 'relerAoDesproteger';
 const LOTE = 100;
 const LIMITE_PULL = 500;
 const MAX_RODADAS_PUSH = 50;
@@ -26,47 +35,30 @@ const MAX_RODADAS_PUSH = 50;
 const MAX_REPETICOES = 3;
 /** Rejeições que o servidor não grava: é seguro reenviar a mesma mutação depois. */
 const CODIGOS_TRANSITORIOS = new Set(['ERRO_INTERNO', 'INTEGRIDADE']);
-/** Trocas automáticas de código provisório por proposta numa sincronização, antes de virar pendência. */
+/** Trocas automáticas de código provisório por proposta ou OS numa sincronização, antes de virar pendência. */
 const MAX_TROCAS_CODIGO = 3;
+/** Os agregados com código provisório gerado no aparelho (`PROV-` e `OSP-`) e o gerador de cada um. */
+const GERA_CODIGO_PROVISORIO: Readonly<Partial<Record<Entidade, () => string>>> = {
+  proposta: gerarCodigoProvisorio,
+  os: gerarCodigoProvisorioOs,
+};
 
-const ehUpload = (m: { entidade: string }) => m.entidade === TIPO_UPLOAD_DOCUMENTO;
+/**
+ * Como terminou uma sincronização: `sem-rede` quando um pedido não chegou ao servidor (`falhaDeRede`, ou o 401 cuja
+ * renovação não chegou lá: a sessão não expirou); `falhou` com outro erro (o aviso já saiu, menos no 401); `ignorada`
+ * sem internet, sem sessão ou com a sessão expirada.
+ */
+export type FimSincronizacao = 'concluida' | 'sem-rede' | 'falhou' | 'ignorada';
+
+/** A marca de releitura (`CHAVE_RELER`) de um agregado. */
+export function marcaDeReleitura(entidade: string, id: string): string {
+  return `${entidade}:${id}`;
+}
 
 function semSeq(m: MutacaoLocal): MutacaoLocal {
   const copia = { ...m };
   delete copia.seq;
   return copia;
-}
-
-const DESCARTE_UPLOAD = 'Descarte este envio para liberar a sincronização da proposta.';
-/** Por `codigo` do ProblemDetail do upload; completa "O PDF <código exibido> …". */
-const MOTIVO_UPLOAD_POR_CODIGO: Readonly<Record<string, string>> = {
-  STATUS_INVALIDO: 'não foi aceito: no servidor, a proposta está em rascunho.',
-  REVISAO_INVALIDA: 'é de outra revisão da proposta e não foi aceito.',
-  DOCUMENTO_DIVERGENTE: 'não foi aceito: já existe no servidor um documento com este identificador e outro conteúdo.',
-  SHA_DIVERGENTE: 'chegou diferente do que foi gerado (falha de integridade) e não foi aceito.',
-  // P4b-R13: típico de PROV trocado por colisão depois de o PDF ter sido gerado offline
-  CODIGO_EXIBIDO_INVALIDO: 'não foi aceito. O código da proposta mudou. Gere o PDF de novo e reenvie.',
-  PROPOSTA_NAO_ENCONTRADA: 'não foi aceito: a proposta não foi encontrada no servidor ou você não tem mais acesso a ela.',
-};
-/** Por status HTTP, quando o `codigo` não diz mais (ex.: 413/415 do limite de upload). */
-const MOTIVO_UPLOAD_POR_STATUS: Readonly<Record<number, string>> = {
-  403: 'não foi aceito: você não tem permissão para enviar documentos desta proposta.',
-  413: 'não foi aceito: passa do limite de 10 MB.',
-  415: 'não foi aceito: o arquivo não é um PDF válido.',
-};
-
-/** Recusa definitiva do upload (4xx) como erro da pendência, com mensagem em pt-BR. */
-function erroDoUpload(e: HttpErrorResponse, codigoExibido: string): ErroMutacao {
-  const corpo = (typeof e.error === 'object' ? e.error : null) as { codigo?: unknown; campos?: Record<string, string> } | null;
-  const codigo = typeof corpo?.codigo === 'string' ? corpo.codigo : null;
-  const motivo = (codigo !== null && Object.hasOwn(MOTIVO_UPLOAD_POR_CODIGO, codigo) ? MOTIVO_UPLOAD_POR_CODIGO[codigo] : undefined)
-    ?? MOTIVO_UPLOAD_POR_STATUS[e.status]
-    ?? 'foi recusado pelo servidor.';
-  return {
-    codigo: codigo ?? `HTTP_${e.status}`,
-    mensagem: `O PDF ${codigoExibido} ${motivo} ${DESCARTE_UPLOAD}`,
-    ...(corpo?.campos ? { campos: corpo.campos } : {}),
-  };
 }
 
 @Injectable({ providedIn: 'root' })
@@ -77,9 +69,11 @@ export class SyncService {
   private readonly conectividade = inject(ConectividadeService);
   private readonly toasts = inject(Toasts);
   private readonly arquivos = inject(ArquivosService);
-  private emAndamento: Promise<void> | null = null;
+  private emAndamento: Promise<FimSincronizacao> | null = null;
   /** Alguém pediu `sincronizar()` enquanto uma rodada rodava: o que ele quer enviar pode ter ficado de fora. */
   private repetir = false;
+  /** A releitura em curso (`relerDesprotegidos`), para a próxima esperar. */
+  private releitura: Promise<void> = Promise.resolve();
 
   readonly sincronizando = signal(false);
   readonly ultimoSync = signal<string | null>(null);
@@ -89,8 +83,9 @@ export class SyncService {
   readonly problemas = signal(0);
 
   constructor() {
-    observar(() => this.db.outbox.count()).subscribe((n) => this.naoSincronizados.set(n));
-    observar(() => this.db.pendencias.count()).subscribe((n) => this.problemas.set(n));
+    // até o injetor ser destruído (no app, nunca; nos testes, a cada teste: senão as consultas se acumulam)
+    observar(() => this.db.outbox.count()).pipe(takeUntilDestroyed()).subscribe((n) => this.naoSincronizados.set(n));
+    observar(() => this.db.pendencias.count()).pipe(takeUntilDestroyed()).subscribe((n) => this.problemas.set(n));
     void this.db.lerMeta<string>(CHAVE_ULTIMO_SYNC).then((v) => this.ultimoSync.set(v ?? null));
   }
 
@@ -138,15 +133,27 @@ export class SyncService {
    * Enfileira o upload do PDF `documentoId` (tabela `documentos`) da proposta, atrás das mutações dela já na fila:
    * sai depois delas (FIFO do agregado) e nunca é coalescido.
    */
-  async registrarUpload(propostaId: string, documentoId: string): Promise<void> {
-    const dados: DadosUpload = { documentoId };
+  registrarUpload(propostaId: string, documentoId: string): Promise<void> {
+    return this.enfileirarUpload(TIPO_UPLOAD_DOCUMENTO, propostaId, documentoId);
+  }
+
+  /**
+   * Enfileira o upload do anexo `anexoId` (tabela `anexosOs`: foto, assinatura ou o PDF) da OS, atrás das mutações
+   * dela já na fila: sai depois da que deixou a OS no status que o servidor exige, e nunca é coalescido. Como o
+   * `registrarUpload`, usa só a `outbox`: quem grava o anexo e o upload juntos abre a transação com as duas tabelas.
+   */
+  registrarUploadAnexoOs(osId: string, anexoId: string): Promise<void> {
+    return this.enfileirarUpload(TIPO_UPLOAD_ANEXO_OS, osId, anexoId);
+  }
+
+  private async enfileirarUpload(entidade: EntidadeUpload, agregadoId: string, id: string): Promise<void> {
     await this.db.outbox.add({
       mutationId: crypto.randomUUID(),
-      entidade: TIPO_UPLOAD_DOCUMENTO,
-      agregadoId: propostaId,
+      entidade,
+      agregadoId,
       op: 'UPLOAD',
       baseVersion: null,
-      dados,
+      dados: TIPOS_UPLOAD[entidade].dados(id),
       separada: true,
       criadaEm: new Date().toISOString(),
     });
@@ -169,10 +176,87 @@ export class SyncService {
   }
 
   /**
-   * Inicia uma sincronização ou, se já houver uma em curso, pede mais uma rodada ao fim dela (o push dela pode já ter
-   * passado da mutação que motivou a chamada) e devolve a promessa do laço inteiro.
+   * M2P2-R13: marca os agregados para reler do servidor (`relerDesprotegidos`) assim que nada deles estiver na fila nem
+   * nas pendências. Precisa de `meta` na transação de quem chama.
    */
-  sincronizar(): Promise<void> {
+  async marcarParaReler(marcas: readonly string[]): Promise<void> {
+    if (marcas.length === 0) return;
+    const atuais = (await this.db.lerMeta<string[]>(CHAVE_RELER)) ?? [];
+    const novas = [...new Set([...atuais, ...marcas])];
+    if (novas.length !== atuais.length) await this.db.gravarMeta(CHAVE_RELER, novas);
+  }
+
+  /** O estado do servidor já está no aparelho: tira as marcas. Precisa de `meta` na transação de quem chama. */
+  async desmarcarReleitura(marcas: readonly string[]): Promise<void> {
+    const atuais = (await this.db.lerMeta<string[]>(CHAVE_RELER)) ?? [];
+    const fora = new Set(marcas);
+    const restantes = atuais.filter((x) => !fora.has(x));
+    if (restantes.length !== atuais.length) await this.db.gravarMeta(CHAVE_RELER, restantes);
+  }
+
+  /**
+   * M2P2-R13: relê do servidor (`GET /api/sync/agregado/{entidade}/{id}`) cada agregado marcado que não tem mais nada
+   * na fila nem nas pendências, e aplica como o "Usar a do servidor": 404 ou excluído apaga o local e os uploads dele
+   * (o tombstone); senão grava o do servidor, se não for mais velho que o local. É o reparo das mudanças do pull que o
+   * aparelho pulou enquanto o agregado estava protegido (o cursor passou delas): sem ele, um upload recusado e
+   * descartado deixaria a OS como estava (a reaberta continuaria concluída, a de outro técnico ficaria no aparelho).
+   * Roda ao fim de toda sincronização e depois das ações de pendência que liberam o agregado. Sem internet ou sem
+   * sessão não faz nada; com erro de rede ou do servidor, para e deixa as marcas para a próxima. Nunca falha.
+   */
+  relerDesprotegidos(): Promise<void> {
+    // uma leitura de cada vez: a segunda (a da pendência durante a sincronização) já vê as marcas que a primeira tirou
+    const vez = this.releitura.then(() => this.relerAgora());
+    this.releitura = vez.catch(() => undefined);
+    return vez;
+  }
+
+  private async relerAgora(): Promise<void> {
+    if (!this.conectividade.online() || !this.auth.autenticado() || this.auth.sessaoExpirada()) return;
+    for (const marca of (await this.db.lerMeta<string[]>(CHAVE_RELER)) ?? []) {
+      const corte = marca.indexOf(':');
+      const entidade = marca.slice(0, corte);
+      const id = marca.slice(corte + 1);
+      const adaptador = adaptadorDe(entidade);
+      if (!adaptador || corte < 0) {
+        await this.db.transaction('rw', this.db.meta, () => this.desmarcarReleitura([marca]));
+        continue;
+      }
+      if (await this.protegido(id)) continue;
+      let atual: Mudanca | null;
+      try {
+        atual = await firstValueFrom(this.http.get<Mudanca>(`/api/sync/agregado/${entidade}/${id}`));
+      } catch (e) {
+        if (!(e instanceof HttpErrorResponse)) return;
+        if (e.status !== 404) return;
+        atual = null;
+      }
+      const tabela = adaptador.tabela(this.db);
+      await this.db.transaction('rw', [this.db.meta, this.db.outbox, this.db.pendencias, tabela, ...tabelasDeUpload(this.db)], async () => {
+        // algo do agregado entrou na fila durante a leitura: o OK dela traz o estado, e a marca fica
+        if (await this.protegido(id)) return;
+        await this.desmarcarReleitura([marca]);
+        if (!atual || atual.deleted) {
+          await tabela.delete(id);
+          await apagarUploadsDoAgregado(this.db, entidade, id);
+          return;
+        }
+        const local = (await tabela.get(id)) as { version?: number | null } | undefined;
+        if (local && (local.version ?? -1) > atual.version) return;
+        await tabela.put(adaptador.paraLocal(id, atual.version, atual.dados));
+      });
+    }
+  }
+
+  /** O agregado tem mutação na fila ou pendência (o pull não o sobrescreve). */
+  private async protegido(id: string): Promise<boolean> {
+    return (await this.db.outbox.where('agregadoId').equals(id).count()) + (await this.db.pendencias.where('agregadoId').equals(id).count()) > 0;
+  }
+
+  /**
+   * Inicia uma sincronização ou, se já houver uma em curso, pede mais uma rodada ao fim dela (o push dela pode já ter
+   * passado da mutação que motivou a chamada) e devolve a promessa do laço inteiro, com o fim da última rodada.
+   */
+  sincronizar(): Promise<FimSincronizacao> {
     if (this.emAndamento) {
       this.repetir = true;
       return this.emAndamento;
@@ -181,15 +265,16 @@ export class SyncService {
     return this.emAndamento;
   }
 
-  private async rodadas(): Promise<void> {
+  private async rodadas(): Promise<FimSincronizacao> {
     this.repetir = false;
-    await this.executar();
+    let fim = await this.executar();
     for (let i = 0; i < MAX_REPETICOES && this.repetir; i++) {
       this.repetir = false;
       if (!this.conectividade.online() || !(await this.temEnvioElegivel())) break;
-      await this.executar();
+      fim = await this.executar();
     }
     this.repetir = false;
+    return fim;
   }
 
   /** Há mutação na outbox de agregado sem pendência (a mesma regra de `enviar`). */
@@ -209,22 +294,28 @@ export class SyncService {
     return (await this.db.outbox.count()) + (await this.db.pendencias.count());
   }
 
-  private async executar(): Promise<void> {
-    if (!this.conectividade.online() || !this.auth.autenticado() || this.auth.sessaoExpirada()) return;
+  private async executar(): Promise<FimSincronizacao> {
+    if (!this.conectividade.online() || !this.auth.autenticado() || this.auth.sessaoExpirada()) return 'ignorada';
     this.sincronizando.set(true);
     try {
       await this.purgarDocumentosDoTecnico();
       await this.enviar();
       const aplicou = await this.receber();
+      await this.relerDesprotegidos();
       if (aplicou && this.conectividade.online()) {
         this.prefetchArquivos().catch(() => undefined);
       }
       const agora = new Date().toISOString();
       this.ultimoSync.set(agora);
       await this.db.gravarMeta(CHAVE_ULTIMO_SYNC, agora);
+      return 'concluida';
     } catch (erro) {
-      const semRede = erro instanceof HttpErrorResponse && (erro.status === 0 || erro.status === 401);
-      if (!semRede) this.toasts.erro(`Falha ao sincronizar: ${mensagemDeErro(erro)}`);
+      if (falhaDeRede(erro)) return 'sem-rede';
+      const recusado = erro instanceof HttpErrorResponse && erro.status === 401;
+      // M1: o 401 de verdade já marcou a sessão expirada; sem a marca, a renovação do interceptor é que não chegou
+      if (recusado && !this.auth.sessaoExpirada()) return 'sem-rede';
+      if (!recusado) this.toasts.erro(`Falha ao sincronizar: ${mensagemDeErro(erro)}`);
+      return 'falhou';
     } finally {
       this.sincronizando.set(false);
     }
@@ -253,11 +344,22 @@ export class SyncService {
       if (lote.length === 0) return;
 
       const mutacoes = lote.filter((m) => !ehUpload(m));
-      let transitorio = mutacoes.length > 0 && (await this.enviarLote(mutacoes, trocasDeCodigo));
-      for (const m of lote.filter(ehUpload)) {
-        if (!(await this.enviarDocumento(m))) transitorio = true;
+      const uploads = lote.filter(ehUpload);
+      let tentados = 0;
+      try {
+        let transitorio = mutacoes.length > 0 && (await this.enviarLote(mutacoes, trocasDeCodigo));
+        for (const m of uploads) {
+          tentados++;
+          if (!(await this.enviarUpload(m))) transitorio = true;
+        }
+        if (transitorio) return;
+      } catch (erro) {
+        // M2: os uploads do lote que nem saíram voltam a ficar fora de voo (senão "está sendo enviado" trava o PDF e a
+        // exclusão até a próxima sincronização chegar ao servidor); o que saiu pode ter chegado e fica em voo, inclusive o
+        // que saiu numa sincronização anterior (o lote guarda o `enviando` de antes desta rodada)
+        for (const m of uploads.slice(tentados)) if (!m.enviando) await this.liberar(m);
+        throw erro;
       }
-      if (transitorio) return;
     }
   }
 
@@ -286,7 +388,7 @@ export class SyncService {
         transitorio = true;
         continue;
       }
-      if (r.status === 'REJEITADO' && r.erro?.codigo === 'CODIGO_PROVISORIO_DUPLICADO' && m.entidade === 'proposta') {
+      if (r.status === 'REJEITADO' && r.erro?.codigo === 'CODIGO_PROVISORIO_DUPLICADO' && Object.hasOwn(GERA_CODIGO_PROVISORIO, m.entidade)) {
         const trocas = trocasDeCodigo.get(m.agregadoId) ?? 0;
         if (trocas < MAX_TROCAS_CODIGO) {
           // colisão do código gerado no aparelho: gera outro e reenvia na próxima rodada, sem pendência
@@ -309,19 +411,23 @@ export class SyncService {
   }
 
   /**
-   * CODIGO_PROVISORIO_DUPLICADO: o código gerado no aparelho já existe no servidor. Gera outro e o grava na proposta
-   * local e em todas as mutações dela na fila que levam o antigo (senão a seguinte mudaria o código fora do rascunho);
-   * a rejeitada ganha outro `mutationId` e volta a ser elegível. Se ela mudou durante o envio (outro `mutationId`), a
-   * recusa é de uma versão que não existe mais: nada muda, e a versão nova sai e tem a própria resposta.
+   * CODIGO_PROVISORIO_DUPLICADO: o código gerado no aparelho (`PROV-` da proposta, `OSP-` da OS, M2-P2 M2) já existe no
+   * servidor. Gera outro e o grava no registro local e em todas as mutações dele na fila que levam o antigo (senão a
+   * seguinte mudaria o código); a rejeitada ganha outro `mutationId` e volta a ser elegível. Se ela mudou durante o
+   * envio (outro `mutationId`), a recusa é de uma versão que não existe mais: nada muda, e a versão nova sai e tem a
+   * própria resposta. Na OS, um PDF já gerado com o código antigo volta `CODIGO_EXIBIDO_INVALIDO` (o servidor só aceita
+   * o código dela): a pendência dele tem o "Gerar PDF novamente" (`OsRepo.regerarPdf`).
    */
   private async trocarCodigoProvisorio(m: MutacaoLocal): Promise<void> {
-    const antigo = (m.dados as PropostaDados | null)?.codigoProvisorio;
-    const novo = gerarCodigoProvisorio();
-    await this.db.transaction('rw', [this.db.outbox, this.db.propostas], async () => {
+    const entidade = m.entidade as Entidade;
+    const antigo = (m.dados as { codigoProvisorio?: string } | null)?.codigoProvisorio;
+    const novo = GERA_CODIGO_PROVISORIO[entidade]!();
+    const tabela = ADAPTADORES[entidade].tabela(this.db) as unknown as Table<{ id: string; codigoProvisorio: string }, string>;
+    await this.db.transaction('rw', [this.db.outbox, tabela], async () => {
       if ((await this.db.outbox.get(m.seq!))?.mutationId !== m.mutationId) return;
       for (const x of await this.db.outbox.where('agregadoId').equals(m.agregadoId).toArray()) {
-        const d = x.dados as PropostaDados | null;
-        if (x.entidade !== 'proposta' || !d || d.codigoProvisorio !== antigo) continue;
+        const d = x.dados as { codigoProvisorio?: string } | null;
+        if (x.entidade !== entidade || !d || d.codigoProvisorio !== antigo) continue;
         const dados = { ...d, codigoProvisorio: novo };
         if (x.mutationId === m.mutationId) {
           await this.db.outbox.update(x.seq!, { dados, mutationId: crypto.randomUUID(), enviando: false });
@@ -329,82 +435,75 @@ export class SyncService {
           await this.db.outbox.update(x.seq!, { dados });
         }
       }
-      const local = await this.db.propostas.get(m.agregadoId);
-      if (local && local.codigoProvisorio === antigo) await this.db.propostas.update(m.agregadoId, { codigoProvisorio: novo });
+      const local = await tabela.get(m.agregadoId);
+      if (local && local.codigoProvisorio === antigo) await tabela.update(m.agregadoId, { codigoProvisorio: novo });
     });
   }
 
   /**
-   * Upload do PDF (`POST /api/propostas/{id}/documentos`, multipart), fora do lote do push. false = falha transitória
-   * (5xx, 408, 429): fica na fila para a próxima sincronização. Erro de rede e 401 sem renovação propagam, como no push; as
-   * outras recusas viram pendência REJEITADO (com "Descartar"), que segura a proposta.
+   * Upload (multipart: `arquivo` e `metadados`) do tipo da mutação (`tipos-upload.ts`), fora do lote do push. false =
+   * falha transitória (5xx, 408, 429): fica na fila para a próxima sincronização. Erro de rede (`falhaDeRede`, inclusive
+   * o 504 do service worker) e 401 sem renovação propagam, como no push; as outras recusas viram pendência REJEITADO
+   * (com "Descartar"), que segura o agregado.
    */
-  private async enviarDocumento(m: MutacaoLocal): Promise<boolean> {
-    const documentoId = (m.dados as DadosUpload | null)?.documentoId;
-    const doc = documentoId ? await this.db.documentos.get(documentoId) : undefined;
-    if (!doc?.bytes) {
-      await this.aplicarResultado(m, {
-        mutationId: m.mutationId,
-        status: 'REJEITADO',
-        erro: { codigo: 'DOCUMENTO_AUSENTE', mensagem: `O PDF deste envio não está mais neste aparelho. ${DESCARTE_UPLOAD}` },
-      });
+  private async enviarUpload(m: MutacaoLocal): Promise<boolean> {
+    const tipo = tipoUploadDe(m.entidade)!;
+    const id = tipo.idDe(m.dados);
+    const registro = id ? await tipo.tabela(this.db).get(id) : undefined;
+    const envio = registro ? await tipo.envio(this.db, registro) : null;
+    if (!registro || !envio) {
+      await this.aplicarResultado(m, { mutationId: m.mutationId, status: 'REJEITADO', erro: tipo.ausente });
       return true;
     }
     const corpo = new FormData();
-    corpo.append('arquivo', new Blob([doc.bytes], { type: 'application/pdf' }), `${doc.codigoExibido}.pdf`);
-    const metadados = {
-      id: doc.id, revisao: doc.revisao, codigoExibido: doc.codigoExibido, sha256: doc.sha256, snapshot: doc.snapshot ?? {},
-    };
-    corpo.append('metadados', new Blob([JSON.stringify(metadados)], { type: 'application/json' }));
-    let resp: RespostaDocumento;
+    corpo.append('arquivo', envio.arquivo, envio.nomeArquivo);
+    corpo.append('metadados', new Blob([JSON.stringify(envio.metadados)], { type: 'application/json' }));
+    let resp: unknown;
     try {
-      resp = await firstValueFrom(
-        this.http.post<RespostaDocumento>(`/api/propostas/${encodeURIComponent(m.agregadoId)}/documentos`, corpo),
-      );
+      resp = await firstValueFrom(this.http.post<unknown>(tipo.url(m.agregadoId), corpo));
     } catch (e) {
-      if (!(e instanceof HttpErrorResponse) || e.status === 0 || e.status === 401) throw e;
+      if (!(e instanceof HttpErrorResponse) || falhaDeRede(e) || e.status === 401) throw e;
       if (e.status >= 500 || e.status === 408 || e.status === 429) {
         await this.liberar(m);
         return false;
       }
-      await this.aplicarResultado(m, { mutationId: m.mutationId, status: 'REJEITADO', erro: erroDoUpload(e, doc.codigoExibido) });
+      await this.aplicarResultado(m, { mutationId: m.mutationId, status: 'REJEITADO', erro: tipo.erro(e, registro) });
       return true;
     }
-    await this.aplicarUpload(m, doc.id, resp);
+    await this.aplicarUpload(m, tipo, registro.id, resp);
     return true;
   }
 
   /**
-   * Upload aceito (P4b-R9): a mutação sai da fila; o documento local fica `enviado`, com o `arquivoId`; a proposta
-   * local recebe o documento e a versão depois do upload (ele "toca" a proposta no servidor); e a próxima mutação dela
-   * na fila passa a ter essa versão como base, senão voltaria CONFLITO.
-   * P4b-R24: o toque sobe a versão em exatamente 1. Se `versaoProposta` não é `baseVersion + 1`, alguém escreveu na
-   * proposta entre a mutação anterior e o upload: a base fica `baseVersion + 1` (o que este aparelho conhece), e a
-   * próxima mutação recebe CONFLITO em vez de desfazer em silêncio a escrita alheia. Sem `baseVersion`, adota a devolvida.
-   * P4b-R26: os PDFs já enviados das revisões anteriores perdem os bytes (ficam os metadados; abrem online pelo
-   * `arquivoId`); os da revisão deste upload ficam.
+   * Upload aceito (P4b-R9): a mutação sai da fila; o registro local fica `enviado`, com o `arquivoId`; o agregado
+   * local recebe o anexo e a versão depois do upload (ele "toca" o agregado no servidor); e a próxima mutação dele na
+   * fila passa a ter essa versão como base, senão voltaria CONFLITO.
+   * P4b-R24: o toque sobe a versão em exatamente 1. Se a devolvida não é `baseVersion + 1`, alguém escreveu no agregado
+   * entre a mutação anterior e o upload: a base fica `baseVersion + 1` (o que este aparelho conhece), e a próxima
+   * mutação recebe CONFLITO em vez de desfazer em silêncio a escrita alheia.
+   * M2P2-R3: o upload primeiro da fila não tem `baseVersion` (ex.: a foto de uma OS já sincronizada); a base conhecida
+   * é então a versão do agregado local, que o pull não sobrescreve enquanto o upload está na fila. Só sem nenhuma das
+   * duas (o agregado não está no aparelho, ou nunca foi ao servidor) a versão devolvida é adotada.
+   * P4b-R26: a poda dos bytes é a do tipo (`enviado` e `podar`).
    */
-  private async aplicarUpload(m: MutacaoLocal, documentoId: string, resp: RespostaDocumento): Promise<void> {
-    const esperada = m.baseVersion === null ? null : m.baseVersion + 1;
-    const versao = esperada !== null && resp.versaoProposta !== esperada ? esperada : resp.versaoProposta;
-    await this.db.transaction('rw', [this.db.outbox, this.db.documentos, this.db.propostas], async () => {
+  private async aplicarUpload(m: MutacaoLocal, tipo: TipoUpload, id: string, resp: unknown): Promise<void> {
+    const devolvida = tipo.versao(resp);
+    const tabela = tipo.tabela(this.db);
+    const agregados = ADAPTADORES[tipo.agregado].tabela(this.db);
+    await this.db.transaction('rw', [this.db.outbox, ...tipo.tabelas(this.db), agregados], async () => {
+      const local = await agregados.get(m.agregadoId);
+      const base = m.baseVersion ?? (local as { version?: number | null } | undefined)?.version ?? null;
+      const esperada = base === null ? null : base + 1;
+      const versao = esperada !== null && devolvida !== esperada ? esperada : devolvida;
       const atual = await this.db.outbox.get(m.seq!);
       if (atual?.mutationId === m.mutationId) await this.db.outbox.delete(m.seq!);
       // put do registro inteiro: o `update` do Dexie clona o objeto e, no IndexedDB dos testes, perde os bytes
-      const doc = await this.db.documentos.get(documentoId);
-      if (doc) await this.db.documentos.put({ ...doc, enviado: true, arquivoId: resp.documento.arquivoId });
-      await this.db.documentos
-        .where('propostaId')
-        .equals(m.agregadoId)
-        .filter((d) => d.enviado && d.revisao < resp.documento.revisao && d.bytes !== null)
-        .modify({ bytes: null });
+      const registro = await tabela.get(id);
+      if (registro) await tabela.put(tipo.enviado(registro, resp));
+      await tipo.podar(this.db, id, m.agregadoId, resp);
       const proxima = await this.db.outbox.where('agregadoId').equals(m.agregadoId).first();
       if (proxima) await this.db.outbox.update(proxima.seq!, { baseVersion: versao });
-      const local = await this.db.propostas.get(m.agregadoId);
-      if (local) {
-        const documentos = [...local.documentos.filter((d) => d.id !== resp.documento.id), resp.documento];
-        await this.db.propostas.update(m.agregadoId, { version: versao, documentos });
-      }
+      if (local) await agregados.update(m.agregadoId, tipo.noAgregado(local, resp, versao, this.auth.usuario?.() ?? undefined));
     });
   }
 
@@ -431,8 +530,10 @@ export class SyncService {
         if (proxima) {
           // há outra mutação na fila (edição durante o envio, transição seguinte, upload): vai sobre esta versão
           await this.db.outbox.update(proxima.seq!, { baseVersion: r.version ?? null });
+          const soUploads = seguintes.every(ehUpload);
+          if (m.entidade === 'os') await this.rebasearSeguintesDaOs(m, r, seguintes, !soUploads);
           // o upload não leva dados da proposta: se só há uploads atrás, o local já recebe o do servidor (o número)
-          if (!seguintes.every(ehUpload)) return;
+          if (!soUploads) return;
         }
         if (!adaptador) return;
         const tabela = adaptador.tabela(this.db);
@@ -459,17 +560,44 @@ export class SyncService {
   }
 
   /**
-   * O técnico nunca vê valores (§10), e o PDF tem valores: com o perfil TECNICO (ex.: um comercial rebaixado), apaga
-   * todos os documentos locais, enviados ou não, e os uploads deles na outbox e nas pendências (falhariam com
-   * ACESSO_NEGADO). Roda antes do push, para o upload não sair. Os outros perfis seguem a regra da troca de dono
-   * em `receber`.
+   * OK de uma mutação da OS com outras atrás na fila. O resultado pode não ser o que foi enviado: no envio desatualizado
+   * do técnico, o servidor fica com o cabeçalho do escritório, o status dele e o "Precisa voltar" dele (M2P1-R30, e a
+   * OS encerrada do R26). As mutações seguintes da OS e, se for o caso, a OS local (que só é substituída com a fila
+   * vazia) passam pelo `rebaseFilaOs`: o que não mudou desde o envio passa a ser o do servidor, e o que o perfil não
+   * altera no status do servidor também (como o servidor faz no R26 e no R30). Senão a seguinte, já com a versão nova
+   * como base, levaria os valores velhos e seria recusada (`OS_NAO_EDITAVEL`, `TRANSICAO_INVALIDA`), ou desfaria em
+   * silêncio a mudança do escritório num campo que o técnico também edita. Roda na transação do `aplicarResultado`.
+   */
+  private async rebasearSeguintesDaOs(m: MutacaoLocal, r: ResultadoMutacao, seguintes: MutacaoLocal[], local: boolean): Promise<void> {
+    const enviado = m.dados as OsDados | null;
+    const servidor = r.dados as OsDados | null | undefined;
+    if (m.op !== 'UPSERT' || !enviado || !servidor) return;
+    const u = this.auth.usuario?.();
+    const daOs = seguintes.filter((s) => s.entidade === 'os' && s.op === 'UPSERT' && !!s.dados);
+    const originais = daOs.map((s) => s.dados as OsDados);
+    const rebaseadas = rebaseFilaOs(enviado, servidor, originais, u ? quemNoServidor(servidor, u.perfil, u.id) : undefined);
+    for (const [i, s] of daOs.entries()) {
+      if (JSON.stringify(rebaseadas[i]) !== JSON.stringify(s.dados)) await this.db.outbox.update(s.seq!, { dados: rebaseadas[i] });
+    }
+    const atual = local ? await this.db.os.get(m.agregadoId) : undefined;
+    if (atual) await this.db.os.put(rebaseOsLocal(atual, originais.at(-1) ?? enviado, rebaseadas.at(-1) ?? servidor));
+  }
+
+  /**
+   * O técnico nunca vê valores (§10), e o PDF da proposta tem valores: com o perfil TECNICO (ex.: um comercial
+   * rebaixado), apaga todos os documentos locais, enviados ou não, e os uploads deles na outbox e nas pendências
+   * (falhariam com ACESSO_NEGADO). Roda antes do push, para o upload não sair. Os anexos da OS (sem valores) não são
+   * tocados: seguem as regras de visibilidade de sempre. Os outros perfis seguem a regra da troca de dono em `receber`.
    */
   private async purgarDocumentosDoTecnico(): Promise<void> {
     if (this.auth.usuario?.()?.perfil !== 'TECNICO') return;
-    await this.db.transaction('rw', [this.db.documentos, this.db.outbox, this.db.pendencias], async () => {
-      await this.db.documentos.clear();
-      await this.db.outbox.filter(ehUpload).delete();
-      await this.db.pendencias.filter(ehUpload).delete();
+    const comValores = tiposUpload().filter((t) => t.temValores);
+    const doTipo = (m: { entidade: string }) => comValores.some((t) => t.entidade === m.entidade);
+    const tabelas = comValores.flatMap((t) => t.tabelas(this.db));
+    await this.db.transaction('rw', [...tabelas, this.db.outbox, this.db.pendencias], async () => {
+      await Promise.all(tabelas.map((t) => t.clear()));
+      await this.db.outbox.filter(doTipo).delete();
+      await this.db.pendencias.filter(doTipo).delete();
     });
   }
 
@@ -485,10 +613,11 @@ export class SyncService {
       // cursor de outra sessão/perfil (ou gravado no formato antigo, só o id): recomeça do zero
       cursor = 0;
       const tabelas = [...Object.values(ADAPTADORES).map((a) => a.tabela(this.db)), this.db.usuarios];
-      await this.db.transaction('rw', [...tabelas, this.db.documentos], async () => {
+      await this.db.transaction('rw', [...tabelas, ...tabelasDeUpload(this.db)], async () => {
         await Promise.all(tabelas.map((t) => t.clear()));
-        // o PDF já enviado é cópia do servidor (e o novo perfil pode não poder vê-lo); o não enviado espera o upload
-        await this.db.documentos.filter((d) => d.enviado).delete();
+        // o PDF ou o anexo já enviado é cópia do servidor (e o novo perfil pode não poder vê-lo); o não enviado espera
+        // o upload
+        for (const t of tiposUpload()) await t.apagar(this.db, await t.tabela(this.db).filter((r) => r.enviado).primaryKeys());
       });
       this.arquivos.limpar();
     }
@@ -537,6 +666,9 @@ export class SyncService {
    * P4b-R26: o tombstone de uma proposta (excluída, ou que deixou de ser visível: troca de responsável, técnico
    * desatribuído) apaga também os PDFs já enviados dela (têm valores; o servidor não os serve mais a este usuário). Um
    * PDF não enviado tem o UPLOAD na fila ou numa pendência, então a proposta está protegida e o tombstone nem é aplicado.
+   * O mesmo vale para a OS e os anexos dela: os não enviados sobem antes, e só depois o tombstone é aplicado (M2-R3).
+   * M2P2-R13: o que foi pulado por estar protegido fica marcado para reler (`relerDesprotegidos`), porque o cursor passa
+   * da mudança; o que foi aplicado perde a marca (o pull trouxe o estado atual).
    */
   private async aplicarMudancas(mudancas: Mudanca[]): Promise<void> {
     const conhecidas = mudancas.flatMap((mu) => {
@@ -545,19 +677,20 @@ export class SyncService {
     });
     if (conhecidas.length === 0) return;
     const tabelas = [...new Set(conhecidas.map(({ adaptador }) => adaptador.tabela(this.db)))];
-    await this.db.transaction('rw', [this.db.outbox, this.db.pendencias, this.db.documentos, ...tabelas], async () => {
+    await this.db.transaction('rw', [this.db.meta, this.db.outbox, this.db.pendencias, ...tabelasDeUpload(this.db), ...tabelas], async () => {
       const ids = [...new Set(conhecidas.map(({ mu }) => mu.id))];
       const naFila = await this.db.outbox.where('agregadoId').anyOf(ids).toArray();
       const pendentes = await this.db.pendencias.where('agregadoId').anyOf(ids).toArray();
       const protegidos = new Set([...naFila, ...pendentes].map((m) => m.agregadoId));
+      const pulados = conhecidas.filter(({ mu }) => protegidos.has(mu.id)).map(({ mu }) => marcaDeReleitura(mu.entidade, mu.id));
+      await this.desmarcarReleitura(conhecidas.filter(({ mu }) => !protegidos.has(mu.id)).map(({ mu }) => marcaDeReleitura(mu.entidade, mu.id)));
+      await this.marcarParaReler(pulados);
       for (const { mu, adaptador } of conhecidas) {
         if (protegidos.has(mu.id)) continue;
         const tabela = adaptador.tabela(this.db);
         if (mu.deleted) {
           await tabela.delete(mu.id);
-          if (mu.entidade === 'proposta') {
-            await this.db.documentos.where('propostaId').equals(mu.id).filter((d) => d.enviado).delete();
-          }
+          await apagarUploadsDoAgregado(this.db, mu.entidade, mu.id, (r) => r.enviado);
         } else {
           await tabela.put(adaptador.paraLocal(mu.id, mu.version, mu.dados));
         }

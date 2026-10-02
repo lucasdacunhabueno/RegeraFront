@@ -109,7 +109,7 @@ describe('PropostasRepo', () => {
     });
     repo = TestBed.inject(PropostasRepo);
     db = TestBed.inject(RegeraDb);
-    sincronizar = vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue();
+    sincronizar = vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue('concluida');
     await db.empresa.put(paraEmpresaLocal(ID_EMPRESA, 3, {
       razaoSocial: 'Regera Energia Ltda', cnpj: '11222333000181', endereco: 'Rua A, 1', telefone: '1133334444',
       email: 'contato@regera.com', logoArquivoId: 'logo-1', corPrimaria: '#123456', validadePadraoDias: 10,
@@ -196,6 +196,12 @@ describe('PropostasRepo', () => {
       await db.empresa.clear();
       const id = await repo.criar('SERVICO');
       expect(await db.propostas.get(id)).toMatchObject({ validadeAte: '2026-10-16', condicoesPagamento: null, templateId: null });
+    });
+
+    it('empresa do perfil TECNICO no aparelho (sem validade e condições padrão, M2P1-R25): 15 dias e sem condições', async () => {
+      await db.empresa.put(paraEmpresaLocal(ID_EMPRESA, 4, { razaoSocial: 'Regera Energia Ltda', corPrimaria: '#123456' }));
+      const id = await repo.criar('SERVICO');
+      expect(await db.propostas.get(id)).toMatchObject({ validadeAte: '2026-10-16', condicoesPagamento: null });
     });
 
     it('ADMIN também fica como responsável', async () => {
@@ -1362,7 +1368,7 @@ describe('PropostasRepo', () => {
   });
 
   describe('consultas', () => {
-    it('observarTodas, observarDoCliente e observarDoTecnico, por atualizadoEm desc (sem data por último)', async () => {
+    it('observarTodas e observarDoCliente, por atualizadoEm desc (sem data por último)', async () => {
       const base = await existente('RASCUNHO');
       await db.propostas.delete('p1');
       await db.propostas.bulkPut([
@@ -1373,7 +1379,6 @@ describe('PropostasRepo', () => {
       ]);
       expect((await firstValueFrom(repo.observarTodas())).map((p) => p.id)).toEqual(['b', 'd', 'a', 'c']);
       expect((await firstValueFrom(repo.observarDoCliente('c1'))).map((p) => p.id)).toEqual(['d', 'a', 'c']);
-      expect((await firstValueFrom(repo.observarDoTecnico(TECNICO.id))).map((p) => p.id)).toEqual(['d', 'a', 'c']);
     });
 
     it('P4b-R19: toda escrita local marca atualizadoEm = agora (o servidor sobrescreve no retorno)', async () => {

@@ -32,7 +32,7 @@ describe('CatalogoRepo', () => {
     });
     repo = TestBed.inject(CatalogoRepo);
     db = TestBed.inject(RegeraDb);
-    sincronizar = vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue();
+    sincronizar = vi.spyOn(TestBed.inject(SyncService), 'sincronizar').mockResolvedValue('concluida');
   });
 
   afterEach(async () => {

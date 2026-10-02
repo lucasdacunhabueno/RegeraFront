@@ -15,10 +15,13 @@ export interface EnderecoDados {
   uf: string | null;
 }
 
-/** Formato do agregado no sync (igual ao ClienteDados do servidor). */
+/**
+ * Formato do agregado no sync (igual ao ClienteDados do servidor). O TECNICO recebe o cliente **sem a chave
+ * `documento`** (Q14: o servidor não serializa o nulo); para os outros perfis ela sempre vem.
+ */
 export interface ClienteDados {
   tipo: TipoPessoa;
-  documento: string;
+  documento?: string | null;
   nome: string;
   nomeFantasia: string | null;
   inscricaoEstadual: string | null;
@@ -31,7 +34,9 @@ export interface ClienteDados {
   enderecos: EnderecoDados[];
 }
 
-export interface ClienteLocal extends ClienteDados {
+export interface ClienteLocal extends Omit<ClienteDados, 'documento'> {
+  /** CPF/CNPJ só com dígitos; null no aparelho do TECNICO, que não o recebe (Q14). */
+  documento: string | null;
   id: string;
   /** Última versão conhecida do servidor; null = ainda não existe lá. */
   version: number | null;
@@ -47,6 +52,7 @@ export const ROTULO_TIPO_ENDERECO: Record<TipoEndereco, string> = {
 export function paraClienteLocal(id: string, version: number | null, dados: ClienteDados): ClienteLocal {
   return {
     ...dados,
+    documento: dados.documento ?? null,
     enderecos: dados.enderecos ?? [],
     id,
     version,
@@ -79,7 +85,7 @@ export function filtrarClientes(lista: ClienteLocal[], busca: string): ClienteLo
   return lista.filter(
     (c) =>
       c.nomeBusca.includes(q) ||
-      (doc.length >= 3 && c.documento.includes(doc)) ||
+      (doc.length >= 3 && c.documento !== null && c.documento.includes(doc)) ||
       (digitos.length >= 3 && somenteDigitos(c.telefone).includes(digitos)),
   );
 }

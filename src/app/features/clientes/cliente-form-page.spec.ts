@@ -12,6 +12,8 @@ import { PropostaLocal } from '../propostas/proposta-models';
 import { PropostasRepo } from '../propostas/propostas-repo';
 import { Toasts } from '../../shared/ui/toasts';
 import { ConsultasExternas } from './consultas-externas';
+import { OsRepo } from '../os/os-repo';
+import { OsLocal, paraOsLocal } from '../os/os-models';
 
 const existente: ClienteDados = {
   tipo: 'PF', documento: '52998224725', nome: 'Maria', nomeFantasia: null, inscricaoEstadual: null,
@@ -31,11 +33,15 @@ function propostaDe(id: string, p: Partial<PropostaLocal> = {}): PropostaLocal {
 
 function montar(opcoes: {
   id?: string; voltar?: string; salvar?: ReturnType<typeof vi.fn>; buscar?: Promise<unknown>;
-  propostas?: PropostaLocal[]; perfil?: 'ADMIN' | 'COMERCIAL' | 'TECNICO';
+  propostas?: PropostaLocal[]; perfil?: 'ADMIN' | 'COMERCIAL' | 'TECNICO'; os?: OsLocal[];
 } = {}) {
   const propostas = {
     observarDoCliente: vi.fn((clienteId: string) => of((opcoes.propostas ?? []).filter((p) => p.clienteId === clienteId))),
     observarUsuarios: () => of([{ id: 'u1', nome: 'Carla Comercial', perfil: 'COMERCIAL' }]),
+    observarEstadoSync: () => of({ naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() }),
+  };
+  const osRepo = {
+    observarDoCliente: vi.fn((clienteId: string) => of((opcoes.os ?? []).filter((o) => o.clienteId === clienteId))),
     observarEstadoSync: () => of({ naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() }),
   };
   const repo = {
@@ -55,6 +61,7 @@ function montar(opcoes: {
       { provide: ConsultasExternas, useValue: consultas },
       { provide: ConectividadeService, useValue: { online: signal(true) } },
       { provide: PropostasRepo, useValue: propostas },
+      { provide: OsRepo, useValue: osRepo },
       { provide: AuthService, useValue: { usuario: signal({ id: 'u1', nome: 'U', email: 'u@u', perfil: opcoes.perfil ?? 'COMERCIAL', ativo: true }) } },
     ],
   });
@@ -63,7 +70,7 @@ function montar(opcoes: {
   if (opcoes.voltar !== undefined) fixture.componentRef.setInput('voltar', opcoes.voltar);
   fixture.detectChanges();
   const navegar = vi.spyOn(TestBed.inject(Router), 'navigateByUrl').mockResolvedValue(true);
-  return { fixture, repo, consultas, navegar, propostas, el: fixture.nativeElement as HTMLElement };
+  return { fixture, repo, consultas, navegar, propostas, osRepo, el: fixture.nativeElement as HTMLElement };
 }
 
 function digitar(fixture: ComponentFixture<unknown>, seletor: string, valor: string) {
@@ -333,6 +340,35 @@ describe('ClienteFormPage', () => {
       expect(secao(el)!.textContent).not.toContain('Nenhuma proposta para este cliente.');
     });
 
+    it('M2-P3: os cards levam os selos das OS da proposta (as do cliente que o perfil vê)', async () => {
+      const osDe = (id: string, propostaId: string, status: OsLocal['status']): OsLocal => paraOsLocal(id, 1, {
+        codigoProvisorio: 'OSP-AAAAAA', propostaId, clienteId: 'id1', tipo: 'SERVICO', status, urgente: false, concluiProposta: true,
+        assinaturaRecusada: false, itens: [], notas: [],
+      });
+      const { fixture, el, osRepo } = montar({
+        id: 'id1',
+        propostas: [propostaDe('a', { numero: 277, revisao: 1, status: 'EM_EXECUCAO' }), propostaDe('c', { numero: 278, revisao: 1, status: 'APROVADA' })],
+        os: [osDe('o1', 'a', 'EM_ANDAMENTO'), osDe('o2', 'c', 'CANCELADA')],
+      });
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(secao(el)!.querySelectorAll('app-proposta-card')).toHaveLength(2);
+      });
+      expect(osRepo.observarDoCliente).toHaveBeenCalledWith('id1');
+      const selos = (i: number) =>
+        [...secao(el)!.querySelectorAll('app-proposta-card')[i].querySelectorAll('[data-selo]')].map((s) => s.getAttribute('data-selo'));
+      expect(selos(0)).toEqual(['os-em-andamento']);
+      expect(selos(1)).toEqual(['os-cancelada']);
+    });
+
+    it('N4: "Carregando…" e o vazio numa região de status fixa', async () => {
+      const { fixture, el } = montar({ id: 'id1' });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      const regiao = secao(el)!.querySelector('[role=status]')!;
+      expect(regiao.textContent?.trim()).toBe('Nenhuma proposta para este cliente.');
+    });
+
     it('sem propostas: texto vazio e "Nova proposta" com o clienteId', async () => {
       const { fixture, el } = montar({ id: 'id1' });
       await fixture.whenStable();
@@ -363,6 +399,45 @@ describe('ClienteFormPage', () => {
       fixture.detectChanges();
       expect(secao(el)).not.toBeNull();
       expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+    });
+  });
+
+  describe('Ordens de serviço do cliente (M2-P3)', () => {
+    const secao = (el: HTMLElement) => el.querySelector('[data-testid="os-do-cliente"]');
+    const osDe = (id: string, clienteId: string, numero: number) => paraOsLocal(id, 1, {
+      codigoProvisorio: 'OSP-K7Q2ZP', numero, revisao: 1, clienteId, tipo: 'INSTALACAO', status: 'ABERTA', urgente: false,
+      concluiProposta: true, assinaturaRecusada: false, itens: [], notas: [],
+    });
+
+    it('editando: o bloco vem depois das propostas, com as OS deste cliente (o card leva a /os/:id)', async () => {
+      const { fixture, el, osRepo } = montar({ id: 'id1', os: [osDe('o1', 'id1', 123), osDe('o2', 'outro', 9)] });
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(secao(el)!.textContent).toContain('Maria');
+      });
+      expect(osRepo.observarDoCliente).toHaveBeenCalledWith('id1');
+      expect(secao(el)!.textContent).toContain('Ordens de serviço');
+      expect(secao(el)!.textContent).toContain('OS-000123');
+      expect(secao(el)!.textContent).not.toContain('OS-000009');
+      expect(secao(el)!.querySelector('app-os-card a')?.getAttribute('href')).toBe('/os/o1');
+      // N2 (final B): o atalho da OS avulsa já com este cliente
+      expect(secao(el)!.querySelector('[data-testid=nova-os]')?.getAttribute('href')).toBe('/os/nova?clienteId=id1');
+      const propostas = el.querySelector('[data-testid="propostas-do-cliente"]')!;
+      expect(propostas.compareDocumentPosition(secao(el)!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+      expect(fixture.componentInstance.temAlteracoes()).toBe(false);
+    });
+
+    it('sem OS: o estado vazio', async () => {
+      const { fixture, el } = montar({ id: 'id1' });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(secao(el)!.textContent).toContain('Nenhuma OS para este cliente.');
+    });
+
+    it('cliente novo: sem o bloco', () => {
+      const { el, osRepo } = montar();
+      expect(secao(el)).toBeNull();
+      expect(osRepo.observarDoCliente).not.toHaveBeenCalled();
     });
   });
 });

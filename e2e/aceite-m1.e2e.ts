@@ -10,8 +10,8 @@ import { semViolacaoCsp, VigiaCsp } from './apoio';
  * Aceite do M1 (§19, §15 E2E), em sequência sobre uma mesma proposta: o admin prepara; o comercial A, sem internet,
  * cadastra clientes PF e PJ (CNPJ alfanumérico), monta a proposta, vê a prévia e envia (PDF com PROV compartilhado);
  * de volta online ela ganha número, o PDF chega ao servidor e o kanban do admin (outro aparelho) a mostra em até 60 s
- * (mais a margem do pull) depois que o servidor a confirma; o técnico T atribuído a vê sem nenhum valor (nem os
- * preços do catálogo) e sem PDF; o comercial B não a vê; A não vê custo; e o kanban leva a proposta até FINALIZADA
+ * (mais a margem do pull) depois que o servidor a confirma; o técnico T atribuído trabalha pela OS ("Minhas OS",
+ * M2-P3), sem nenhum valor (nem os preços do catálogo), sem a proposta e sem PDF; o comercial B não a vê; A não vê custo; e o kanban leva a proposta até FINALIZADA
  * pelo "Mover para…" (Recusar pede o motivo; o comercial não cancela em execução); o PDF abre pelo detalhe. Zero
  * violação de CSP em todos os aparelhos (§8 do plano).
  */
@@ -89,6 +89,8 @@ test.describe.serial('aceite do M1: proposta offline do comercial até FINALIZAD
 
     // o admin vê o que a API gravou: o item no catálogo e os quatro templates
     await recarregarESincronizar(pageAdmin);
+    // M2-P3: no celular o Catálogo fica em "Mais" (a barra inferior tem Kanban, Propostas, OS, Clientes e Mais)
+    await pageAdmin.getByRole('link', { name: 'Mais' }).click();
     await pageAdmin.getByRole('link', { name: 'Catálogo' }).click();
     await pageAdmin.getByRole('searchbox', { name: 'Buscar no catálogo' }).fill(codigoItem);
     await expect(pageAdmin.getByRole('listitem').filter({ hasText: codigoItem })).toContainText('1.250,50');
@@ -259,7 +261,7 @@ test.describe.serial('aceite do M1: proposta offline do comercial até FINALIZAD
     await cspAdmin.verificar();
   });
 
-  test('4. admin atribui o técnico T; T vê a proposta sem nenhum R$ (nem no catálogo) e não abre o PDF', async ({ browser }) => {
+  test('4. admin atribui o técnico T; T trabalha pela OS ("Minhas OS"), sem nenhum R$ (nem no catálogo), e não abre a proposta nem o PDF', async ({ browser }) => {
     test.setTimeout(90_000);
     await pageAdmin.goto(`/propostas/${propostaId}`);
     await expect(pageAdmin.getByRole('heading', { level: 1 })).toContainText(numero);
@@ -273,32 +275,32 @@ test.describe.serial('aceite do M1: proposta offline do comercial até FINALIZAD
     const cspT = await semViolacaoCsp(ctxT);
     try {
       const pageT = await ctxT.newPage();
-      await abrirApp(pageT, tecnico.email, tecnico.senha, /\/propostas$/);
-      await expect(pageT.getByRole('heading', { name: 'Minhas propostas' })).toBeVisible();
-      await pageT.locator('#busca-propostas').fill(numero);
-      const card = pageT.getByRole('link').filter({ hasText: numero });
-      await expect(card).toContainText(nomePj);
+      // M2-P3 (M2P3-R1): o técnico cai em "Minhas OS" e não tem mais a lista de propostas; a proposta ainda não tem OS
+      await abrirApp(pageT, tecnico.email, tecnico.senha, /\/os$/);
+      await expect(pageT.getByRole('heading', { name: 'Minhas OS' })).toBeVisible();
+      await expect(pageT.getByText('Nenhuma OS atribuída a você.', { exact: true })).toBeVisible();
+      const nav = pageT.getByRole('navigation', { name: 'Navegação inferior' });
+      await expect(nav.getByRole('link')).toHaveText(['Minhas OS', 'Mais']);
       expect(await textoDaPagina(pageT)).not.toContain('R$');
 
-      await card.click();
-      await expect(pageT).toHaveURL(new RegExp(`/propostas/${propostaId}$`));
-      await expect(pageT.getByRole('heading', { level: 1 })).toContainText(numero);
-      await expect(pageT.getByTestId('itens-cards')).toContainText(nomeItem);
-      await expect(pageT.getByTestId('tecnico')).toContainText(tecnico.nome);
-      const texto = await textoDaPagina(pageT);
-      expect(texto).not.toContain('R$');
-      expect(texto).not.toContain('2.501');
-      expect(texto).not.toContain('1.250');
-      await expect(pageT.getByTestId('documentos')).toHaveCount(0);
-      await expect(pageT.getByRole('button', { name: /Abrir|Compartilhar/ })).toHaveCount(0);
+      // a proposta (nem a lista, nem o detalhe) não abre para ele: o link direto cai em "Minhas OS"
+      for (const rota of ['/propostas', `/propostas/${propostaId}`]) {
+        await pageT.goto(rota);
+        await expect(pageT).toHaveURL(/\/os$/);
+        await expect(pageT.getByRole('heading', { name: 'Minhas OS' })).toBeVisible();
+      }
+      expect(await textoDaPagina(pageT)).not.toContain('R$');
 
       // no aparelho do técnico, nenhum valor nem documento; no servidor, o PDF responde 404 para ele
       const local = await registroNoAparelho<{ totalCentavos: number | null; documentos: unknown[]; itens: { precoUnitarioCentavos: number | null }[] }>(
         pageT, 'propostas', propostaId,
       );
-      expect(local?.totalCentavos ?? null).toBeNull();
-      expect(local?.documentos).toEqual([]);
-      expect(local?.itens.map((l) => l.precoUnitarioCentavos ?? null)).toEqual([null]);
+      // a proposta atribuída continua chegando ao aparelho dele (AcessoProposta), só não tem mais tela
+      expect(local).toBeDefined();
+      expect(local!.itens).toHaveLength(1);
+      expect(local!.totalCentavos ?? null).toBeNull();
+      expect(local!.documentos).toEqual([]);
+      expect(local!.itens.map((l) => l.precoUnitarioCentavos ?? null)).toEqual([null]);
       // §19.5: o catálogo do técnico também não tem preço — nem no aparelho, nem no servidor, nem a tela abre
       const itemT = await registroNoAparelho<{ codigo: string; precoVenda: unknown; precoCusto: unknown; precoLocacaoMensal: unknown }>(
         pageT, 'itens', item.id,
@@ -308,7 +310,7 @@ test.describe.serial('aceite do M1: proposta offline do comercial até FINALIZAD
       expect(itemT?.precoCusto ?? null).toBeNull();
       expect(itemT?.precoLocacaoMensal ?? null).toBeNull();
       await pageT.goto(`/catalogo/${item.id}`);
-      await expect(pageT).toHaveURL(/\/propostas$/);
+      await expect(pageT).toHaveURL(/\/os$/);
       expect(await textoDaPagina(pageT)).not.toContain('R$');
 
       const apiT = await Api.entrar(tecnico.email, tecnico.senha);
@@ -360,7 +362,8 @@ test.describe.serial('aceite do M1: proposta offline do comercial até FINALIZAD
       await ctxB.close();
     }
 
-    // A: catálogo sem custo (tela, aparelho e servidor) e proposta sem custo
+    // A: catálogo sem custo (tela, aparelho e servidor) e proposta sem custo; no celular o Catálogo fica em "Mais"
+    await pageA.getByRole('link', { name: 'Mais' }).click();
     await pageA.getByRole('link', { name: 'Catálogo' }).click();
     await pageA.getByRole('searchbox', { name: 'Buscar no catálogo' }).fill(codigoItem);
     const linha = pageA.getByRole('listitem').filter({ hasText: codigoItem });

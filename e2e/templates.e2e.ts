@@ -17,7 +17,8 @@ async function entrar(page: Page, email = EMAIL, senha = SENHA) {
   await page.getByLabel('E-mail').fill(email);
   await page.getByLabel('Senha').fill(senha);
   await page.getByRole('button', { name: 'Entrar' }).click();
-  await expect(page).toHaveURL(/\/kanban$/);
+  // bcrypt no login: com os outros testes em paralelo, passa dos 5 s padrão (ver `entrar` em aceite-apoio.ts)
+  await expect(page).toHaveURL(/\/kanban$/, { timeout: 30_000 });
 }
 
 /** Templates com este nome no IndexedDB do app (o Dexie `regera`), lidos direto pela API do navegador. */

@@ -5,6 +5,7 @@ import { AuthService } from './core/auth/auth-service';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 
 const wizardProposta = () => import('./features/propostas/wizard-proposta-page').then((m) => m.WizardPropostaPage);
+const osForm = () => import('./features/os/os-form-page').then((m) => m.OsFormPage);
 
 export const routes: Routes = [
   { path: 'login', loadComponent: () => import('./features/login/login-page').then((m) => m.LoginPage) },
@@ -16,14 +17,20 @@ export const routes: Routes = [
       {
         path: '',
         pathMatch: 'full',
-        redirectTo: () => (inject(AuthService).usuario()?.perfil === 'TECNICO' ? 'propostas' : 'kanban'),
+        // M2-P3: o técnico trabalha pela OS
+        redirectTo: () => (inject(AuthService).usuario()?.perfil === 'TECNICO' ? 'os' : 'kanban'),
       },
       {
         path: 'kanban',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
         loadComponent: () => import('./features/kanban/kanban-page').then((m) => m.KanbanPage),
       },
-      { path: 'propostas', loadComponent: () => import('./features/propostas/propostas-page').then((m) => m.PropostasPage) },
+      // M2-P3: as propostas deixam de ser do técnico (ele vê o trabalho pela OS); o link direto dele cai na raiz → /os
+      {
+        path: 'propostas',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        loadComponent: () => import('./features/propostas/propostas-page').then((m) => m.PropostasPage),
+      },
       // ordem do P4c: propostas/nova, propostas/:id/editar, propostas/:id/corrigir, propostas/:id
       {
         path: 'propostas/nova',
@@ -48,8 +55,28 @@ export const routes: Routes = [
       },
       {
         path: 'propostas/:id',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
         loadComponent: () => import('./features/propostas/proposta-detalhe-page').then((m) => m.PropostaDetalhePage),
       },
+      // todos os perfis: a página mostra ao técnico só as dele e ao escritório as que o perfil vê
+      { path: 'os', loadComponent: () => import('./features/os/os-lista-page').then((m) => m.OsListaPage) },
+      // M2-P3: a OS avulsa e o cabeçalho, só do escritório; antes de os/:id ("nova" não é um id). O técnico é
+      // recusado pelo canMatch e cai na raiz (→ /os)
+      {
+        path: 'os/nova',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
+        loadComponent: osForm,
+      },
+      {
+        path: 'os/:id/editar',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        canDeactivate: [alteracoesGuard],
+        loadComponent: osForm,
+      },
+      // a OS: a execução (técnico atribuído e ADMIN), o detalhe com as ações do escritório ou só a leitura, conforme o
+      // perfil
+      { path: 'os/:id', loadComponent: () => import('./features/os/os-execucao-page').then((m) => m.OsExecucaoPage) },
       {
         path: 'clientes/novo',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],

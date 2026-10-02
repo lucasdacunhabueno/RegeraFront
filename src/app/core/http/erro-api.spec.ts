@@ -1,5 +1,5 @@
 import { HttpErrorResponse } from '@angular/common/http';
-import { camposComErro, mensagemDeErro } from './erro-api';
+import { camposComErro, falhaDeRede, mensagemDeErro } from './erro-api';
 
 describe('erro-api', () => {
   it('usa o detail do ProblemDetail', () => {
@@ -9,6 +9,17 @@ describe('erro-api', () => {
 
   it('status 0 vira mensagem de sem conexão', () => {
     expect(mensagemDeErro(new HttpErrorResponse({ status: 0 }))).toBe('Sem conexão com o servidor.');
+  });
+
+  it('o 504 do service worker sem rede também vira mensagem de sem conexão', () => {
+    expect(mensagemDeErro(new HttpErrorResponse({ status: 504, statusText: 'Gateway Timeout' }))).toBe('Sem conexão com o servidor.');
+  });
+
+  it('falhaDeRede: status 0 e o 504 do service worker; outros erros não', () => {
+    expect(falhaDeRede(new HttpErrorResponse({ status: 0 }))).toBe(true);
+    expect(falhaDeRede(new HttpErrorResponse({ status: 504, statusText: 'Gateway Timeout' }))).toBe(true);
+    for (const status of [401, 403, 500, 502, 503]) expect(falhaDeRede(new HttpErrorResponse({ status }))).toBe(false);
+    expect(falhaDeRede(new Error('x'))).toBe(false);
   });
 
   it('erro desconhecido vira mensagem genérica', () => {

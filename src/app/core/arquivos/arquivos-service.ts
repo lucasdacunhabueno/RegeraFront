@@ -35,6 +35,11 @@ function base64(bytes: ArrayBuffer): string {
   return btoa(binario);
 }
 
+/** `data:<mime>;base64,...` dos bytes, para o pdfmake (que não carrega URLs). */
+export function paraDataUrl(bytes: ArrayBuffer, mime: string): string {
+  return `data:${mime};base64,${base64(bytes)}`;
+}
+
 /** `baixarSemCache` recusou sem fazer o pedido: sem internet ou sem sessão (a mensagem já é para o usuário). */
 export class ErroDownload extends Error {
   constructor(
@@ -106,7 +111,7 @@ export class ArquivosService {
     try {
       const cache = await this.lerOuBaixar(id);
       if (!cache || geracao !== this.geracao) return null;
-      return `data:${cache.mime};base64,${base64(cache.bytes)}`;
+      return paraDataUrl(cache.bytes, cache.mime);
     } catch {
       return null;
     }
@@ -123,7 +128,9 @@ export class ArquivosService {
 
   /**
    * Baixa o arquivo direto do servidor (o mesmo `GET /api/arquivos/{id}` autenticado), sem ler nem gravar o cache
-   * local e sem object URL: para o PDF da proposta, que tem valores e é `no-store` também no Dexie (P4b-R6). Sem
+   * local e sem object URL: para o PDF da proposta, que tem valores e é `no-store` também no Dexie (P4b-R6), e para as
+   * fotos e assinaturas da OS (M2P2-R14: o arquivo cheio do servidor não fica no aparelho; as telas da OS também não
+   * usam `obterUrl`/`obterDataUrl` para elas, que gravam no cache sem prazo). Sem
    * internet ou sem sessão falha sem pedir nada (sem sessão o pedido voltaria 401 e marcaria a sessão expirada);
    * erro do servidor propaga.
    */

@@ -22,7 +22,8 @@ test('senha errada mostra erro e continua no login', async ({ page, context }) =
 test('admin entra e o app abre sem internet', async ({ page, context }) => {
   const csp = await semViolacaoCsp(context);
   await entrar(page);
-  await expect(page).toHaveURL(/\/kanban$/);
+  // bcrypt no login: com os outros testes em paralelo, passa dos 5 s padrão (ver `entrar` em aceite-apoio.ts)
+  await expect(page).toHaveURL(/\/kanban$/, { timeout: 30_000 });
   await expect(page.getByText('Administrador').first()).toBeVisible();
 
   await page.evaluate(async () => {

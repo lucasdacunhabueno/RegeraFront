@@ -343,6 +343,8 @@ describe('gerarDocumento', () => {
     expect(valorVariavel(e, 'cliente.nome')).toBe('ACME Ltda');
     expect(valorVariavel(e, 'cliente.documento')).toBe('11.444.777/0001-61');
     expect(valorVariavel({ ...e, cliente: { ...e.cliente!, documento: '52998224725' } }, 'cliente.documento')).toBe('529.982.247-25');
+    // o cliente do TECNICO chega sem documento (Q14): sai em branco, sem quebrar
+    expect(valorVariavel({ ...e, cliente: { ...e.cliente!, documento: null } }, 'cliente.documento')).toBe('');
     expect(valorVariavel(e, 'cliente.endereco')).toBe('Av. B, 20');
     expect(valorVariavel(e, 'cliente.contato')).toBe('Maria');
     expect(valorVariavel(e, 'cliente.telefone')).toBe('(11) 98888-7777');

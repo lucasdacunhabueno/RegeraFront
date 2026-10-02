@@ -1,8 +1,10 @@
-import { Component, computed, effect, inject, signal } from '@angular/core';
+import { Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
-import { AuthService } from '../../core/auth/auth-service';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import { osPorProposta, SeloOsProposta, selosOsDaProposta } from '../os/formatos-os';
+import type { OsLocal } from '../os/os-models';
+import { OsRepo } from '../os/os-repo';
 import { TIPOS_PROPOSTA, TipoProposta } from '../templates/template-models';
 import { correspondeABusca, Selo, selosDaProposta } from './formatos-proposta';
 import { PropostaCard } from './proposta-card';
@@ -22,22 +24,21 @@ interface Linha {
   clienteNome: string;
   responsavelNome: string | null;
   selos: Selo[];
+  /** M2-P3: os selos das OS da proposta (como no kanban). */
+  selosOs: SeloOsProposta[];
 }
 
 /**
- * Lista de propostas (§13). ADMIN e COMERCIAL: `observarTodas` (o comercial só recebe as dele no sync), busca, chips
- * de status, tipo e "Nova proposta". TECNICO: "Minhas propostas" (`observarDoTecnico`), sem nenhum valor e sem criar.
- * Qualquer perfil fora de ADMIN e COMERCIAL cai na visão restrita do técnico.
+ * Lista de propostas (§13), do escritório: `observarTodas` (o comercial só recebe as dele no sync), busca, chips de
+ * status, tipo e "Nova proposta". M2-P3: a rota é só de ADMIN e COMERCIAL (o técnico vê o trabalho pela OS).
  */
 @Component({
   selector: 'app-propostas-page',
   imports: [RouterLink, PropostaCard],
   template: `
     <div class="mb-4 flex items-center justify-between gap-3">
-      <h1 class="text-xl font-semibold">{{ restrito() ? 'Minhas propostas' : 'Propostas' }}</h1>
-      @if (!restrito()) {
-        <a routerLink="/propostas/nova" class="inline-flex min-h-12 items-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Nova proposta</a>
-      }
+      <h1 class="text-xl font-semibold">Propostas</h1>
+      <a routerLink="/propostas/nova" class="inline-flex min-h-12 items-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Nova proposta</a>
     </div>
 
     <!-- celular: busca e tipo empilhados; desktop (lg): na mesma linha, a busca ocupa o resto -->
@@ -83,9 +84,7 @@ interface Linha {
     @if (carregando()) {
       <p class="py-8 text-center text-slate-500">Carregando…</p>
     } @else if (propostas()!.length === 0) {
-      <p class="py-8 text-center text-slate-500">
-        {{ restrito() ? 'Nenhuma proposta atribuída a você.' : 'Nenhuma proposta ainda. Crie a primeira em Nova proposta.' }}
-      </p>
+      <p class="py-8 text-center text-slate-500">Nenhuma proposta ainda. Crie a primeira em Nova proposta.</p>
     } @else if (linhas().length === 0) {
       <p class="py-8 text-center text-slate-500">
         Nenhuma proposta encontrada.
@@ -98,7 +97,7 @@ interface Linha {
         @for (l of linhas(); track l.proposta.id) {
           <li>
             <app-proposta-card [proposta]="l.proposta" [clienteNome]="l.clienteNome" [responsavelNome]="l.responsavelNome"
-                               [mostrarValores]="!restrito()" [selos]="l.selos" />
+                               [mostrarValores]="true" [selos]="l.selos" [selosOs]="l.selosOs" />
           </li>
         }
       </ul>
@@ -107,12 +106,6 @@ interface Linha {
 })
 export class PropostasPage {
   private readonly repo = inject(PropostasRepo);
-  private readonly usuario = inject(AuthService).usuario;
-  /** A visão do técnico: sem valores e sem criar (também sem sessão ou com perfil desconhecido). */
-  protected readonly restrito = computed(() => {
-    const perfil = this.usuario()?.perfil;
-    return perfil !== 'ADMIN' && perfil !== 'COMERCIAL';
-  });
 
   protected readonly busca = signal('');
   protected readonly status = signal<FiltroStatus>('TODAS');
@@ -120,9 +113,12 @@ export class PropostasPage {
   protected readonly mostrarEncerradas = signal(false);
   protected readonly tipos = TIPOS_PROPOSTA;
 
-  /** undefined até a primeira leitura do banco (sem isso a tela piscaria o estado vazio); preenchido pelo effect do construtor. */
-  protected readonly propostas = signal<PropostaLocal[] | undefined>(undefined);
+  /** undefined até a primeira leitura do banco (sem isso a tela piscaria o estado vazio). */
+  protected readonly propostas = toSignal<PropostaLocal[]>(this.repo.observarTodas());
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
+  /** M2-P3: as OS que o perfil vê, pela proposta (os selos da OS nos cards). */
+  private readonly osDasPropostas = toSignal(inject(OsRepo).observarTodas(), { initialValue: [] as OsLocal[] });
+  private readonly osPorProposta = computed(() => osPorProposta(this.osDasPropostas()));
   private readonly usuarios = toSignal(this.repo.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
@@ -157,31 +153,18 @@ export class PropostasPage {
     const mostrarEncerradas = this.mostrarEncerradas();
     const clientes = this.clientePorId();
     const nomes = this.nomeUsuario();
-    // M6: a visão restrita (técnico) não mostra o responsável, como o detalhe
-    const restrito = this.restrito();
     const { naOutbox, comPendencia } = this.estado();
+    const oss = this.osPorProposta();
     return this.buscadas()
       .filter((p) => (status === 'TODAS' ? mostrarEncerradas || !encerrada(p.status) : p.status === status))
       .map((p) => ({
         proposta: p,
         clienteNome: p.clienteId ? (clientes.get(p.clienteId)?.nome ?? 'Cliente não encontrado') : 'Sem cliente',
-        responsavelNome: restrito ? null : (nomes.get(p.responsavelId) ?? null),
+        responsavelNome: nomes.get(p.responsavelId) ?? null,
         selos: selosDaProposta(p, { pendente: comPendencia.has(p.id), naoSincronizada: naOutbox.has(p.id), hoje: this.hoje() }),
+        selosOs: selosOsDaProposta(p.status, oss.get(p.id) ?? []),
       }));
   });
-
-  constructor() {
-    // O técnico (ou a visão restrita) lê só as atribuídas a ele; a fonte troca se o usuário mudar. Um effect e não
-    // toObservable + switchMap: estes levariam ~1 kB ao bundle inicial.
-    const quem = computed(() => (this.restrito() ? `tecnico:${this.usuario()?.id ?? ''}` : 'todas'));
-    effect((aoLimpar) => {
-      const q = quem();
-      this.propostas.set(undefined);
-      const fonte = q === 'todas' ? this.repo.observarTodas() : this.repo.observarDoTecnico(q.slice('tecnico:'.length));
-      const assinatura = fonte.subscribe((lista) => this.propostas.set(lista));
-      aoLimpar(() => assinatura.unsubscribe());
-    });
-  }
 
   protected alternarEncerradas(): void {
     const mostrar = !this.mostrarEncerradas();

@@ -6,6 +6,8 @@ import { vi } from 'vitest';
 import { ItemCatalogoDados, paraItemLocal } from '../../features/catalogo/item-models';
 import { ClienteDados, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { ID_EMPRESA, paraEmpresaLocal } from '../../features/empresa/empresa-models';
+import { codigoProvisorioOsValido } from '../../features/os/codigo-provisorio-os';
+import { AnexoOsDados, AnexoOsLocal, OsDados, paraOsLocal, StatusOs } from '../../features/os/os-models';
 import { codigoProvisorioValido } from '../../features/propostas/codigo-provisorio';
 import {
   DocumentoLocal, paraPropostaLocal, PropostaDados, StatusProposta,
@@ -18,7 +20,7 @@ import { ArquivosService } from '../arquivos/arquivos-service';
 import { AuthService } from '../auth/auth-service';
 import { ConectividadeService } from '../conectividade/conectividade-service';
 import { RegeraDb } from '../db/regera-db';
-import { TIPO_UPLOAD_DOCUMENTO } from './sync-models';
+import { TIPO_UPLOAD_ANEXO_OS, TIPO_UPLOAD_DOCUMENTO } from './sync-models';
 import { SyncService } from './sync-service';
 
 const dados = (nome: string): ClienteDados => ({
@@ -38,16 +40,18 @@ describe('SyncService', () => {
   const online = signal(true);
   let perfil = 'ADMIN';
   let autenticado = true;
+  let expirada = false;
 
   beforeEach(() => {
     online.set(true);
     perfil = 'ADMIN';
     autenticado = true;
+    expirada = false;
     TestBed.configureTestingModule({
       providers: [
         provideHttpClient(),
         provideHttpClientTesting(),
-        { provide: AuthService, useValue: { autenticado: () => autenticado, sessaoExpirada: () => false, usuario: () => ({ id: 'u1', perfil }) } },
+        { provide: AuthService, useValue: { autenticado: () => autenticado, sessaoExpirada: () => expirada, usuario: () => ({ id: 'u1', perfil }) } },
         { provide: ConectividadeService, useValue: { online } },
       ],
     });
@@ -229,6 +233,68 @@ describe('SyncService', () => {
     await pullVazio();
     await p2;
     expect(await db.outbox.count()).toBe(0);
+  });
+
+  it('push sem rede pelo service worker (o 504 que ele devolve quando o fetch falha) termina sem-rede, sem aviso', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+
+    const p = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne('/api/sync/push'))).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+    expect(await p).toBe('sem-rede');
+    expect(await db.outbox.count()).toBe(1);
+    expect(erro).not.toHaveBeenCalled();
+  });
+
+  it('diz como terminou: concluida, sem-rede (status 0), falhou (com aviso) e ignorada (sem internet)', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    const p1 = sync.sincronizar();
+    await pullVazio();
+    expect(await p1).toBe('concluida');
+
+    const p2 = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).error(new ProgressEvent('error'), { status: 0 });
+    expect(await p2).toBe('sem-rede');
+    expect(erro).not.toHaveBeenCalled();
+
+    const p3 = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush(null, { status: 500, statusText: 'Erro' });
+    expect(await p3).toBe('falhou');
+    expect(erro).toHaveBeenCalledTimes(1);
+
+    online.set(false);
+    expect(await sync.sincronizar()).toBe('ignorada');
+  });
+
+  it('M1: 401 sem a sessão expirada (a renovação do interceptor não chegou ao servidor) termina sem-rede, sem aviso', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    const p = sync.sincronizar();
+    (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush(null, { status: 401, statusText: 'x' });
+    expect(await p).toBe('sem-rede');
+    expect(erro).not.toHaveBeenCalled();
+  });
+
+  it('M1: 401 com a sessão expirada de verdade termina falhou, sem aviso', async () => {
+    const erro = vi.spyOn(TestBed.inject(Toasts), 'erro');
+    const p = sync.sincronizar();
+    const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'));
+    expirada = true;
+    pull.flush(null, { status: 401, statusText: 'x' });
+    expect(await p).toBe('falhou');
+    expect(erro).not.toHaveBeenCalled();
+  });
+
+  it('M5: o fim do laço é o da última rodada (a pedida durante a primeira)', async () => {
+    await sync.registrar('cliente', 'c1', 'UPSERT', dados('A'), null);
+    const p = sync.sincronizar();
+    const push1 = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+    const junto = sync.sincronizar();
+    push1.error(new ProgressEvent('error'), { status: 0 });
+    const push2 = await vi.waitFor(() => http.expectOne('/api/sync/push'));
+    push2.flush({ resultados: [{ mutationId: push2.request.body.mutacoes[0].mutationId, status: 'OK', version: 0, dados: dados('A') }] });
+    await pullVazio();
+    expect(await p).toBe('concluida');
+    expect(await junto).toBe('concluida');
   });
 
   it('erro transitório do servidor (ERRO_INTERNO) mantém a outbox, não cria pendência e reenvia o mesmo mutationId', async () => {
@@ -784,6 +850,21 @@ describe('SyncService', () => {
       expect(await db.documentos.get('d1')).toMatchObject({ enviado: false });
     });
 
+    it('upload sem rede pelo service worker (o 504 dele) propaga como no push: termina sem-rede, sem o pull', async () => {
+      await db.documentos.put(docLocal());
+      await sync.registrarUpload('p1', 'd1');
+
+      const p = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne(URL_UPLOAD))).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+      expect(await p).toBe('sem-rede');
+      http.expectNone((r) => r.url === '/api/sync/pull');
+      expect(await fila()).toHaveLength(1);
+      // saiu e pode ter chegado: fica em voo, como o push sem rede
+      expect((await fila())[0].enviando).toBe(true);
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await db.documentos.get('d1')).toMatchObject({ enviado: false });
+    });
+
     it.each([408, 429])('upload com %i é transitório: fica na outbox, sem pendência', async (status) => {
       await db.documentos.put(docLocal());
       await sync.registrarUpload('p1', 'd1');
@@ -1176,6 +1257,861 @@ describe('SyncService', () => {
       const pend = await db.pendencias.toArray();
       expect(pend).toHaveLength(1);
       expect(pend[0]).toMatchObject({ tipo: 'REJEITADO', erro: { codigo: 'CODIGO_PROVISORIO_DUPLICADO' } });
+    });
+  });
+
+  describe('OS: adaptador e upload de anexos', () => {
+    const SHA = 'b'.repeat(64);
+    const URL_OS = '/api/os/o1/anexos';
+    const NAO_ESTA_COM_VOCE = 'Esta OS não está mais com você.';
+    const os = (status: StatusOs, extra: Partial<OsDados> = {}): OsDados => ({
+      codigoProvisorio: 'OSP-0Z9XY7', tipo: 'INSTALACAO', status, urgente: false, concluiProposta: true,
+      assinaturaRecusada: false, tecnicoId: 'u1', itens: [], notas: [], ...extra,
+    });
+    const JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xe0, 1, 2, 3]).buffer as ArrayBuffer;
+    const MINI = new Uint8Array([0xff, 0xd8, 9]).buffer as ArrayBuffer;
+    const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 7]).buffer as ArrayBuffer;
+    const PDF_OS = new TextEncoder().encode('%PDF-1.7 os').buffer as ArrayBuffer;
+    /** O anexo como os testes o descrevem: os metadados e, à parte (M2P2-R16), os bytes e o snapshot. */
+    type AnexoTeste = AnexoOsLocal & { bytes?: ArrayBuffer | null; snapshot?: Record<string, unknown> | null };
+    const anexoLocal = (extra: Partial<AnexoTeste> = {}): AnexoTeste => ({
+      id: 'f1', osId: 'o1', tipo: 'FOTO', sha256: SHA, legenda: 'Quadro', momento: 'ANTES', tiradaEm: '2026-10-01T12:00:00Z',
+      assinanteNome: null, assinantePapel: null, revisaoOs: null, codigoExibido: null, bytes: JPEG, miniatura: MINI,
+      enviado: false, arquivoId: null, ...extra,
+    });
+    const anexoServidor = (extra: Partial<AnexoOsDados> = {}): AnexoOsDados => ({
+      id: 'f1', tipo: 'FOTO', arquivoId: 'af1', sha256: SHA, legenda: 'Quadro', momento: 'ANTES',
+      tiradaEm: '2026-10-01T12:00:00Z', autorId: 'u1', criadoEm: '2026-10-01T12:00:05Z', ...extra,
+    });
+    const documentoOs = (id: string, revisaoOs: number, extra: Partial<AnexoTeste> = {}) => anexoLocal({
+      id, tipo: 'DOCUMENTO', legenda: null, momento: null, tiradaEm: null, revisaoOs,
+      codigoExibido: revisaoOs > 1 ? `OS-000123-R${revisaoOs}` : 'OS-000123', bytes: PDF_OS, miniatura: null, ...extra,
+    });
+    /** Grava em `anexosOs` os metadados e em `anexosOsBytes` os bytes (com o snapshot), quando há. */
+    const gravarAnexos = async (...xs: (AnexoTeste | AnexoTeste[])[]) => {
+      for (const { bytes, snapshot, ...meta } of xs.flat()) {
+        await db.anexosOs.put(meta);
+        if (bytes) await db.anexosOsBytes.put({ id: meta.id, bytes, ...(snapshot !== undefined ? { snapshot } : {}) });
+      }
+    };
+    /** O anexo do aparelho com os bytes (null sem a linha em `anexosOsBytes`). */
+    const lerAnexo = async (id: string): Promise<(AnexoOsLocal & { bytes: ArrayBuffer | null }) | undefined> => {
+      const a = await db.anexosOs.get(id);
+      return a && { ...a, bytes: (await db.anexosOsBytes.get(id))?.bytes ?? null };
+    };
+    const lerAnexos = async () => Promise.all((await db.anexosOs.toArray()).map(async (a) => (await lerAnexo(a.id))!));
+    const push = () => vi.waitFor(() => http.expectOne('/api/sync/push'));
+    const ok = (req: TestRequest, version: number, d: unknown) =>
+      req.flush({ resultados: [{ mutationId: req.request.body.mutacoes[0].mutationId, status: 'OK', version, dados: d }] });
+    const upload = () => vi.waitFor(() => http.expectOne(URL_OS));
+    const metadadosDe = async (req: TestRequest) =>
+      JSON.parse(await ((req.request.body as FormData).get('metadados') as Blob).text()) as Record<string, unknown>;
+    const fila = () => db.outbox.orderBy('seq').toArray();
+
+    it('M2: sem rede no primeiro upload do lote, os seguintes (que nem saíram) voltam a ficar fora de voo', async () => {
+      await gravarAnexos(anexoLocal(), anexoLocal({ id: 'f2', osId: 'o2' }));
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrarUploadAnexoOs('o2', 'f2');
+
+      const p = sync.sincronizar();
+      (await upload()).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+      expect(await p).toBe('sem-rede');
+      http.expectNone('/api/os/o2/anexos');
+      expect((await fila()).map((m) => [m.agregadoId, m.enviando])).toEqual([['o1', true], ['o2', false]]);
+    });
+
+    it('M2: sem rede no push do lote, os uploads do mesmo lote (que nem saíram) voltam a ficar fora de voo', async () => {
+      await gravarAnexos(anexoLocal({ id: 'f2', osId: 'o2' }));
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO'), 2, { separada: true });
+      await sync.registrarUploadAnexoOs('o2', 'f2');
+
+      const p = sync.sincronizar();
+      (await push()).error(new ProgressEvent('error'), { status: 0 });
+      expect(await p).toBe('sem-rede');
+      expect((await fila()).map((m) => [m.agregadoId, m.enviando])).toEqual([['o1', true], ['o2', false]]);
+    });
+
+    it('M8: o upload que saiu numa sincronização anterior continua em voo quando o push da seguinte falha sem rede', async () => {
+      await gravarAnexos(anexoLocal());
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      const p1 = sync.sincronizar();
+      (await upload()).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+      expect(await p1).toBe('sem-rede');
+
+      await sync.registrar('os', 'o2', 'UPSERT', os('EM_ANDAMENTO'), 2, { separada: true });
+      const p2 = sync.sincronizar();
+      (await push()).error(new ProgressEvent('error'), { status: 0 });
+      expect(await p2).toBe('sem-rede');
+      http.expectNone(URL_OS);
+      expect((await fila()).map((m) => [m.agregadoId, m.enviando])).toEqual([['o1', true], ['o2', true]]);
+    });
+
+    it('pull aplica a OS pelo adaptador', async () => {
+      const p = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+        cursor: 3, temMais: false, usuarios: [],
+        mudancas: [{ entidade: 'os', id: 'o1', version: 2, deleted: false, dados: { ...os('ABERTA', { numero: 123 }), campoNovo: 1 } }],
+      });
+      await p;
+      expect(await db.os.get('o1')).toMatchObject({ version: 2, status: 'ABERTA', numero: 123, tecnicoId: 'u1' });
+    });
+
+    it('o upload do anexo entra atrás das mutações da OS, nunca coalesce, e a edição seguinte vem depois dele', async () => {
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO'), 2, { separada: true });
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }), 2);
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }, { id: 'n2', texto: 'b' }] }), 2);
+      const m = await fila();
+      expect(m.map((x) => [x.entidade, x.op])).toEqual([['os', 'UPSERT'], [TIPO_UPLOAD_ANEXO_OS, 'UPLOAD'], ['os', 'UPSERT']]);
+      expect(m[1]).toMatchObject({ agregadoId: 'o1', baseVersion: null, dados: { anexoId: 'f1' }, separada: true });
+      expect((m[2].dados as OsDados).notas).toHaveLength(2);
+    });
+
+    it('iniciar e foto offline: a foto espera o iniciar, sobe por multipart, rebaseia a próxima e fica só a miniatura', async () => {
+      await db.os.put(paraOsLocal('o1', 2, os('ABERTA')));
+      await gravarAnexos(anexoLocal());
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO'), 2, { separada: true });
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'Cheguei' }] }), 2);
+
+      const p = sync.sincronizar();
+      const push1 = await push();
+      expect(push1.request.body.mutacoes).toHaveLength(1);
+      expect(push1.request.body.mutacoes[0]).toMatchObject({ entidade: 'os', id: 'o1', baseVersion: 2, dados: { status: 'EM_ANDAMENTO' } });
+      http.expectNone(URL_OS);
+      ok(push1, 3, os('EM_ANDAMENTO'));
+
+      const up = await upload();
+      expect(up.request.method).toBe('POST');
+      expect((await fila())[0]).toMatchObject({ op: 'UPLOAD', baseVersion: 3 });
+      const arquivo = (up.request.body as FormData).get('arquivo') as File;
+      expect(arquivo.type).toBe('image/jpeg');
+      expect(new Uint8Array(await arquivo.arrayBuffer())).toEqual(new Uint8Array(JPEG));
+      expect(((up.request.body as FormData).get('metadados') as Blob).type).toBe('application/json');
+      expect(await metadadosDe(up)).toEqual({
+        anexoId: 'f1', tipo: 'FOTO', sha256: SHA, legenda: 'Quadro', momento: 'ANTES', tiradaEm: '2026-10-01T12:00:00Z',
+      });
+      up.flush({ anexo: anexoServidor(), versaoOs: 4 }, { status: 201, statusText: 'Created' });
+
+      const push2 = await push();
+      expect(push2.request.body.mutacoes[0]).toMatchObject({ baseVersion: 4, dados: { notas: [{ id: 'n1' }] } });
+      const local = await db.os.get('o1');
+      expect(local?.version).toBe(4);
+      expect(local?.anexos).toEqual([{
+        ...anexoServidor(), assinanteNome: null, assinantePapel: null, revisaoOs: null, codigoExibido: null,
+      }]);
+      ok(push2, 5, os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'Cheguei', autorId: 'u1', criadaEm: '2026-10-01T12:01:00Z' }] }));
+      await pullVazio();
+      await p;
+
+      expect(await db.outbox.count()).toBe(0);
+      expect(await db.pendencias.count()).toBe(0);
+      const f1 = await lerAnexo('f1');
+      expect(f1).toMatchObject({ enviado: true, arquivoId: 'af1', bytes: null });
+      expect(new Uint8Array(f1!.miniatura!)).toEqual(new Uint8Array(MINI));
+      expect((await db.os.get('o1'))?.version).toBe(5);
+    });
+
+    describe('M2P1-R30: o OK do envio desatualizado do técnico traz o estado do escritório', () => {
+      const ESCRITORIO = { dataPrevista: '2026-10-09', descricao: 'Do escritório', enderecoLogradouro: 'Av. Nova', concluiProposta: false };
+      const VELHO = { dataPrevista: '2026-10-05', descricao: 'Antiga', enderecoLogradouro: 'Av. Velha', concluiProposta: true };
+
+      it('as mutações seguintes e a OS local passam a ter o que o técnico não mudou: o servidor não recusa a seguinte', async () => {
+        perfil = 'TECNICO';
+        await db.os.put({ ...paraOsLocal('o1', 4, os('EM_ANDAMENTO', { ...VELHO, notas: [{ id: 'n1', texto: 'Cheguei' }] })),
+          iniciadaLocalEm: '2026-10-01T09:00:00Z' });
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', VELHO), 4, { separada: true });
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { ...VELHO, notas: [{ id: 'n1', texto: 'Cheguei' }] }), 4);
+
+        const p = sync.sincronizar();
+        const push1 = await push();
+        expect(push1.request.body.mutacoes[0]).toMatchObject({ baseVersion: 4, dados: VELHO });
+        // o servidor rebaseou (R30): o cabeçalho e o "Precisa voltar" do escritório, o iniciar do técnico
+        ok(push1, 8, os('EM_ANDAMENTO', { ...ESCRITORIO, numero: 123 }));
+        const push2 = await push();
+        expect(push2.request.body.mutacoes[0]).toMatchObject({
+          baseVersion: 8, dados: { ...ESCRITORIO, status: 'EM_ANDAMENTO', notas: [{ id: 'n1', texto: 'Cheguei' }] },
+        });
+        expect(await db.os.get('o1')).toMatchObject({ ...ESCRITORIO, version: 4, iniciadaLocalEm: '2026-10-01T09:00:00Z' });
+        ok(push2, 9, os('EM_ANDAMENTO', { ...ESCRITORIO, numero: 123, notas: [{ id: 'n1', texto: 'Cheguei', autorId: 'u1', criadaEm: '2026-10-01T12:00:00Z' }] }));
+        await pullVazio();
+        await p;
+        expect(await db.pendencias.count()).toBe(0);
+        expect(await db.os.get('o1')).toMatchObject({ ...ESCRITORIO, version: 9 });
+      });
+
+      it('R26 (M5): [nota, foto, concluir, PDF] com a OS cancelada pelo escritório: a foto entra, o concluir não volta, o PDF fica numa pendência só', async () => {
+        perfil = 'TECNICO';
+        await db.os.put(paraOsLocal('o1', 4, os('CONCLUIDA', { numero: 123, resumoExecucao: 'Feito' })));
+        await gravarAnexos([anexoLocal(), documentoOs('d1', 1)]);
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { numero: 123, notas: [{ id: 'n1', texto: 'a' }] }), 4);
+        await sync.registrarUploadAnexoOs('o1', 'f1');
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { numero: 123, resumoExecucao: 'Feito', notas: [{ id: 'n1', texto: 'a' }] }), 4,
+          { separada: true });
+        await sync.registrarUploadAnexoOs('o1', 'd1');
+        const cancelada = (extra: Partial<OsDados> = {}) => os('CANCELADA', {
+          numero: 123, motivoCancelamento: 'Cliente desistiu', notas: [{ id: 'n1', texto: 'a', autorId: 'u1' }], ...extra,
+        });
+
+        const p = sync.sincronizar();
+        ok(await push(), 8, cancelada());
+        // R26: o técnico atribuído acrescenta a foto à OS encerrada
+        (await upload()).flush({ anexo: anexoServidor(), versaoOs: 9 }, { status: 201, statusText: 'Created' });
+        const push2 = await push();
+        // como o servidor no R26: da OS encerrada o técnico só acrescenta notas (o resumo dele não muda a cancelada)
+        expect(push2.request.body.mutacoes[0]).toMatchObject({
+          baseVersion: 9, dados: { status: 'CANCELADA', resumoExecucao: null, notas: [{ id: 'n1', texto: 'a' }] },
+        });
+        ok(push2, 9, cancelada({ anexos: [anexoServidor()] }));
+        (await upload()).flush({ codigo: 'STATUS_INVALIDO', detail: 'x' }, { status: 409, statusText: 'Conflict' });
+        await pullVazio();
+        await p;
+
+        const pend = await db.pendencias.toArray();
+        expect(pend).toHaveLength(1);
+        expect(pend[0]).toMatchObject({ tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, mutacao: { dados: { anexoId: 'd1' } },
+          erro: { codigo: 'STATUS_INVALIDO' } });
+        expect(pend[0].erro?.mensagem).toContain('No servidor, a OS não está concluída');
+        expect(await db.outbox.count()).toBe(0);
+        expect(await lerAnexo('f1')).toMatchObject({ enviado: true });
+        vi.spyOn(sync, 'sincronizar').mockResolvedValue('concluida');
+        const descarte = TestBed.inject(PendenciasService).descartar(pend[0]);
+        // M2P2-R13: com a OS livre, ela é relida do servidor
+        (await vi.waitFor(() => http.expectOne('/api/sync/agregado/os/o1')))
+          .flush({ entidade: 'os', id: 'o1', version: 9, deleted: false, dados: cancelada({ anexos: [anexoServidor()] }) });
+        await descarte;
+        expect(await db.pendencias.count()).toBe(0);
+        expect(await lerAnexo('d1')).toBeUndefined();
+        expect(await db.os.get('o1')).toMatchObject({ status: 'CANCELADA', version: 9 });
+      });
+
+      it('M2-R3 (M4a): o servidor fica atrás do enviado (o técnico desatribuído); a nota seguinte leva o status do servidor', async () => {
+        perfil = 'TECNICO';
+        await db.os.put(paraOsLocal('o1', 4, os('CONCLUIDA', { resumoExecucao: 'Feito' })));
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { resumoExecucao: 'Feito' }), 4, { separada: true });
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { resumoExecucao: 'Feito', notas: [{ id: 'n1', texto: 'a' }] }), 4);
+
+        const p = sync.sincronizar();
+        // a conclusão do técnico que não está mais atribuído não vale: o servidor devolve o estado dele
+        ok(await push(), 8, os('EM_ANDAMENTO', { tecnicoId: 'u7' }));
+        const push2 = await push();
+        expect(push2.request.body.mutacoes[0]).toMatchObject({ baseVersion: 8, dados: { status: 'EM_ANDAMENTO', notas: [{ id: 'n1' }] } });
+        ok(push2, 9, os('EM_ANDAMENTO', { tecnicoId: 'u7', notas: [{ id: 'n1', texto: 'a', autorId: 'u1' }] }));
+        await pullVazio();
+        await p;
+      });
+    });
+
+    it('assinatura: PNG com o assinante nos metadados; a OS local passa a ter a assinatura aceita, sem recusa', async () => {
+      // o técnico atribuído (M4: só ele, ou o ADMIN, faz da assinatura a aceita)
+      perfil = 'TECNICO';
+      await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { assinaturaRecusada: true, motivoRecusa: 'Ausente' })));
+      await gravarAnexos(anexoLocal({
+        id: 's1', tipo: 'ASSINATURA', legenda: null, momento: null, tiradaEm: '2026-10-01T13:00:00Z',
+        assinanteNome: 'Maria', assinantePapel: 'Síndica', bytes: PNG, miniatura: null,
+      }));
+      await sync.registrarUploadAnexoOs('o1', 's1');
+
+      const p = sync.sincronizar();
+      const up = await upload();
+      const arquivo = (up.request.body as FormData).get('arquivo') as File;
+      expect(arquivo.type).toBe('image/png');
+      expect(new Uint8Array(await arquivo.arrayBuffer())).toEqual(new Uint8Array(PNG));
+      expect(await metadadosDe(up)).toEqual({
+        anexoId: 's1', tipo: 'ASSINATURA', sha256: SHA, assinanteNome: 'Maria', assinantePapel: 'Síndica',
+        assinadaEm: '2026-10-01T13:00:00Z',
+      });
+      const servidor = anexoServidor({
+        id: 's1', tipo: 'ASSINATURA', arquivoId: 'as1', legenda: null, momento: null, tiradaEm: '2026-10-01T13:00:00Z',
+        assinanteNome: 'Maria', assinantePapel: 'Síndica',
+      });
+      up.flush({ anexo: servidor, versaoOs: 4 }, { status: 201, statusText: 'Created' });
+      await pullVazio();
+      await p;
+
+      expect(await db.os.get('o1')).toMatchObject({
+        version: 4, assinaturaAnexoId: 's1', assinanteNome: 'Maria', assinantePapel: 'Síndica',
+        assinadaEm: '2026-10-01T13:00:00Z', assinaturaRecusada: false, motivoRecusa: null,
+        anexos: [{ id: 's1', tipo: 'ASSINATURA', arquivoId: 'as1', assinanteNome: 'Maria' }],
+      });
+      expect(await lerAnexo('s1')).toMatchObject({ enviado: true, arquivoId: 'as1', bytes: null });
+    });
+
+    it.each(['CONCLUIDA', 'CANCELADA'] as const)(
+      'M2P1-R26 (M6): assinatura aceita com a OS %s no aparelho é evidência; a assinatura aceita local não muda',
+      async (status) => {
+        await db.os.put(paraOsLocal('o1', 3, os(status, { assinaturaRecusada: true, motivoRecusa: 'Ausente' })));
+        await gravarAnexos(anexoLocal({
+          id: 's1', tipo: 'ASSINATURA', legenda: null, momento: null, tiradaEm: '2026-10-01T13:00:00Z',
+          assinanteNome: 'Maria', assinantePapel: null, bytes: PNG, miniatura: PNG,
+        }));
+        await sync.registrarUploadAnexoOs('o1', 's1');
+
+        const p = sync.sincronizar();
+        (await upload()).flush({
+          anexo: anexoServidor({ id: 's1', tipo: 'ASSINATURA', arquivoId: 'as1', legenda: null, momento: null, assinanteNome: 'Maria' }),
+          versaoOs: 4,
+        }, { status: 201, statusText: 'Created' });
+        await pullVazio();
+        await p;
+
+        expect(await db.os.get('o1')).toMatchObject({
+          version: 4, assinaturaAnexoId: null, assinanteNome: null, assinaturaRecusada: true, motivoRecusa: 'Ausente',
+          anexos: [{ id: 's1', tipo: 'ASSINATURA' }],
+        });
+        const s1 = (await lerAnexo('s1'))!;
+        expect(s1).toMatchObject({ enviado: true, bytes: null });
+        // a miniatura da assinatura é o próprio PNG: o PDF de uma reemissão offline ainda a tem
+        expect(new Uint8Array(s1.miniatura!)).toEqual(new Uint8Array(PNG));
+      },
+    );
+
+    it('PDF depois do concluir: metadados do documento; mantém os bytes da revisão atual e tira os das anteriores', async () => {
+      await db.os.put(paraOsLocal('o1', 6, os('EM_ANDAMENTO', { revisao: 2 })));
+      const outro = new TextEncoder().encode('%PDF-1.7 outro').buffer as ArrayBuffer;
+      await gravarAnexos([
+        documentoOs('r1', 1, { enviado: true, arquivoId: 'a-r1' }),
+        documentoOs('r2a', 2, { enviado: true, arquivoId: 'a-r2a', bytes: outro }),
+        documentoOs('r2', 2, { snapshot: { os: 'OS-000123' } }),
+        documentoOs('x1', 1, { osId: 'o9', enviado: true, arquivoId: 'a-x1' }),
+      ]);
+      await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { revisao: 2, resumoExecucao: 'Feito' }), 6, { separada: true });
+      await sync.registrarUploadAnexoOs('o1', 'r2');
+
+      const p = sync.sincronizar();
+      ok(await push(), 7, os('CONCLUIDA', { revisao: 2, numero: 123, resumoExecucao: 'Feito' }));
+      const up = await upload();
+      // só o upload vinha depois: a OS local já recebeu o estado do servidor
+      expect(await db.os.get('o1')).toMatchObject({ version: 7, numero: 123, status: 'CONCLUIDA' });
+      const arquivo = (up.request.body as FormData).get('arquivo') as File;
+      expect(arquivo.type).toBe('application/pdf');
+      expect(arquivo.name).toBe('OS-000123-R2.pdf');
+      expect(await metadadosDe(up)).toEqual({
+        anexoId: 'r2', tipo: 'DOCUMENTO', sha256: SHA, revisaoOs: 2, codigoExibido: 'OS-000123-R2', snapshot: { os: 'OS-000123' },
+      });
+      up.flush({
+        anexo: anexoServidor({ id: 'r2', tipo: 'DOCUMENTO', arquivoId: 'a-r2', legenda: null, momento: null, tiradaEm: null,
+          revisaoOs: 2, codigoExibido: 'OS-000123-R2' }),
+        versaoOs: 8,
+      }, { status: 201, statusText: 'Created' });
+      await pullVazio();
+      await p;
+
+      const anexos = new Map((await lerAnexos()).map((a) => [a.id, a]));
+      expect(anexos.get('r1')).toMatchObject({ enviado: true, arquivoId: 'a-r1', bytes: null });
+      expect(anexos.get('r2')).toMatchObject({ enviado: true, arquivoId: 'a-r2' });
+      expect(new Uint8Array(anexos.get('r2')!.bytes!)).toEqual(new Uint8Array(PDF_OS));
+      expect(new Uint8Array(anexos.get('r2a')!.bytes!)).toEqual(new Uint8Array(outro));
+      expect(anexos.get('x1')!.bytes).not.toBeNull();
+      expect((await db.os.get('o1'))?.version).toBe(8);
+    });
+
+    it.each([
+      [5, 5],
+      // P4b-R24: escrita alheia entre o concluir e o upload — base + 1, e a próxima recebe CONFLITO
+      [6, 5],
+    ])('rebase pela versaoOs (%i): a próxima mutação vai sobre %i', async (versaoOs, base) => {
+      await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO')));
+      await gravarAnexos(anexoLocal());
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }), 3);
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { resumoExecucao: 'Feito' }), 3, { separada: true });
+
+      const p = sync.sincronizar();
+      ok(await push(), 4, os('EM_ANDAMENTO'));
+      (await upload()).flush({ anexo: anexoServidor(), versaoOs }, { status: 201, statusText: 'Created' });
+      const pushC = await push();
+      expect(pushC.request.body.mutacoes[0]).toMatchObject({ baseVersion: base, dados: { status: 'CONCLUIDA' } });
+      expect((await db.os.get('o1'))?.version).toBe(base);
+      pushC.flush({ resultados: [{
+        mutationId: pushC.request.body.mutacoes[0].mutationId, status: 'CONFLITO', dadosServidor: os('EM_ANDAMENTO'), versionServidor: 6,
+      }] });
+      await pullVazio();
+      await p;
+      expect(await db.pendencias.toArray()).toMatchObject([{ tipo: 'CONFLITO', agregadoId: 'o1', entidade: 'os' }]);
+      expect(await lerAnexo('f1')).toMatchObject({ enviado: true });
+    });
+
+    it.each([
+      // M2P2-R3: a base conhecida é a versão local (3): o toque leva a 4; 5 = o escritório escreveu antes (CONFLITO)
+      [5, 4, 'CONFLITO'],
+      [4, 4, 'OK'],
+    ] as const)('upload primeiro da fila (base nula) com versaoOs %i: a próxima mutação vai sobre %i e recebe %s', async (versaoOs, base, resultado) => {
+      await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO')));
+      await gravarAnexos(anexoLocal());
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }), 3);
+
+      const p = sync.sincronizar();
+      const up = await upload();
+      http.expectNone('/api/sync/push');
+      up.flush({ anexo: anexoServidor(), versaoOs }, { status: 201, statusText: 'Created' });
+      const pushN = await push();
+      expect(pushN.request.body.mutacoes[0]).toMatchObject({ baseVersion: base, dados: { notas: [{ id: 'n1' }] } });
+      expect((await db.os.get('o1'))?.version).toBe(base);
+      const mutationId = pushN.request.body.mutacoes[0].mutationId;
+      pushN.flush({ resultados: [resultado === 'OK'
+        ? { mutationId, status: 'OK', version: 5, dados: os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }) }
+        : { mutationId, status: 'CONFLITO', dadosServidor: os('CONCLUIDA'), versionServidor: 5 }] });
+      await pullVazio();
+      await p;
+      expect((await db.pendencias.toArray()).map((x) => x.tipo)).toEqual(resultado === 'OK' ? [] : ['CONFLITO']);
+      expect(await lerAnexo('f1')).toMatchObject({ enviado: true, bytes: null });
+    });
+
+    it('200 (repetição idempotente) do anexo: fica enviado e a próxima mutação rebaseia na versaoOs', async () => {
+      await db.os.put(paraOsLocal('o1', 2, os('ABERTA')));
+      await gravarAnexos(anexoLocal());
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO'), 2, { separada: true });
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }), 2);
+
+      const p = sync.sincronizar();
+      ok(await push(), 3, os('EM_ANDAMENTO'));
+      // a resposta do primeiro envio se perdeu; a repetição devolve 200 com a versão atual (= base + 1)
+      (await upload()).flush({ anexo: anexoServidor(), versaoOs: 4 });
+      const push2 = await push();
+      expect(push2.request.body.mutacoes[0]).toMatchObject({ baseVersion: 4, dados: { notas: [{ id: 'n1' }] } });
+      expect(await lerAnexo('f1')).toMatchObject({ enviado: true, arquivoId: 'af1', bytes: null });
+      ok(push2, 5, os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }));
+      await pullVazio();
+      await p;
+      expect(await db.outbox.count()).toBe(0);
+      expect((await db.os.get('o1'))?.version).toBe(5);
+    });
+
+    it('400 VALIDACAO com campos: a mensagem diz quais campos, pelo nome, e os campos ficam na pendência', async () => {
+      await gravarAnexos(anexoLocal({ id: 'f1', tipo: 'ASSINATURA', bytes: PNG }));
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      const campos = { assinanteNome: 'Informe o nome de quem assina.', assinadaEm: 'Informe quando foi assinada.', novo: 'x' };
+
+      const p = sync.sincronizar();
+      (await upload()).flush({ codigo: 'VALIDACAO', detail: 'Dados inválidos.', campos }, { status: 400, statusText: 'Bad Request' });
+      await pullVazio();
+      await p;
+      const [pend] = await db.pendencias.toArray();
+      expect(pend.erro).toMatchObject({ codigo: 'VALIDACAO', campos });
+      expect(pend.erro?.mensagem).toBe(
+        'Dados do anexo inválidos: Nome de quem assina (Informe o nome de quem assina.); Data da assinatura (Informe quando '
+        + 'foi assinada.); novo (x). Descarte este envio para liberar a sincronização da OS.',
+      );
+    });
+
+    it.each([
+      [400, 'ARQUIVO_VAZIO', 'FOTO', 'vazio'],
+      [422, 'LIMITE_FOTOS', 'FOTO', '20 fotos'],
+      [422, 'LIMITE_ASSINATURAS', 'ASSINATURA', '10 assinaturas'],
+      [422, 'LIMITE_DOCUMENTOS', 'DOCUMENTO', '20 PDFs'],
+      [422, 'SHA_DIVERGENTE', 'FOTO', 'integridade'],
+      [422, 'CODIGO_EXIBIDO_INVALIDO', 'DOCUMENTO', 'Gere o PDF de novo'],
+      [415, 'TIPO_NAO_SUPORTADO', 'FOTO', 'tipo do arquivo'],
+      [415, undefined, 'ASSINATURA', 'tipo do arquivo'],
+      [400, 'CORPO_INVALIDO', 'FOTO', 'tipo'],
+      [409, 'ANEXO_DIVERGENTE', 'FOTO', 'outro conteúdo'],
+      [409, 'REVISAO_INVALIDA', 'DOCUMENTO', 'outra revisão'],
+      [409, 'STATUS_INVALIDO', 'FOTO', 'em andamento'],
+      [409, 'STATUS_INVALIDO', 'DOCUMENTO', 'concluída'],
+      [413, 'ARQUIVO_GRANDE', 'FOTO', 'Arquivo grande demais.'],
+      [413, undefined, 'DOCUMENTO', 'Arquivo grande demais.'],
+      [400, 'VALIDACAO', 'ASSINATURA', 'recusou'],
+    ] as const)('anexo recusado (%i %s, %s) vira pendência REJEITADO com mensagem e segura a OS', async (status, codigo, tipo, trecho) => {
+      await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO')));
+      const a = tipo === 'DOCUMENTO' ? documentoOs('f1', 1) : anexoLocal({ tipo });
+      await gravarAnexos(a);
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }), 3);
+
+      const p = sync.sincronizar();
+      (await upload()).flush(codigo ? { codigo, detail: 'detalhe' } : { detail: 'detalhe' }, { status, statusText: 'Erro' });
+      await pullVazio();
+      await p;
+      http.expectNone('/api/sync/push');
+
+      const pend = await db.pendencias.toArray();
+      expect(pend).toHaveLength(1);
+      expect(pend[0]).toMatchObject({
+        tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1',
+        mutacao: { op: 'UPLOAD', dados: { anexoId: 'f1' }, enviando: false },
+        erro: { codigo: codigo ?? `HTTP_${status}` },
+      });
+      expect(pend[0].erro?.mensagem).toContain(trecho);
+      expect(pend[0].erro?.mensagem).toContain('Descarte este envio');
+      expect((await fila()).map((m) => m.op)).toEqual(['UPSERT']);
+      const local = await lerAnexo('f1');
+      expect(local).toMatchObject({ enviado: false, arquivoId: null });
+      expect(local!.bytes).not.toBeNull();
+    });
+
+    it.each([
+      // sem o código do servidor: só este anexo (o OS_NAO_ENCONTRADA leva a OS inteira, no teste do M2P2-R13)
+      [404, undefined, 'ASSINATURA'],
+      // o PDF do técnico que perdeu a atribuição
+      [403, 'ACESSO_NEGADO', 'DOCUMENTO'],
+      // M6: depois de 7 dias, a foto também
+      [403, 'ACESSO_NEGADO', 'FOTO'],
+    ] as const)('%i %s (%s): "Esta OS não está mais com você." e Descartar libera o resto da OS', async (status, codigo, tipo) => {
+      await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO')));
+      await gravarAnexos(tipo === 'DOCUMENTO' ? documentoOs('f1', 1) : anexoLocal({ tipo }));
+      await gravarAnexos(anexoLocal({ id: 'f0', enviado: true, arquivoId: 'af0', bytes: null }));
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'a' }] }), 3);
+
+      const p = sync.sincronizar();
+      (await upload()).flush(codigo ? { codigo, detail: 'x' } : {}, { status, statusText: 'Erro' });
+      await pullVazio();
+      await p;
+      http.expectNone('/api/sync/push');
+      const [pend] = await db.pendencias.toArray();
+      expect(pend).toMatchObject({ tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, erro: { codigo: codigo ?? `HTTP_${status}` } });
+      expect(pend.erro?.mensagem).toBe(NAO_ESTA_COM_VOCE);
+      // nada local se perde antes da decisão
+      expect(await lerAnexo('f1')).toMatchObject({ enviado: false });
+
+      const sincronizar = vi.spyOn(sync, 'sincronizar').mockResolvedValue('concluida');
+      await TestBed.inject(PendenciasService).descartar(pend);
+      expect(sincronizar).toHaveBeenCalled();
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await lerAnexo('f1')).toBeUndefined();
+      expect(await lerAnexo('f0')).toMatchObject({ enviado: true });
+      expect((await fila()).map((m) => [m.entidade, m.op])).toEqual([['os', 'UPSERT']]);
+      expect(await db.os.get('o1')).toBeDefined();
+    });
+
+    describe('403 do PDF do técnico pelo código (M2P1-R28/R29, M2P2-R6)', () => {
+      const CONCLUIDA_PELO_ESCRITORIO = 'Esta OS foi concluída pelo escritório.';
+
+      /** A fila offline do técnico [concluir, PDF, nota]; o concluir volta OK com `servidor` e o PDF com 403 `codigo`. */
+      async function pdfRecusado(codigo: string, servidor: OsDados) {
+        await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { numero: 123 })));
+        await gravarAnexos(documentoOs('d1', 1));
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { numero: 123, resumoExecucao: 'Feito' }), 3, { separada: true });
+        await sync.registrarUploadAnexoOs('o1', 'd1');
+        await sync.registrar('os', 'o1', 'UPSERT', os('CONCLUIDA', { numero: 123, notas: [{ id: 'n1', texto: 'Depois' }] }), 3);
+
+        const p = sync.sincronizar();
+        ok(await push(), 5, servidor);
+        (await upload()).flush({ codigo, detail: 'x' }, { status: 403, statusText: 'Forbidden' });
+        await pullVazio();
+        await p;
+        http.expectNone('/api/sync/push');
+        const [pend] = await db.pendencias.toArray();
+        expect(pend).toMatchObject({ tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, erro: { codigo } });
+        // a nota segue segurada atrás da pendência, e o PDF não se perde antes da decisão
+        expect((await fila()).map((m) => [m.entidade, m.op])).toEqual([['os', 'UPSERT']]);
+        expect(await lerAnexo('d1')).toMatchObject({ enviado: false });
+        return pend;
+      }
+
+      it('OS_CONCLUIDA_POR_OUTRO: "Esta OS foi concluída pelo escritório.", e Descartar libera a nota', async () => {
+        const pend = await pdfRecusado('OS_CONCLUIDA_POR_OUTRO', os('CONCLUIDA', { numero: 123, resumoExecucao: 'Do escritório' }));
+        expect(pend.erro?.mensagem).toBe(CONCLUIDA_PELO_ESCRITORIO);
+        vi.spyOn(sync, 'sincronizar').mockResolvedValue('concluida');
+        await TestBed.inject(PendenciasService).descartar(pend);
+        expect(await db.pendencias.count()).toBe(0);
+        expect(await lerAnexo('d1')).toBeUndefined();
+        expect((await fila()).map((m) => [m.entidade, m.op])).toEqual([['os', 'UPSERT']]);
+      });
+
+      it.each([
+        ['outro técnico', 'u7'],
+        ['nenhum técnico', null],
+      ] as const)('ACESSO_NEGADO (a OS saiu do técnico: %s) continua "não está mais com você"', async (_, tecnicoId) => {
+        const pend = await pdfRecusado('ACESSO_NEGADO', os('CONCLUIDA', { numero: 123, tecnicoId }));
+        expect(pend.erro?.mensagem).toBe(NAO_ESTA_COM_VOCE);
+      });
+    });
+
+    describe('M4: o espelho da assinatura aceita só para quem a torna a aceita no servidor', () => {
+      async function assinaturaAceita(tecnicoId: string): Promise<void> {
+        await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO', { tecnicoId, assinaturaRecusada: true, motivoRecusa: 'Ausente' })));
+        await gravarAnexos(anexoLocal({
+          id: 's1', tipo: 'ASSINATURA', legenda: null, momento: null, tiradaEm: '2026-10-01T13:00:00Z', assinanteNome: 'Maria',
+          bytes: PNG, miniatura: PNG,
+        }));
+        await sync.registrarUploadAnexoOs('o1', 's1');
+        const p = sync.sincronizar();
+        (await upload()).flush({
+          anexo: anexoServidor({ id: 's1', tipo: 'ASSINATURA', arquivoId: 'as1', legenda: null, momento: null, assinanteNome: 'Maria' }),
+          versaoOs: 4,
+        }, { status: 201, statusText: 'Created' });
+        await pullVazio();
+        await p;
+      }
+
+      it('M2-R3: o técnico que perdeu a OS (o OK trouxe outro técnico): a assinatura dele entra como anexo, não como a aceita', async () => {
+        perfil = 'TECNICO';
+        await assinaturaAceita('u7');
+        expect(await db.os.get('o1')).toMatchObject({
+          version: 4, tecnicoId: 'u7', assinaturaAnexoId: null, assinanteNome: null, assinaturaRecusada: true, motivoRecusa: 'Ausente',
+          anexos: [{ id: 's1', tipo: 'ASSINATURA' }],
+        });
+      });
+
+      it('o ADMIN colhe a assinatura numa OS de outro técnico: ela é a aceita', async () => {
+        await assinaturaAceita('u7');
+        expect(await db.os.get('o1')).toMatchObject({ assinaturaAnexoId: 's1', assinanteNome: 'Maria', assinaturaRecusada: false });
+      });
+    });
+
+    describe('M2: CODIGO_PROVISORIO_DUPLICADO na criação da OS', () => {
+      const rejeitar = (req: TestRequest, codigo: string) => req.flush({
+        resultados: [{ mutationId: req.request.body.mutacoes[0].mutationId, status: 'REJEITADO', erro: { codigo, mensagem: 'x' } }],
+      });
+
+      it('gera outro OSP-, atualiza a OS local e a fila (o iniciar atrás) e reenvia na mesma sincronização, sem pendência', async () => {
+        await db.os.put(paraOsLocal('o1', null, os('ABERTA')));
+        await sync.registrar('os', 'o1', 'UPSERT', os('ABERTA'), null);
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO'), null, { separada: true });
+
+        const p = sync.sincronizar();
+        const push1 = await push();
+        const m1 = push1.request.body.mutacoes[0];
+        rejeitar(push1, 'CODIGO_PROVISORIO_DUPLICADO');
+        const push2 = await push();
+        const m2 = push2.request.body.mutacoes[0];
+        const novo = m2.dados.codigoProvisorio as string;
+        expect(m2.mutationId).not.toBe(m1.mutationId);
+        expect(m2.dados.status).toBe('ABERTA');
+        expect(codigoProvisorioOsValido(novo)).toBe(true);
+        expect(novo).not.toBe('OSP-0Z9XY7');
+        expect((await db.os.get('o1'))?.codigoProvisorio).toBe(novo);
+        expect((await fila()).map((m) => (m.dados as OsDados).codigoProvisorio)).toEqual([novo, novo]);
+        expect(await db.pendencias.count()).toBe(0);
+        ok(push2, 0, os('ABERTA', { codigoProvisorio: novo, numero: 9 }));
+        const push3 = await push();
+        expect(push3.request.body.mutacoes[0]).toMatchObject({ baseVersion: 0, dados: { status: 'EM_ANDAMENTO', codigoProvisorio: novo } });
+        ok(push3, 1, os('EM_ANDAMENTO', { codigoProvisorio: novo, numero: 9 }));
+        await pullVazio();
+        await p;
+        expect(await db.os.get('o1')).toMatchObject({ codigoProvisorio: novo, numero: 9, version: 1 });
+      });
+
+      it('repetido para no teto de trocas (o guarda) e vira pendência', async () => {
+        await db.os.put(paraOsLocal('o1', null, os('ABERTA')));
+        await sync.registrar('os', 'o1', 'UPSERT', os('ABERTA'), null);
+        const p = sync.sincronizar();
+        for (let i = 0; i < 4; i++) rejeitar(await push(), 'CODIGO_PROVISORIO_DUPLICADO');
+        await pullVazio();
+        await p;
+        http.expectNone('/api/sync/push');
+        expect(await db.pendencias.toArray()).toMatchObject([{ tipo: 'REJEITADO', entidade: 'os', erro: { codigo: 'CODIGO_PROVISORIO_DUPLICADO' } }]);
+      });
+    });
+
+    describe('M2P2-R13: o que o pull pulou com a OS protegida é relido quando ela fica livre', () => {
+      const URL_AGREGADO = '/api/sync/agregado/os/o1';
+      const marcas = async () => (await db.lerMeta<string[]>('relerAoDesproteger')) ?? [];
+      const recusa = { mutationId: 'up1', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', tipo: 'REJEITADO' as const, criadaEm: '',
+        erro: { codigo: 'LIMITE_FOTOS', mensagem: 'x' },
+        mutacao: { mutationId: 'up1', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', op: 'UPLOAD' as const, baseVersion: null,
+          dados: { anexoId: 'f1' }, separada: true, criadaEm: '' } };
+
+      /** A OS o1 (v3) presa por uma pendência; o pull traz a mudança dela (v5), que é pulada e marcada. */
+      async function pulada(): Promise<void> {
+        await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO')));
+        await db.pendencias.put(recusa);
+        const p = sync.sincronizar();
+        (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+          cursor: 5, temMais: false, usuarios: [],
+          mudancas: [{ entidade: 'os', id: 'o1', version: 5, deleted: false, dados: os('EM_ANDAMENTO', { revisao: 2, urgente: true }) }],
+        });
+        await p;
+        // protegida: nem aplica nem relê
+        http.expectNone(URL_AGREGADO);
+        expect((await db.os.get('o1'))?.version).toBe(3);
+        expect(await marcas()).toEqual(['os:o1']);
+        await db.pendencias.clear();
+      }
+
+      it('livre na sincronização seguinte: lê o agregado e grava o do servidor', async () => {
+        await pulada();
+        const p = sync.sincronizar();
+        await pullVazio(5);
+        (await vi.waitFor(() => http.expectOne(URL_AGREGADO)))
+          .flush({ entidade: 'os', id: 'o1', version: 6, deleted: false, dados: os('EM_ANDAMENTO', { revisao: 2, urgente: true }) });
+        await p;
+        expect(await db.os.get('o1')).toMatchObject({ version: 6, revisao: 2, urgente: true });
+        expect(await marcas()).toEqual([]);
+      });
+
+      it('404 ou excluída: apaga a OS e os anexos dela (o tombstone que o cursor pulou)', async () => {
+        await pulada();
+        await gravarAnexos([anexoLocal({ id: 'f0', enviado: true, arquivoId: 'af0', bytes: null }), documentoOs('d1', 1, { enviado: true, arquivoId: 'ad1' })]);
+        const p = sync.sincronizar();
+        await pullVazio(5);
+        (await vi.waitFor(() => http.expectOne(URL_AGREGADO))).flush({ codigo: 'NAO_ENCONTRADO' }, { status: 404, statusText: 'Not Found' });
+        await p;
+        expect(await db.os.get('o1')).toBeUndefined();
+        expect(await db.anexosOs.count()).toBe(0);
+        expect(await db.anexosOsBytes.count()).toBe(0);
+        expect(await marcas()).toEqual([]);
+      });
+
+      it('o pull que traz a OS livre tira a marca (sem releitura); a versão local mais nova não é sobrescrita', async () => {
+        await pulada();
+        const p = sync.sincronizar();
+        (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+          cursor: 7, temMais: false, usuarios: [],
+          mudancas: [{ entidade: 'os', id: 'o1', version: 7, deleted: false, dados: os('EM_ANDAMENTO', { revisao: 2 }) }],
+        });
+        await p;
+        http.expectNone(URL_AGREGADO);
+        expect((await db.os.get('o1'))?.version).toBe(7);
+        expect(await marcas()).toEqual([]);
+
+        // a releitura atrasada (v6) não desfaz o que o pull já trouxe (v7)
+        await db.gravarMeta('relerAoDesproteger', ['os:o1']);
+        const r = sync.relerDesprotegidos();
+        (await vi.waitFor(() => http.expectOne(URL_AGREGADO))).flush({ entidade: 'os', id: 'o1', version: 6, deleted: false, dados: os('ABERTA') });
+        await r;
+        expect(await db.os.get('o1')).toMatchObject({ version: 7, status: 'EM_ANDAMENTO' });
+        expect(await marcas()).toEqual([]);
+      });
+
+      it('o que entra na fila durante a leitura protege a OS: a releitura não a sobrescreve, e a marca fica', async () => {
+        await pulada();
+        const r = sync.relerDesprotegidos();
+        const leitura = await vi.waitFor(() => http.expectOne(URL_AGREGADO));
+        // a nota escrita enquanto o GET estava no ar: a mutação e a OS local dela não podem ser desfeitas pela releitura
+        await sync.registrar('os', 'o1', 'UPSERT', os('EM_ANDAMENTO', { notas: [{ id: 'n1', texto: 'Cheguei' }] }), 3);
+        await db.os.update('o1', { notas: [{ id: 'n1', texto: 'Cheguei', autorId: null, criadaEm: null }] });
+        leitura.flush({ entidade: 'os', id: 'o1', version: 6, deleted: false, dados: os('EM_ANDAMENTO', { revisao: 2, urgente: true }) });
+        await r;
+        expect(await db.os.get('o1')).toMatchObject({ version: 3, urgente: false, notas: [{ id: 'n1', texto: 'Cheguei' }] });
+        expect((await fila()).map((m) => [m.entidade, m.baseVersion])).toEqual([['os', 3]]);
+        expect(await marcas()).toEqual(['os:o1']);
+      });
+
+      it('sem internet, ou com erro de rede na leitura, a marca fica para a próxima', async () => {
+        await pulada();
+        online.set(false);
+        await sync.relerDesprotegidos();
+        http.expectNone(URL_AGREGADO);
+        online.set(true);
+        const r = sync.relerDesprotegidos();
+        (await vi.waitFor(() => http.expectOne(URL_AGREGADO))).error(new ProgressEvent('error'), { status: 0 });
+        await r;
+        expect(await marcas()).toEqual(['os:o1']);
+        expect((await db.os.get('o1'))?.version).toBe(3);
+      });
+    });
+
+    it('5xx no upload do anexo: continua na fila, sem pendência; queda de rede também', async () => {
+      await gravarAnexos(anexoLocal());
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+
+      const p = sync.sincronizar();
+      (await upload()).flush({}, { status: 503, statusText: 'Indisponível' });
+      await pullVazio();
+      await p;
+      expect((await fila())[0]).toMatchObject({ op: 'UPLOAD', enviando: false });
+      expect(await db.pendencias.count()).toBe(0);
+
+      const p2 = sync.sincronizar();
+      (await upload()).error(new ProgressEvent('error'), { status: 0 });
+      await p2;
+      expect(await fila()).toHaveLength(1);
+      expect(await db.pendencias.count()).toBe(0);
+      expect(await lerAnexo('f1')).toMatchObject({ enviado: false });
+    });
+
+    it('anexo cujos bytes não estão mais no aparelho vira pendência sem chamar o servidor', async () => {
+      await gravarAnexos(anexoLocal({ bytes: null }));
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+
+      const p = sync.sincronizar();
+      await pullVazio();
+      await p;
+      http.expectNone(URL_OS);
+      expect(await db.outbox.count()).toBe(0);
+      expect((await db.pendencias.toArray())[0]).toMatchObject({
+        tipo: 'REJEITADO', entidade: TIPO_UPLOAD_ANEXO_OS, erro: { codigo: 'ANEXO_AUSENTE' },
+      });
+    });
+
+    it('tombstone da OS apaga os anexos enviados dela; os não enviados ficam protegidos pelo upload na fila', async () => {
+      await db.os.bulkPut([
+        paraOsLocal('o1', 3, os('EM_ANDAMENTO')), paraOsLocal('o2', 3, os('EM_ANDAMENTO')), paraOsLocal('o3', 3, os('EM_ANDAMENTO')),
+      ]);
+      await gravarAnexos([
+        anexoLocal({ id: 'f1', enviado: true, arquivoId: 'a1', bytes: null }),
+        documentoOs('d1', 1, { enviado: true, arquivoId: 'ad1' }),
+        anexoLocal({ id: 'f2', osId: 'o2', enviado: true, arquivoId: 'a2', bytes: null }),
+        anexoLocal({ id: 'f3', osId: 'o3' }),
+      ]);
+      await sync.registrarUploadAnexoOs('o3', 'f3');
+
+      const p = sync.sincronizar();
+      (await vi.waitFor(() => http.expectOne('/api/os/o3/anexos'))).flush({}, { status: 503, statusText: 'x' });
+      (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({
+        cursor: 9, temMais: false, usuarios: [],
+        mudancas: [
+          { entidade: 'os', id: 'o1', version: 4, deleted: true, dados: null },
+          { entidade: 'os', id: 'o3', version: 4, deleted: true, dados: null },
+        ],
+      });
+      await p;
+
+      expect(await db.os.get('o1')).toBeUndefined();
+      expect(await db.os.get('o3')).toBeDefined();
+      expect((await lerAnexos()).map((a) => a.id).sort()).toEqual(['f2', 'f3']);
+      // M2P2-R16: os bytes do PDF enviado (a revisão atual os guarda) saem junto; os do não enviado ficam
+      expect((await db.anexosOsBytes.toCollection().primaryKeys()).sort()).toEqual(['f3']);
+      expect((await fila()).map((m) => [m.agregadoId, m.op])).toEqual([['o3', 'UPLOAD']]);
+    });
+
+    it('o técnico não perde os uploads de anexo: a purga do perfil TECNICO só leva os documentos de proposta', async () => {
+      perfil = 'TECNICO';
+      await db.gravarMeta('cursor', 50);
+      await db.gravarMeta('cursorDono', 'u1:TECNICO');
+      await db.documentos.put({
+        id: 'd1', propostaId: 'p1', revisao: 1, codigoExibido: 'PROV-0Z9XY7', sha256: SHA, geradoEm: '', geradoPor: 'u1',
+        bytes: null, enviado: true, arquivoId: 'a1',
+      });
+      await gravarAnexos([
+        anexoLocal(), anexoLocal({ id: 'f0', enviado: true, arquivoId: 'af0', bytes: null }), anexoLocal({ id: 'g1', osId: 'o2' }),
+      ]);
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      // a recusa de um anexo de outra OS também fica (só a decisão do usuário a tira)
+      const recusado = { mutationId: 'up-o2', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o2', op: 'UPLOAD' as const,
+        baseVersion: null, dados: { anexoId: 'g1' }, separada: true, criadaEm: '' };
+      await db.pendencias.put({ mutationId: 'up-o2', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o2', tipo: 'REJEITADO',
+        mutacao: recusado, erro: { codigo: 'LIMITE_FOTOS', mensagem: 'x' }, criadaEm: '' });
+
+      const p = sync.sincronizar();
+      (await upload()).flush({ anexo: anexoServidor(), versaoOs: 4 }, { status: 201, statusText: 'Created' });
+      await pullVazio(50);
+      await p;
+
+      expect(await db.documentos.count()).toBe(0);
+      expect(await lerAnexo('f1')).toMatchObject({ enviado: true, arquivoId: 'af1' });
+      expect(await lerAnexo('f0')).toBeDefined();
+      expect(await lerAnexo('g1')).toMatchObject({ enviado: false });
+      expect(await db.outbox.count()).toBe(0);
+      expect((await db.pendencias.toArray()).map((x) => x.mutationId)).toEqual(['up-o2']);
+    });
+
+    it('troca de perfil (deixou de ser técnico): limpa as OS e os anexos enviados; os não enviados esperam o upload', async () => {
+      await db.gravarMeta('cursor', 50);
+      await db.gravarMeta('cursorDono', 'u1:TECNICO');
+      await db.os.put(paraOsLocal('o1', 3, os('EM_ANDAMENTO')));
+      await gravarAnexos([
+        anexoLocal({ id: 'f0', enviado: true, arquivoId: 'af0', bytes: null }), anexoLocal({ id: 'f1' }),
+      ]);
+      const pendente = { mutationId: 'mm', entidade: TIPO_UPLOAD_ANEXO_OS, agregadoId: 'o1', op: 'UPLOAD' as const,
+        baseVersion: null, dados: { anexoId: 'f1' }, criadaEm: '' };
+      await db.outbox.add(pendente);
+      // a fila fica retida (pendência no agregado) para não ir ao servidor neste teste
+      await db.pendencias.put({ mutationId: 'p0', entidade: 'os', agregadoId: 'o1', tipo: 'REJEITADO', mutacao: { ...pendente, mutationId: 'p0' }, criadaEm: '' });
+      perfil = 'COMERCIAL';
+
+      const promessa = sync.sincronizar();
+      const pull = await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull' && r.params.get('cursor') === '0'));
+      expect(await db.os.count()).toBe(0);
+      expect((await lerAnexos()).map((a) => a.id)).toEqual(['f1']);
+      expect(await db.outbox.count()).toBe(1);
+      pull.flush({ cursor: 8, temMais: false, mudancas: [], usuarios: [] });
+      await promessa;
     });
   });
 });

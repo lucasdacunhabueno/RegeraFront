@@ -2,6 +2,9 @@ import { Component, computed, effect, inject, input, signal } from '@angular/cor
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { AuthService } from '../../core/auth/auth-service';
+import { osPorProposta, SeloOsProposta, selosOsDaProposta } from '../os/formatos-os';
+import type { OsLocal } from '../os/os-models';
+import { OsRepo } from '../os/os-repo';
 import { Selo, selosDaProposta } from '../propostas/formatos-proposta';
 import { hojeReativo } from '../propostas/hoje-reativo';
 import { PropostaCard } from '../propostas/proposta-card';
@@ -12,6 +15,8 @@ interface Linha {
   proposta: PropostaLocal;
   responsavelNome: string | null;
   selos: Selo[];
+  /** M2-P3: os selos das OS da proposta (como no kanban). */
+  selosOs: SeloOsProposta[];
 }
 
 /**
@@ -31,16 +36,20 @@ interface Linha {
              class="inline-flex min-h-12 items-center rounded-lg bg-blue-600 px-4 text-sm font-semibold text-white">Nova proposta</a>
         }
       </div>
-      @if (propostas() === undefined) {
-        <p class="text-sm text-slate-500">Carregando…</p>
-      } @else if (linhas().length === 0) {
-        <p class="text-sm text-slate-500">Nenhuma proposta para este cliente.</p>
-      } @else {
+      <!-- N4: a região de status fica sempre na tela (o leitor de tela só anuncia a região que já existia) -->
+      <div role="status" class="text-sm text-slate-500">
+        @if (propostas() === undefined) {
+          <p>Carregando…</p>
+        } @else if (linhas().length === 0) {
+          <p>Nenhuma proposta para este cliente.</p>
+        }
+      </div>
+      @if (linhas().length > 0) {
         <ul class="space-y-3">
           @for (l of linhas(); track l.proposta.id) {
             <li class="rounded-xl border border-slate-200">
               <app-proposta-card [proposta]="l.proposta" [clienteNome]="clienteNome()" [responsavelNome]="l.responsavelNome"
-                                 [mostrarValores]="podeCriar()" [selos]="l.selos" />
+                                 [mostrarValores]="podeCriar()" [selos]="l.selos" [selosOs]="l.selosOs" />
             </li>
           }
         </ul>
@@ -54,6 +63,7 @@ export class PropostasDoCliente {
   readonly clienteNome = input('');
 
   private readonly repo = inject(PropostasRepo);
+  private readonly osRepo = inject(OsRepo);
   private readonly perfil = inject(AuthService).usuario;
   protected readonly podeCriar = computed(() => {
     const p = this.perfil()?.perfil;
@@ -61,6 +71,8 @@ export class PropostasDoCliente {
   });
 
   protected readonly propostas = signal<PropostaLocal[] | undefined>(undefined);
+  /** M2-P3: as OS do cliente que o perfil vê (`observarDoCliente`), para os selos da OS nos cards. */
+  private readonly oss = signal<OsLocal[]>([]);
   private readonly usuarios = toSignal(this.repo.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
@@ -70,18 +82,25 @@ export class PropostasDoCliente {
   protected readonly linhas = computed<Linha[]>(() => {
     const nomes = new Map(this.usuarios().map((u) => [u.id, u.nome]));
     const { naOutbox, comPendencia } = this.estado();
+    const oss = osPorProposta(this.oss());
     return (this.propostas() ?? []).map((p) => ({
       proposta: p,
       responsavelNome: nomes.get(p.responsavelId) ?? null,
       selos: selosDaProposta(p, { pendente: comPendencia.has(p.id), naoSincronizada: naOutbox.has(p.id), hoje: this.hoje() }),
+      selosOs: selosOsDaProposta(p.status, oss.get(p.id) ?? []),
     }));
   });
 
   constructor() {
     effect((aoLimpar) => {
+      const clienteId = this.clienteId();
       this.propostas.set(undefined);
-      const assinatura = this.repo.observarDoCliente(this.clienteId()).subscribe((l) => this.propostas.set(l));
-      aoLimpar(() => assinatura.unsubscribe());
+      this.oss.set([]);
+      const assinaturas = [
+        this.repo.observarDoCliente(clienteId).subscribe((l) => this.propostas.set(l)),
+        this.osRepo.observarDoCliente(clienteId).subscribe((l) => this.oss.set(l)),
+      ];
+      aoLimpar(() => assinaturas.forEach((a) => a.unsubscribe()));
     });
   }
 }

@@ -10,6 +10,10 @@ import { SyncService } from '../../core/sync/sync-service';
   template: `
     <h1 class="mb-4 text-xl font-semibold">Mais</h1>
     <ul class="divide-y divide-slate-200 overflow-hidden rounded-xl bg-white">
+      <!-- M2-P3: no celular o Catálogo sai da barra inferior e fica aqui; no desktop ele está no menu lateral -->
+      @if (escritorio()) {
+        <li class="lg:hidden"><a routerLink="/catalogo" class="block px-4 py-4">Catálogo</a></li>
+      }
       @if (admin()) {
         <li><a routerLink="/usuarios" class="block px-4 py-4">Usuários</a></li>
         <li><a routerLink="/templates" class="block px-4 py-4">Templates de proposta</a></li>
@@ -40,6 +44,10 @@ export class MaisPage {
   private readonly sync = inject(SyncService);
   private readonly online = inject(ConectividadeService).online;
   protected readonly admin = computed(() => this.auth.usuario()?.perfil === 'ADMIN');
+  protected readonly escritorio = computed(() => {
+    const perfil = this.auth.usuario()?.perfil;
+    return perfil === 'ADMIN' || perfil === 'COMERCIAL';
+  });
   protected readonly pendentes = computed(() => this.sync.naoSincronizados() + this.sync.problemas());
 
   private readonly saindo = signal(false);

@@ -1,5 +1,8 @@
 export const ID_EMPRESA = '00000000-0000-0000-0000-000000000001';
 
+/** A validade da proposta quando a empresa não tem a dela no aparelho (sem empresa, ou a do TECNICO). */
+export const VALIDADE_PADRAO_DIAS = 15;
+
 export interface EmpresaDados {
   razaoSocial: string;
   nomeFantasia: string | null;
@@ -10,7 +13,11 @@ export interface EmpresaDados {
   site: string | null;
   logoArquivoId: string | null;
   corPrimaria: string;
-  validadePadraoDias: number;
+  /**
+   * Padrões comerciais da proposta. O TECNICO recebe a empresa sem eles (M2P1-R25: ela vai no PDF da OS, os padrões
+   * não são dele): null. O PUT do ADMIN sempre manda a validade; quem cria proposta usa 15 dias quando falta.
+   */
+  validadePadraoDias: number | null;
   condicoesPagamentoPadrao: string | null;
 }
 
@@ -19,7 +26,10 @@ export interface EmpresaLocal extends EmpresaDados {
   version: number | null;
 }
 
-/** O servidor omite campos nulos; aqui eles voltam a ser null explícito. */
+/**
+ * O servidor omite campos nulos; aqui eles voltam a ser null explícito. Os padrões comerciais ausentes (a empresa do
+ * TECNICO) ficam null, sem valor inventado.
+ */
 export function paraEmpresaLocal(id: string, version: number | null, d: Partial<EmpresaDados>): EmpresaLocal {
   return {
     id,
@@ -33,7 +43,7 @@ export function paraEmpresaLocal(id: string, version: number | null, d: Partial<
     site: d.site ?? null,
     logoArquivoId: d.logoArquivoId ?? null,
     corPrimaria: d.corPrimaria ?? '#1d4ed8',
-    validadePadraoDias: d.validadePadraoDias ?? 15,
+    validadePadraoDias: d.validadePadraoDias ?? null,
     condicoesPagamentoPadrao: d.condicoesPagamentoPadrao ?? null,
   };
 }

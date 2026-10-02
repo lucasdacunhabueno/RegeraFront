@@ -11,7 +11,7 @@ describe('RegeraDb v4', () => {
     await Dexie.delete('regera');
   });
 
-  it('upgrade de v3 para v4 apaga o cursor para forçar pull completo e mantém o resto', async () => {
+  it('upgrade de v3 para v4 apaga o cursor para forçar pull completo e mantém o que a fila protege', async () => {
     const v3 = new Dexie('regera');
     v3.version(3).stores({
       meta: 'chave', clientes: 'id, documento, nomeBusca', outbox: '++seq, agregadoId',
@@ -22,6 +22,8 @@ describe('RegeraDb v4', () => {
     ]);
     await v3.table('clientes').put({ id: 'c1', documento: '1', nomeBusca: 'x' });
     await v3.table('itens').put({ id: 'i1', codigo: 'A', nomeBusca: 'a' });
+    // com mutações na fila: o v6 (N2) apaga as tabelas sincronizadas, menos o que a fila protege
+    await v3.table('outbox').bulkAdd([{ mutationId: 'm1', agregadoId: 'c1' }, { mutationId: 'm2', agregadoId: 'i1' }]);
     v3.close();
 
     const db = new RegeraDb();

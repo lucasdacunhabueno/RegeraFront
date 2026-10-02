@@ -3,17 +3,26 @@ export const ALFABETO_PROVISORIO = '0123456789ABCDEFGHJKMNPQRSTVWXYZ';
 
 const PADRAO = /^PROV-[0-9A-HJKMNP-TV-Z]{6}$/;
 
+type Aleatorio = (a: Uint8Array<ArrayBuffer>) => Uint8Array;
+
+const CRYPTO: Aleatorio = (a) => crypto.getRandomValues(a);
+
 /**
- * `PROV-` + 6 símbolos, gerado no aparelho enquanto a proposta não tem número. Um byte aleatório por símbolo, módulo
- * 32 (256 é múltiplo de 32, então não há viés). Colisão no servidor volta como `CODIGO_PROVISORIO_DUPLICADO` e o
- * front gera outro.
+ * `<prefixo>-` + 6 símbolos do alfabeto: o gerador do `PROV-` da proposta e do `OSP-` da OS. Um byte aleatório por
+ * símbolo, módulo 32 (256 é múltiplo de 32, então não há viés).
  */
-export function gerarCodigoProvisorio(
-  rand: (a: Uint8Array<ArrayBuffer>) => Uint8Array = (a) => crypto.getRandomValues(a),
-): string {
+export function gerarCodigoComPrefixo(prefixo: string, rand: Aleatorio = CRYPTO): string {
   const bytes = new Uint8Array(6);
   rand(bytes);
-  return `PROV-${Array.from(bytes, (b) => ALFABETO_PROVISORIO[b % 32]).join('')}`;
+  return `${prefixo}-${Array.from(bytes, (b) => ALFABETO_PROVISORIO[b % 32]).join('')}`;
+}
+
+/**
+ * `PROV-` + 6 símbolos, gerado no aparelho enquanto a proposta não tem número. Colisão no servidor volta como
+ * `CODIGO_PROVISORIO_DUPLICADO` e o front gera outro.
+ */
+export function gerarCodigoProvisorio(rand: Aleatorio = CRYPTO): string {
+  return gerarCodigoComPrefixo('PROV', rand);
 }
 
 export function codigoProvisorioValido(codigo: string): boolean {

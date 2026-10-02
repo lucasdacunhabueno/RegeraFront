@@ -1,7 +1,8 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
+import type { SeloOsProposta } from '../os/formatos-os';
 import type { Selo } from './formatos-proposta';
-import { PropostaCard } from './proposta-card';
+import { ESTILO_SELO_OS_PROPOSTA, PropostaCard } from './proposta-card';
 import { PropostaLocal, STATUS_PROPOSTA } from './proposta-models';
 
 function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
@@ -20,6 +21,7 @@ function montar(entradas: {
   responsavelNome?: string | null;
   mostrarValores?: boolean;
   selos?: Selo[];
+  selosOs?: SeloOsProposta[];
   mostrarStatus?: boolean;
 } = {}) {
   TestBed.configureTestingModule({ providers: [provideRouter([])] });
@@ -29,6 +31,7 @@ function montar(entradas: {
   fixture.componentRef.setInput('responsavelNome', entradas.responsavelNome === undefined ? 'Carla Comercial' : entradas.responsavelNome);
   fixture.componentRef.setInput('mostrarValores', entradas.mostrarValores ?? true);
   fixture.componentRef.setInput('selos', entradas.selos ?? []);
+  if (entradas.selosOs !== undefined) fixture.componentRef.setInput('selosOs', entradas.selosOs);
   if (entradas.mostrarStatus !== undefined) fixture.componentRef.setInput('mostrarStatus', entradas.mostrarStatus);
   fixture.detectChanges();
   return fixture.nativeElement as HTMLElement;
@@ -100,5 +103,36 @@ describe('PropostaCard', () => {
       ['nao-sincronizada', 'Não sincronizada'],
       ['pendencia', 'Pendência'],
     ]);
+  });
+
+  it('M2-P3: os selos da OS (selosOs) depois dos da proposta, cada um com a cor e o ícone dele', () => {
+    const selosOs: SeloOsProposta[] = [
+      { tipo: 'trabalho-proposta-cancelada', rotulo: 'Trabalho em proposta cancelada' },
+      { tipo: 'os-em-andamento', rotulo: 'OS em andamento' },
+      { tipo: 'os-concluida', rotulo: 'OS concluída' },
+      { tipo: 'retorno-pendente', rotulo: 'Retorno pendente' },
+      { tipo: 'os-cancelada', rotulo: 'OS cancelada' },
+    ];
+    const el = montar({ selos: [{ tipo: 'pendencia', rotulo: 'Pendência' }], selosOs });
+    const selos = [...el.querySelectorAll('[data-selo]')];
+    expect(selos.map((s) => [s.getAttribute('data-selo'), s.textContent?.trim()])).toEqual([
+      ['pendencia', 'Pendência'],
+      ...selosOs.map((s) => [s.tipo, s.rotulo]),
+    ]);
+    for (const s of selosOs) {
+      const li = el.querySelector(`[data-selo="${s.tipo}"]`)!;
+      for (const c of ESTILO_SELO_OS_PROPOSTA[s.tipo].cor.split(' ')) expect(li.classList).toContain(c);
+      expect(li.querySelector('svg')?.getAttribute('aria-hidden')).toBe('true');
+    }
+  });
+
+  it('M2-P3: sem selosOs (o padrão, como na lista de propostas antes da T5), só os da proposta', () => {
+    const el = montar({ selos: [{ tipo: 'expirada', rotulo: 'Expirada' }] });
+    expect([...el.querySelectorAll('[data-selo]')].map((s) => s.getAttribute('data-selo'))).toEqual(['expirada']);
+  });
+
+  it('M2-P3: só os selos da OS também abrem a lista de avisos', () => {
+    const el = montar({ selosOs: [{ tipo: 'os-concluida', rotulo: 'OS concluída' }] });
+    expect(el.querySelector('ul[aria-label=Avisos]')!.textContent).toContain('OS concluída');
   });
 });

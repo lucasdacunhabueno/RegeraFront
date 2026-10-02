@@ -124,6 +124,13 @@ describe('formatos-proposta', () => {
     it('sem cliente, só o código conta', () => {
       expect(correspondeABusca(proposta({ clienteId: null }), undefined, 'padaria')).toBe(false);
     });
+
+    it('cliente do TECNICO (sem documento, Q14): a busca por dígitos não quebra e o nome continua achando', () => {
+      const semDocumento = paraClienteLocal('c1', 1, { ...cliente, documento: undefined });
+      expect(semDocumento.documento).toBeNull();
+      expect(correspondeABusca(proposta(), semDocumento, '11.444.777')).toBe(false);
+      expect(correspondeABusca(proposta(), semDocumento, 'sao joao')).toBe(true);
+    });
   });
 
   describe('mensagemErroProposta', () => {

@@ -12,10 +12,11 @@ import { DadosUpload, ErroMutacao, Pendencia, TIPO_UPLOAD_DOCUMENTO, UsuarioResu
 import { SyncService } from '../../core/sync/sync-service';
 import { ErroCampo } from '../../core/util/erro-campo';
 import { formatarCep } from '../../core/util/formatos';
+import { sha256Hex } from '../../core/util/sha256';
 import { uuidv7 } from '../../core/util/uuid';
 import type { ItemLocal } from '../catalogo/item-models';
 import type { ClienteLocal } from '../clientes/cliente-models';
-import { EmpresaLocal, ID_EMPRESA } from '../empresa/empresa-models';
+import { EmpresaLocal, ID_EMPRESA, VALIDADE_PADRAO_DIAS } from '../empresa/empresa-models';
 import type { TemplateLocal, TipoProposta } from '../templates/template-models';
 import { TemplatesRepo } from '../templates/templates-repo';
 import { calcular, deCentesimos, deMilesimos, paraCentavos } from './calculo';
@@ -432,11 +433,6 @@ function documentoDoUpload(m: { entidade: string; dados: unknown }): string | nu
   return m.entidade === TIPO_UPLOAD_DOCUMENTO ? ((m.dados as DadosUpload | null)?.documentoId ?? null) : null;
 }
 
-async function sha256Hex(bytes: ArrayBuffer): Promise<string> {
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 /**
  * Propostas no aparelho (offline-first): cada escrita grava o local e enfileira a mutação `proposta` na outbox, na
  * mesma transação. As regras de perfil e de ciclo de vida (§8, §10) são conferidas aqui com as mesmas funções que
@@ -461,11 +457,6 @@ export class PropostasRepo {
 
   observarDoCliente(clienteId: string): Observable<PropostaLocal[]> {
     return observar(async () => ordenarPorAtualizacao(await this.db.propostas.where('clienteId').equals(clienteId).toArray()));
-  }
-
-  /** As atribuídas ao técnico (a lista dele no P4c). */
-  observarDoTecnico(usuarioId: string): Observable<PropostaLocal[]> {
-    return observar(async () => ordenarPorAtualizacao(await this.db.propostas.where('tecnicoId').equals(usuarioId).toArray()));
   }
 
   observarNaoSincronizados(): Observable<Set<string>> {
@@ -520,8 +511,8 @@ export class PropostasRepo {
 
   /**
    * Novo RASCUNHO com os padrões (§13): o usuário atual é o responsável (obrigatório para o COMERCIAL); emissão hoje
-   * em São Paulo; validade = hoje + `validadePadraoDias` da empresa (15 sem empresa); condições de pagamento da
-   * empresa; template padrão do tipo.
+   * em São Paulo; validade = hoje + `validadePadraoDias` da empresa (15 sem ela, ou sem a validade, como a do TECNICO);
+   * condições de pagamento da empresa; template padrão do tipo.
    */
   async criar(tipo: TipoProposta, clienteId?: string | null): Promise<string> {
     const u = this.usuario();
@@ -542,7 +533,7 @@ export class PropostasRepo {
       responsavelId: u.id,
       tecnicoId: null,
       dataEmissao: hoje,
-      validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? 15),
+      validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? VALIDADE_PADRAO_DIAS),
       condicoesPagamento: texto(empresa?.condicoesPagamentoPadrao),
       prazoExecucao: null,
       observacoes: null,
@@ -684,7 +675,7 @@ export class PropostasRepo {
       revisao: 1,
       status: 'RASCUNHO',
       dataEmissao: hoje,
-      validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? 15),
+      validadeAte: somarDias(hoje, empresa?.validadePadraoDias ?? VALIDADE_PADRAO_DIAS),
       motivoEncerramento: null,
       itens,
       historico: [],

@@ -2,6 +2,7 @@ import type { Table } from 'dexie';
 import { ClienteDados, ClienteLocal, dadosDoCliente, paraClienteLocal } from '../../features/clientes/cliente-models';
 import { dadosDoItem, ItemCatalogoDados, ItemLocal, paraItemLocal } from '../../features/catalogo/item-models';
 import { dadosDaEmpresa, EmpresaDados, EmpresaLocal, paraEmpresaLocal } from '../../features/empresa/empresa-models';
+import { dadosDaOs, OsDados, OsLocal, paraOsLocal } from '../../features/os/os-models';
 import { dadosDaProposta, paraPropostaLocal, PropostaDados, PropostaLocal } from '../../features/propostas/proposta-models';
 import { dadosDoTemplate, paraTemplateLocal, TemplateDados, TemplateLocal } from '../../features/templates/template-models';
 import type { RegeraDb } from '../db/regera-db';
@@ -43,6 +44,12 @@ export const ADAPTADORES: Record<Entidade, Adaptador> = {
     tabela: (db) => db.propostas as unknown as Table<RegistroLocal, string>,
     paraLocal: (id, version, dados) => paraPropostaLocal(id, version, dados as PropostaDados),
     dadosDe: (local) => dadosDaProposta(local as PropostaLocal),
+  },
+  // lido campo a campo: o que um servidor mais novo mandar a mais não entra no registro
+  os: {
+    tabela: (db) => db.os as unknown as Table<RegistroLocal, string>,
+    paraLocal: (id, version, dados) => paraOsLocal(id, version, dados as OsDados),
+    dadosDe: (local) => dadosDaOs(local as OsLocal),
   },
 };
 

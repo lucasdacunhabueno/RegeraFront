@@ -17,6 +17,7 @@ import { Toasts } from '../../shared/ui/toasts';
 import { ClienteDados, EnderecoDados, ROTULO_TIPO_ENDERECO, TipoEndereco, TipoPessoa } from './cliente-models';
 import { ClientesRepo, ErroCampo } from './clientes-repo';
 import { ConsultasExternas } from './consultas-externas';
+import { OsDoCliente } from './os-do-cliente';
 import { PropostasDoCliente } from './propostas-do-cliente';
 
 function criarGrupoEndereco(fb: NonNullableFormBuilder, e?: Partial<EnderecoDados>) {
@@ -38,7 +39,7 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
 
 @Component({
   selector: 'app-cliente-form-page',
-  imports: [ReactiveFormsModule, RouterLink, PropostasDoCliente],
+  imports: [ReactiveFormsModule, RouterLink, PropostasDoCliente, OsDoCliente],
   template: `
     @if (voltarPara(); as destino) {
       <a [routerLink]="destino" class="inline-flex min-h-12 items-center text-sm text-blue-700">← Voltar à proposta</a>
@@ -225,6 +226,7 @@ const vazio = (v: string) => (v.trim() === '' ? null : v.trim());
     @if (id(); as clienteId) {
       @if (!naoEncontrado() && !falhaCarga()) {
         <app-propostas-do-cliente [clienteId]="clienteId" [clienteNome]="nomeSalvo()" />
+        <app-os-do-cliente [clienteId]="clienteId" [clienteNome]="nomeSalvo()" />
       }
     }
   `,
