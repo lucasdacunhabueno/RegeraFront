@@ -601,6 +601,26 @@ describe('PropostaDetalhePage', () => {
       await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Trocar responsável')));
     });
 
+    it('N1: o responsável atual fora da lista do aparelho vem primeiro, escolhido; salvar com ele só fecha', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, proposta: proposta({ responsavelId: 'u-sumido' }) });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(opcoes(el)).toEqual(['Responsável atual (não está neste aparelho)', 'Ana Admin', 'Caio Comercial', 'Carla Comercial']);
+      expect(el.querySelector<HTMLSelectElement>('#responsavel-proposta')!.value).toBe('u-sumido');
+      botao(el, 'Salvar responsável')!.click();
+      fixture.detectChanges();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(toast).not.toHaveBeenCalled();
+      expect(el.querySelector('#responsavel-proposta')).toBeNull();
+    });
+
+    it('com o responsável atual na lista, nenhuma opção a mais', async () => {
+      const { fixture, el } = await montar({ usuario: ADMIN });
+      botao(el, 'Trocar responsável')!.click();
+      fixture.detectChanges();
+      expect(opcoes(el)).not.toContain('Responsável atual (não está neste aparelho)');
+    });
+
     it('Cancelar fecha sem gravar e devolve o foco ao botão', async () => {
       const { fixture, el, repo } = await montar({ usuario: ADMIN });
       botao(el, 'Trocar responsável')!.click();
@@ -631,16 +651,25 @@ describe('PropostaDetalhePage', () => {
 
     it('a recusa vira toast pelo mensagemErroProposta; o editor fica aberto e o foco volta a "Salvar responsável"', async () => {
       const { fixture, el, repo, toastErro } = await montar({ usuario: ADMIN });
-      repo.atribuir.mockRejectedValueOnce(ErroProposta.de({
-        codigo: 'VALIDACAO', mensagem: 'Dados inválidos.',
-        campos: { responsavelId: 'O responsável tem de ser um administrador ou comercial ativo.' },
-      }));
+      let recusar!: (e: unknown) => void;
+      repo.atribuir.mockImplementationOnce(() => new Promise<void>((_, x) => (recusar = x)));
       botao(el, 'Trocar responsável')!.click();
       fixture.detectChanges();
       escolher(fixture, el, ADMIN.id);
       const salvar = botao(el, 'Salvar responsável')!;
       salvar.focus();
       salvar.click();
+      // o navegador tira o foco do botão desligado durante a gravação; o jsdom o mantém (e não tira o foco de um botão
+      // já desligado): sai antes do próximo desenho
+      salvar.blur();
+      expect(document.activeElement).toBe(document.body);
+      await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalled());
+      fixture.detectChanges();
+      expect(salvar.disabled).toBe(true);
+      recusar(ErroProposta.de({
+        codigo: 'VALIDACAO', mensagem: 'Dados inválidos.',
+        campos: { responsavelId: 'O responsável tem de ser um administrador ou comercial ativo.' },
+      }));
       await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('O responsável tem de ser um administrador ou comercial ativo.'));
       await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Salvar responsável')));
       expect(el.querySelector('#responsavel-proposta')).not.toBeNull();
@@ -700,6 +729,51 @@ describe('PropostaDetalhePage', () => {
         expect(toastErro).not.toHaveBeenCalled();
         expect(el.querySelector('#responsavel-proposta')).toBeNull();
         expect(botao(el, 'Trocar responsável')!.disabled).toBe(false);
+        TestBed.resetTestingModule();
+      }
+    });
+  });
+
+  describe('atribuição e troca de proposta na rota', () => {
+    it('os editores do técnico e do responsável fecham quando a rota troca de proposta', async () => {
+      for (const [abrir, editor] of [['Trocar técnico', '#tecnico-atribuir'], ['Trocar responsável', '#responsavel-proposta']]) {
+        const { fixture, el, repo } = await montar({ usuario: ADMIN });
+        botao(el, abrir)!.click();
+        fixture.detectChanges();
+        expect(el.querySelector(editor)).not.toBeNull();
+        fixture.componentRef.setInput('id', 'p2');
+        repo.proposta$.next(proposta({ id: 'p2' }));
+        await ate(fixture, () => expect(el.querySelector('[data-testid=carregando]')).toBeNull());
+        expect(botao(el, abrir)).toBeDefined();
+        expect(el.querySelector(editor)).toBeNull();
+        TestBed.resetTestingModule();
+      }
+    });
+
+    it('"Salvar técnico" que termina com outra proposta aberta não escreve nela (sucesso ou recusa)', async () => {
+      for (const falha of [false, true]) {
+        const { fixture, el, repo, toast, toastErro } = await montar({ usuario: ADMIN });
+        let liberar!: () => void;
+        let recusar!: (e: unknown) => void;
+        repo.atribuir.mockImplementationOnce(() => new Promise<void>((r, x) => ((liberar = r), (recusar = x))));
+        botao(el, 'Trocar técnico')!.click();
+        fixture.detectChanges();
+        const select = el.querySelector<HTMLSelectElement>('#tecnico-atribuir')!;
+        select.value = 'u-tec2';
+        select.dispatchEvent(new Event('change'));
+        botao(el, 'Salvar técnico')!.click();
+        await vi.waitFor(() => expect(repo.atribuir).toHaveBeenCalledWith('p1', { tecnicoId: 'u-tec2' }));
+        fixture.componentRef.setInput('id', 'p2');
+        repo.proposta$.next(proposta({ id: 'p2' }));
+        fixture.detectChanges();
+        if (falha) recusar(new ErroProposta('VALIDACAO', 'tecnicoId', 'Recusada.'));
+        else liberar();
+        await fixture.whenStable();
+        fixture.detectChanges();
+        expect(toast).not.toHaveBeenCalled();
+        expect(toastErro).not.toHaveBeenCalled();
+        expect(el.querySelector('#tecnico-atribuir')).toBeNull();
+        expect(botao(el, 'Trocar técnico')!.disabled).toBe(false);
         TestBed.resetTestingModule();
       }
     });
