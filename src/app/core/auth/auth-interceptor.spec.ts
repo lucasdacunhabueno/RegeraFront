@@ -5,7 +5,7 @@ import { firstValueFrom } from 'rxjs';
 import { vi } from 'vitest';
 import { RegeraDb } from '../db/regera-db';
 import { authInterceptor } from './auth-interceptor';
-import { AuthService } from './auth-service';
+import { AuthService, ESPERA_REPETIR_RENOVACAO } from './auth-service';
 
 const USUARIO = { id: 'u1', nome: 'Ana', email: 'ana@regera.test', perfil: 'COMERCIAL' as const, ativo: true };
 
@@ -16,7 +16,11 @@ describe('authInterceptor', () => {
 
   beforeEach(async () => {
     TestBed.configureTestingModule({
-      providers: [provideHttpClient(withInterceptors([authInterceptor])), provideHttpClientTesting()],
+      providers: [
+        provideHttpClient(withInterceptors([authInterceptor])),
+        provideHttpClientTesting(),
+        { provide: ESPERA_REPETIR_RENOVACAO, useValue: 0 },
+      ],
     });
     http = TestBed.inject(HttpClient);
     mock = TestBed.inject(HttpTestingController);
@@ -63,7 +67,9 @@ describe('authInterceptor', () => {
   it('se a renovação falha, propaga o 401', async () => {
     const p = firstValueFrom(http.get('/api/usuarios'));
     mock.expectOne('/api/usuarios').flush(null, { status: 401, statusText: 'x' });
+    // a renovação recusada é repetida uma vez (a tolerância da rotação, ESPERA_REPETIR_RENOVACAO) antes de desistir
     mock.expectOne('/api/auth/refresh').flush(null, { status: 401, statusText: 'x' });
+    (await vi.waitFor(() => mock.expectOne('/api/auth/refresh'))).flush(null, { status: 401, statusText: 'x' });
 
     await expect(p).rejects.toMatchObject({ status: 401 });
   });

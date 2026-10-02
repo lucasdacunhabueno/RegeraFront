@@ -1,15 +1,24 @@
 import { HttpClient, HttpErrorResponse } from '@angular/common/http';
-import { computed, inject, Injectable, signal } from '@angular/core';
+import { computed, inject, Injectable, InjectionToken, signal } from '@angular/core';
 import { firstValueFrom, timeout } from 'rxjs';
 import { RegeraDb } from '../db/regera-db';
 import { RespostaSessao, UsuarioSessao } from './auth-models';
 
 const CHAVE_SESSAO = 'sessao';
 
+/**
+ * Espera (ms) antes de repetir uma renovação recusada com 401. A recusa pode ser só a tolerância da rotação no servidor
+ * (dois /refresh com o mesmo cookie): a página recarregada no meio de uma renovação solta a trava (`navigator.locks`),
+ * a renovação antiga termina pelo service worker e grava o cookie novo, e a da página nova, que saiu com o cookie
+ * velho, volta 401. Nos testes, 0.
+ */
+export const ESPERA_REPETIR_RENOVACAO = new InjectionToken<number>('ESPERA_REPETIR_RENOVACAO', { factory: () => 1000 });
+
 @Injectable({ providedIn: 'root' })
 export class AuthService {
   private readonly http = inject(HttpClient);
   private readonly db = inject(RegeraDb);
+  private readonly esperaRepetir = inject(ESPERA_REPETIR_RENOVACAO);
   private accessToken: string | null = null;
   private renovacaoEmAndamento: Promise<boolean> | null = null;
 
@@ -62,15 +71,23 @@ export class AuthService {
   }
 
   private async executarRenovacao(): Promise<boolean> {
+    const pedir = () => firstValueFrom(this.http.post<RespostaSessao>('/api/auth/refresh', {}).pipe(timeout(5000)));
+    const recusado = (erro: unknown) => erro instanceof HttpErrorResponse && erro.status === 401;
     const renovar = async (): Promise<boolean> => {
       try {
-        const resp = await firstValueFrom(
-          this.http.post<RespostaSessao>('/api/auth/refresh', {}).pipe(timeout(5000)),
-        );
+        let resp: RespostaSessao;
+        try {
+          resp = await pedir();
+        } catch (erro) {
+          if (!recusado(erro)) throw erro;
+          // uma vez só: o 401 da tolerância da rotação (ver ESPERA_REPETIR_RENOVACAO); o cookie novo já chegou
+          await new Promise((fim) => setTimeout(fim, this.esperaRepetir));
+          resp = await pedir();
+        }
         await this.aplicar(resp);
         return true;
       } catch (erro) {
-        if (erro instanceof HttpErrorResponse && erro.status === 401) {
+        if (recusado(erro)) {
           this.accessToken = null;
           this.sessaoExpirada.set(true);
         }

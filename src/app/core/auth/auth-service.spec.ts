@@ -4,7 +4,7 @@ import { TestBed } from '@angular/core/testing';
 import { vi } from 'vitest';
 import { RegeraDb } from '../db/regera-db';
 import { RespostaSessao, UsuarioSessao } from './auth-models';
-import { AuthService } from './auth-service';
+import { AuthService, ESPERA_REPETIR_RENOVACAO } from './auth-service';
 
 const ANA: UsuarioSessao = { id: 'u1', nome: 'Ana', email: 'ana@regera.test', perfil: 'COMERCIAL', ativo: true };
 const RESPOSTA: RespostaSessao = { accessToken: 'tok-1', expiresIn: 900, usuario: ANA };
@@ -15,11 +15,16 @@ describe('AuthService', () => {
   let db: RegeraDb;
 
   beforeEach(() => {
-    TestBed.configureTestingModule({ providers: [provideHttpClient(), provideHttpClientTesting()] });
+    TestBed.configureTestingModule({
+      providers: [provideHttpClient(), provideHttpClientTesting(), { provide: ESPERA_REPETIR_RENOVACAO, useValue: 0 }],
+    });
     auth = TestBed.inject(AuthService);
     http = TestBed.inject(HttpTestingController);
     db = TestBed.inject(RegeraDb);
   });
+
+  /** A segunda tentativa sai depois da espera (0 nos testes). */
+  const proximoRefresh = () => vi.waitFor(() => http.expectOne('/api/auth/refresh'));
 
   afterEach(async () => {
     http.verify();
@@ -60,16 +65,39 @@ describe('AuthService', () => {
     expect(auth.sessaoExpirada()).toBe(false);
   });
 
-  it('refresh recusado marca sessão expirada mas preserva usuário local', async () => {
+  it('refresh recusado duas vezes marca sessão expirada mas preserva usuário local', async () => {
     await db.gravarMeta('sessao', ANA);
 
     await auth.iniciar();
     http.expectOne('/api/auth/refresh').flush({ codigo: 'SESSAO_INVALIDA' }, { status: 401, statusText: 'x' });
-    await auth.renovar();
+    (await proximoRefresh()).flush({ codigo: 'SESSAO_INVALIDA' }, { status: 401, statusText: 'x' });
+    expect(await auth.renovar()).toBe(false);
 
     expect(auth.sessaoExpirada()).toBe(true);
     expect(auth.usuario()?.id).toBe('u1');
     expect(auth.token()).toBeNull();
+  });
+
+  it('refresh recusado porque outra página girou o cookie: tenta de novo uma vez e a sessão continua', async () => {
+    // a página recarregada no meio de uma renovação: a antiga (pelo service worker) gira o cookie, e a nova, que
+    // mandou o cookie velho ao mesmo tempo, recebe o 401 da tolerância do servidor; o cookie novo já está no navegador
+    await db.gravarMeta('sessao', ANA);
+
+    await auth.iniciar();
+    http.expectOne('/api/auth/refresh').flush({ codigo: 'SESSAO_INVALIDA' }, { status: 401, statusText: 'x' });
+    expect(auth.sessaoExpirada()).toBe(false);
+    (await proximoRefresh()).flush(RESPOSTA);
+
+    expect(await auth.renovar()).toBe(true);
+    expect(auth.sessaoExpirada()).toBe(false);
+    expect(auth.token()).toBe('tok-1');
+  });
+
+  it('erro de rede no refresh não repete', async () => {
+    const p = auth.renovar();
+    http.expectOne('/api/auth/refresh').error(new ProgressEvent('error'), { status: 0 });
+    expect(await p).toBe(false);
+    // http.verify (afterEach) confere que não houve segunda tentativa
   });
 
   it('renovações simultâneas fazem uma única requisição', async () => {
