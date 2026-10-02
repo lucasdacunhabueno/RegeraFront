@@ -1,9 +1,110 @@
 import { ROTULO_CAMPO_ANEXO } from '../../core/sync/tipos-upload';
+import { normalizarDocumento } from '../../core/util/documentos';
 import { ErroCampo } from '../../core/util/erro-campo';
+import { normalizarBusca } from '../../core/util/formatos';
+import type { ClienteLocal } from '../clientes/cliente-models';
+import { hojeEmSaoPaulo } from '../propostas/propostas-repo';
+import { codigoOsExibido, OsLocal, StatusOs } from './os-models';
 
 /**
- * Exibição dos erros da OS nas telas, no padrão do `mensagemErroProposta`. Funções puras, sem import do `OsRepo`.
+ * Exibição da OS nas telas: erros (no padrão do `mensagemErroProposta`), selos, local e busca. Funções puras, sem
+ * import do `OsRepo`.
  */
+
+// --- lista e card ---
+
+/** Concluída ou cancelada: fora da lista até "Mostrar encerradas". */
+export function osEncerrada(status: StatusOs): boolean {
+  return status === 'CONCLUIDA' || status === 'CANCELADA';
+}
+
+export interface SeloOs {
+  tipo: 'urgente' | 'atrasada' | 'nao-sincronizada';
+  rotulo: string;
+}
+
+/** Q10: o prazo da OS, em dias corridos desde a criação. */
+export const PRAZO_DIAS_URGENTE = 7;
+export const PRAZO_DIAS_NORMAL = 20;
+
+const UUID_V7 = /^([0-9a-f]{8})-([0-9a-f]{4})-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/**
+ * A data (`aaaa-mm-dd`, em America/Sao_Paulo) em que a OS foi criada. O `OsLocal` não traz o `criadoEm`; vale a
+ * entrada de criação do histórico (`statusDe` null, gravada pelo servidor) e, na OS ainda não enviada, o instante do
+ * UUIDv7 do id (gerado no aparelho na criação). Sem nenhum dos dois (id de outra versão), null.
+ */
+export function criacaoOs(os: Pick<OsLocal, 'id' | 'historico'>): string | null {
+  const criacao = os.historico.find((h) => h.statusDe === null);
+  const instante = criacao ? Date.parse(criacao.em) : instanteDoUuidV7(os.id);
+  return instante === null || Number.isNaN(instante) ? null : hojeEmSaoPaulo(new Date(instante));
+}
+
+function instanteDoUuidV7(id: string): number | null {
+  const m = UUID_V7.exec(id);
+  return m ? parseInt(m[1] + m[2], 16) : null;
+}
+
+/** `aaaa-mm-dd` + `dias`, no calendário (sem fuso). */
+function somarDias(data: string, dias: number): string {
+  const [ano, mes, dia] = data.split('-').map(Number);
+  return new Date(Date.UTC(ano, mes - 1, dia + dias)).toISOString().slice(0, 10);
+}
+
+/**
+ * Q10: a OS aberta ou em andamento está atrasada quando a data prevista já passou (antes de `hoje`, `aaaa-mm-dd` em
+ * São Paulo) ou cai depois do prazo (criação + 7 dias na urgente, + 20 na normal). Sem data prevista, o prazo vencido
+ * até hoje também conta. Sem a data de criação, só a data prevista passada.
+ */
+export function atrasadaOs(
+  os: Pick<OsLocal, 'id' | 'historico' | 'status' | 'urgente' | 'dataPrevista'>,
+  hoje: string,
+): boolean {
+  if (osEncerrada(os.status)) return false;
+  const prevista = os.dataPrevista ? os.dataPrevista.slice(0, 10) : null;
+  if (prevista !== null && prevista < hoje) return true;
+  const criada = criacaoOs(os);
+  if (criada === null) return false;
+  return (prevista ?? hoje) > somarDias(criada, os.urgente ? PRAZO_DIAS_URGENTE : PRAZO_DIAS_NORMAL);
+}
+
+/**
+ * Selos do card, sempre nesta ordem: "Urgente" (só com a OS aberta ou em andamento), "Atrasada" (`atrasadaOs`) e
+ * "Não sincronizada" (há mutação ou upload da OS na outbox).
+ */
+export function selosDaOs(
+  os: Pick<OsLocal, 'id' | 'historico' | 'status' | 'urgente' | 'dataPrevista'>,
+  estado: { naoSincronizada: boolean; hoje: string },
+): SeloOs[] {
+  const selos: SeloOs[] = [];
+  if (os.urgente && !osEncerrada(os.status)) selos.push({ tipo: 'urgente', rotulo: 'Urgente' });
+  if (atrasadaOs(os, estado.hoje)) selos.push({ tipo: 'atrasada', rotulo: 'Atrasada' });
+  if (estado.naoSincronizada) selos.push({ tipo: 'nao-sincronizada', rotulo: 'Não sincronizada' });
+  return selos;
+}
+
+/** Bairro e cidade do endereço *snapshot* da OS, o que houver ("Bela Vista · São Paulo"); sem nenhum, ''. */
+export function localDaOs(os: Pick<OsLocal, 'enderecoBairro' | 'enderecoCidade'>): string {
+  return [os.enderecoBairro, os.enderecoCidade].filter((p) => p !== null && p.trim() !== '').join(' · ');
+}
+
+/**
+ * Busca da lista do escritório: o código da OS (com ou sem os zeros, com a revisão), o `OSP-…` (também depois de
+ * numerada), o código da proposta, o nome ou nome fantasia do cliente (sem acento nem caixa) e o documento do cliente
+ * (com ou sem máscara, a partir de 3 caracteres). Só a busca usa o documento; a tela não o mostra.
+ */
+export function correspondeABuscaOs(os: OsLocal, cliente: ClienteLocal | undefined, busca: string): boolean {
+  const q = normalizarBusca(busca);
+  if (!q) return true;
+  const codigos = [codigoOsExibido(os), os.codigoProvisorio, os.propostaCodigoExibido ?? ''];
+  if (codigos.some((c) => normalizarBusca(c).includes(q))) return true;
+  if (!cliente) return false;
+  if (cliente.nomeBusca.includes(q)) return true;
+  const doc = normalizarDocumento(busca);
+  return doc.length >= 3 && cliente.documento !== null && cliente.documento.includes(doc);
+}
+
+// --- erros ---
 
 /** O texto de cada código: os do `ErroOs` (aparelho e servidor) e os que só o servidor devolve no push e no upload. */
 const POR_CODIGO: ReadonlyMap<string, string> = new Map([

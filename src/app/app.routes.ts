@@ -16,14 +16,20 @@ export const routes: Routes = [
       {
         path: '',
         pathMatch: 'full',
-        redirectTo: () => (inject(AuthService).usuario()?.perfil === 'TECNICO' ? 'propostas' : 'kanban'),
+        // M2-P3: o técnico trabalha pela OS
+        redirectTo: () => (inject(AuthService).usuario()?.perfil === 'TECNICO' ? 'os' : 'kanban'),
       },
       {
         path: 'kanban',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
         loadComponent: () => import('./features/kanban/kanban-page').then((m) => m.KanbanPage),
       },
-      { path: 'propostas', loadComponent: () => import('./features/propostas/propostas-page').then((m) => m.PropostasPage) },
+      // M2-P3: as propostas deixam de ser do técnico (ele vê o trabalho pela OS); o link direto dele cai na raiz → /os
+      {
+        path: 'propostas',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
+        loadComponent: () => import('./features/propostas/propostas-page').then((m) => m.PropostasPage),
+      },
       // ordem do P4c: propostas/nova, propostas/:id/editar, propostas/:id/corrigir, propostas/:id
       {
         path: 'propostas/nova',
@@ -48,8 +54,11 @@ export const routes: Routes = [
       },
       {
         path: 'propostas/:id',
+        canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],
         loadComponent: () => import('./features/propostas/proposta-detalhe-page').then((m) => m.PropostaDetalhePage),
       },
+      // todos os perfis: a página mostra ao técnico só as dele e ao escritório as que o perfil vê
+      { path: 'os', loadComponent: () => import('./features/os/os-lista-page').then((m) => m.OsListaPage) },
       {
         path: 'clientes/novo',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],

@@ -50,6 +50,23 @@ describe('MaisPage', () => {
     expect(el.querySelector('a[href="/templates"]')).toBeTruthy();
   });
 
+  it('M2-P3: admin e comercial têm o Catálogo aqui no celular (saiu da barra inferior); no desktop ele está no menu lateral', () => {
+    for (const perfil of ['ADMIN', 'COMERCIAL'] as const) {
+      TestBed.resetTestingModule();
+      const { el } = montar(perfil);
+      const link = el.querySelector<HTMLAnchorElement>('a[href="/catalogo"]');
+      expect(link?.textContent?.trim()).toBe('Catálogo');
+      expect(link?.closest('li')?.classList).toContain('lg:hidden');
+      expect(link?.classList).toContain('py-4');
+    }
+  });
+
+  it('M2-P3: o técnico não tem Catálogo', () => {
+    const { el } = montar('TECNICO');
+    expect(el.querySelector('a[href="/catalogo"]')).toBeNull();
+    expect(el.textContent).toContain('Trocar senha');
+  });
+
   it('comercial não vê Usuários nem Empresa', () => {
     const { el } = montar('COMERCIAL');
     expect(el.textContent).not.toContain('Templates de proposta');

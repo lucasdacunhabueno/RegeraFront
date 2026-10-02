@@ -55,11 +55,29 @@ describe('Shell', () => {
     expect(coluna.classList).toContain('min-w-0');
   });
 
-  it('técnico não vê Kanban nem Clientes', () => {
+  const links = (el: HTMLElement, nav: string) =>
+    [...el.querySelectorAll(`nav[aria-label="${nav}"] a`)].map((a) => [a.textContent?.trim(), a.getAttribute('href')]);
+
+  it('M2-P3: o técnico vê só "Minhas OS" e "Mais", no menu lateral e na barra inferior; nada de Propostas, Kanban ou Clientes', () => {
     const { el } = montar('TECNICO');
+    for (const nav of ['Navegação principal', 'Navegação inferior']) {
+      expect(links(el, nav)).toEqual([['Minhas OS', '/os'], ['Mais', '/mais']]);
+    }
     expect(el.textContent).not.toContain('Kanban');
     expect(el.textContent).not.toContain('Clientes');
-    expect(el.textContent).toContain('Propostas');
+    expect(el.textContent).not.toContain('Propostas');
+  });
+
+  it('M2-P3: o escritório tem "OS"; a barra inferior fica com cinco abas (o Catálogo só no menu lateral) e alvos de 48 px', () => {
+    const { el } = montar('COMERCIAL');
+    expect(links(el, 'Navegação principal')).toEqual([
+      ['Kanban', '/kanban'], ['Propostas', '/propostas'], ['OS', '/os'], ['Clientes', '/clientes'], ['Catálogo', '/catalogo'],
+      ['Mais', '/mais'],
+    ]);
+    expect(links(el, 'Navegação inferior')).toEqual([
+      ['Kanban', '/kanban'], ['Propostas', '/propostas'], ['OS', '/os'], ['Clientes', '/clientes'], ['Mais', '/mais'],
+    ]);
+    for (const a of el.querySelectorAll('nav[aria-label="Navegação inferior"] a')) expect(a.classList).toContain('min-h-12');
   });
 
   it('mostra aviso quando a sessão expirou', () => {
