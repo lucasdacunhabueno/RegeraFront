@@ -171,7 +171,7 @@ function enderecoPadrao(c: ClienteLocal): number | null {
                   <label [for]="'endereco-os-' + $index" class="flex min-h-12 cursor-pointer items-start gap-3 rounded-lg border px-3 py-2"
                          [class.border-blue-600]="enderecoIdx() === $index" [class.border-slate-200]="enderecoIdx() !== $index">
                     <input [id]="'endereco-os-' + $index" type="radio" name="endereco-os" [value]="$index" [checked]="enderecoIdx() === $index"
-                           (change)="enderecoIdx.set($index)" class="mt-1 size-5 shrink-0" />
+                           (change)="escolherEndereco(c, $index)" class="mt-1 size-5 shrink-0" />
                     <span class="min-w-0 text-sm">
                       <span class="block font-medium">{{ rotuloEndereco(e) }}</span>
                       <span class="block text-slate-600">{{ linhaEndereco(e) || 'Endereço incompleto' }}</span>
@@ -380,6 +380,8 @@ export class OsFormPage implements ComAlteracoes {
   private liberado = false;
   /** A OS nova já recebeu o estado inicial (o `?clienteId=`): a lista de clientes que muda depois não o refaz. */
   private iniciouNova = false;
+  /** N5: o conteúdo do endereço escolhido (`instantaneo`), para reachar a posição se a lista do cliente mudar. */
+  private enderecoEscolhido: string | null = null;
 
   protected readonly tipos = TIPOS_OS.map((t) => ({ valor: t, rotulo: rotuloTipoOs(t) }));
   protected readonly camposEndereco = CAMPOS_ENDERECO;
@@ -442,9 +444,34 @@ export class OsFormPage implements ComAlteracoes {
       untracked(() => {
         const c = id ? clientes.find((x) => x.id === id) : undefined;
         this.clienteEscolhido.set(c?.id ?? null);
-        this.enderecoIdx.set(c ? enderecoPadrao(c) : null);
+        if (c) this.escolherEndereco(c, enderecoPadrao(c));
         this.estadoSalvo.set(this.estado());
       });
+    });
+    // N5: o sync mudou os endereços do cliente escolhido com o formulário aberto: a posição segue o mesmo endereço; se
+    // ele sumiu, volta ao padrão e avisa no campo
+    effect(() => {
+      const c = this.editando() ? undefined : this.cliente();
+      if (!c) return;
+      untracked(() => {
+        const idx = this.enderecoIdx();
+        const chave = this.enderecoEscolhido;
+        if (idx === null || chave === null || (c.enderecos[idx] && instantaneo(c.enderecos[idx]) === chave)) return;
+        const achado = c.enderecos.findIndex((x) => instantaneo(x) === chave);
+        if (achado >= 0) {
+          this.enderecoIdx.set(achado);
+          return;
+        }
+        this.escolherEndereco(c, enderecoPadrao(c));
+        this.erros.update((x) => ({ ...x, enderecoId: 'Os endereços do cliente mudaram: confira o endereço do serviço.' }));
+      });
+    });
+    // N4: a busca de clientes diz quantos achou (o leitor de tela não vê a lista mudar)
+    effect(() => {
+      const busca = this.busca().trim();
+      const n = this.resultados().length;
+      if (this.editando() || this.clienteEscolhido() !== null || busca === '') return;
+      untracked(() => this.anuncio.set(n === 0 ? 'Nenhum cliente encontrado.' : n === 1 ? '1 cliente encontrado.' : `${n} clientes encontrados.`));
     });
     // a edição: carrega a OS (uma vez por id); a versão carregada é a base do conflito
     effect(() => {
@@ -480,8 +507,14 @@ export class OsFormPage implements ComAlteracoes {
 
   protected escolherCliente(c: ClienteLocal): void {
     this.clienteEscolhido.set(c.id);
-    this.enderecoIdx.set(enderecoPadrao(c));
+    this.escolherEndereco(c, enderecoPadrao(c));
     this.limparErro('clienteId', 'enderecoId');
+  }
+
+  /** O endereço pela posição, guardando também o conteúdo dele (N5: a posição se reacha se a lista mudar). */
+  protected escolherEndereco(c: ClienteLocal, idx: number | null): void {
+    this.enderecoIdx.set(idx);
+    this.enderecoEscolhido = idx === null || !c.enderecos[idx] ? null : instantaneo(c.enderecos[idx]);
   }
 
   protected trocarCliente(): void {
@@ -648,13 +681,30 @@ export class OsFormPage implements ComAlteracoes {
   /** A recusa do repositório: `VALIDACAO` com campos da tela vai para eles; o resto, para o toast. */
   private recusado(e: unknown): void {
     if (e instanceof ErroOs && e.codigo === 'VALIDACAO' && e.campos) {
-      const naTela = Object.fromEntries(Object.entries(e.campos).filter(([c]) => c in ALVO_DO_ERRO));
+      const campos = this.editando() ? e.campos : this.camposDaAvulsa(e.campos);
+      const naTela = Object.fromEntries(Object.entries(campos).filter(([c]) => c in ALVO_DO_ERRO));
       if (Object.keys(naTela).length > 0) {
         this.mostrarErros(naTela);
         return;
       }
     }
     this.toasts.erro(mensagemErroOs(e));
+  }
+
+  /**
+   * M4: na OS avulsa o endereço é a escolha de um endereço do cliente (não há os campos `endereco*` na tela): a recusa
+   * do snapshot copiado vai para a escolha, com o caminho para corrigir.
+   */
+  private camposDaAvulsa(campos: Record<string, string>): Record<string, string> {
+    const r: Record<string, string> = {};
+    for (const [c, m] of Object.entries(campos)) {
+      if (c.startsWith('endereco') && c !== 'enderecoId') {
+        r['enderecoId'] = 'O endereço escolhido tem dados inválidos: corrija no cadastro do cliente.';
+      } else {
+        r[c] = m;
+      }
+    }
+    return r;
   }
 
   private focarErro(campos: string[]): void {

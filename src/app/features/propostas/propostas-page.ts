@@ -2,6 +2,9 @@ import { Component, computed, inject, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { RouterLink } from '@angular/router';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import { osPorProposta, SeloOsProposta, selosOsDaProposta } from '../os/formatos-os';
+import type { OsLocal } from '../os/os-models';
+import { OsRepo } from '../os/os-repo';
 import { TIPOS_PROPOSTA, TipoProposta } from '../templates/template-models';
 import { correspondeABusca, Selo, selosDaProposta } from './formatos-proposta';
 import { PropostaCard } from './proposta-card';
@@ -21,6 +24,8 @@ interface Linha {
   clienteNome: string;
   responsavelNome: string | null;
   selos: Selo[];
+  /** M2-P3: os selos das OS da proposta (como no kanban). */
+  selosOs: SeloOsProposta[];
 }
 
 /**
@@ -92,7 +97,7 @@ interface Linha {
         @for (l of linhas(); track l.proposta.id) {
           <li>
             <app-proposta-card [proposta]="l.proposta" [clienteNome]="l.clienteNome" [responsavelNome]="l.responsavelNome"
-                               [mostrarValores]="true" [selos]="l.selos" />
+                               [mostrarValores]="true" [selos]="l.selos" [selosOs]="l.selosOs" />
           </li>
         }
       </ul>
@@ -111,6 +116,9 @@ export class PropostasPage {
   /** undefined até a primeira leitura do banco (sem isso a tela piscaria o estado vazio). */
   protected readonly propostas = toSignal<PropostaLocal[]>(this.repo.observarTodas());
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
+  /** M2-P3: as OS que o perfil vê, pela proposta (os selos da OS nos cards). */
+  private readonly osDasPropostas = toSignal(inject(OsRepo).observarTodas(), { initialValue: [] as OsLocal[] });
+  private readonly osPorProposta = computed(() => osPorProposta(this.osDasPropostas()));
   private readonly usuarios = toSignal(this.repo.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
@@ -146,6 +154,7 @@ export class PropostasPage {
     const clientes = this.clientePorId();
     const nomes = this.nomeUsuario();
     const { naOutbox, comPendencia } = this.estado();
+    const oss = this.osPorProposta();
     return this.buscadas()
       .filter((p) => (status === 'TODAS' ? mostrarEncerradas || !encerrada(p.status) : p.status === status))
       .map((p) => ({
@@ -153,6 +162,7 @@ export class PropostasPage {
         clienteNome: p.clienteId ? (clientes.get(p.clienteId)?.nome ?? 'Cliente não encontrado') : 'Sem cliente',
         responsavelNome: nomes.get(p.responsavelId) ?? null,
         selos: selosDaProposta(p, { pendente: comPendencia.has(p.id), naoSincronizada: naOutbox.has(p.id), hoje: this.hoje() }),
+        selosOs: selosOsDaProposta(p.status, oss.get(p.id) ?? []),
       }));
   });
 

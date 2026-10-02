@@ -707,6 +707,35 @@ describe('PendenciasService', () => {
             expect(await svc.perdaDaOs(conflitoCom(doAparelho({ aceitarTrabalho: true }), {}, { separada: true }))).toEqual([]);
           });
 
+          it('I1 (T5): a correção feita na OS atrás da recusa (cabeçalho, técnico) conta, e o Descartar pede confirmação', async () => {
+            const p = rejeitadaSemServidor(doAparelho());
+            await db.pendencias.put(p);
+            expect(await svc.perdaDaOs(p)).toEqual([]);
+            // a reatribuição feita depois da recusa (a edição fica retida atrás dela)
+            await db.outbox.add(mutOs('a1', 6, doAparelho({ tecnicoId: 'u-tec2' })));
+            expect(await svc.perdaDaOs(p)).toEqual(['atribuicao']);
+            expect(await svc.descartaEnvio(p)).toBe(true);
+            // e a data, a descrição, o endereço ou as linhas
+            await db.outbox.add(mutOs('a2', 7, doAparelho({ tecnicoId: 'u-tec2', dataPrevista: '2026-10-20' })));
+            expect(await svc.perdaDaOs(p)).toEqual(['cabecalho', 'atribuicao']);
+            await db.outbox.clear();
+            const linhas = doAparelho().itens.map((l) => ({ ...l, quantidadePrevista: 5 }));
+            await db.outbox.add(mutOs('a3', 6, doAparelho({ itens: linhas })));
+            expect(await svc.perdaDaOs(p)).toEqual(['cabecalho']);
+          });
+
+          it('I1 (T5): o cabeçalho da própria mutação em conflito, diferente do servidor (mudado lá), não conta como perda daqui', async () => {
+            const p = conflitoCom(doAparelho());
+            expect(await svc.perdaDaOs(p)).toEqual([]);
+          });
+
+          it('I1 (T5): a criação recusada leva a OS inteira: "a OS criada neste aparelho"', async () => {
+            const p = rejeitadaSemServidor(doAparelho({ status: 'ABERTA' }), { baseVersion: null });
+            await db.pendencias.put(p);
+            expect(await svc.perdaDaOs(p)).toEqual(['criacao']);
+            expect(await svc.descartaEnvio(p)).toBe(true);
+          });
+
           it('a assinatura colhida e a nota numa mutação separada (o teto de notas) depois do iniciar: um início só', async () => {
             const p = rejeitadaSemServidor(doAparelho({ status: 'EM_ANDAMENTO' }), { separada: true });
             await db.pendencias.put(p);

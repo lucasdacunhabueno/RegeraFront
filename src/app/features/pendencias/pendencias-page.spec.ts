@@ -926,9 +926,11 @@ describe('PendenciasPage', () => {
         expect(botao(el, 'Descartar').disabled).toBe(true);
         botao(el, 'Gerando PDF…').click();
         expect(regerarOs).toHaveBeenCalledTimes(1);
-        // N3: desabilitado, o botão perde o foco no navegador (o jsdom não o tira: o foco vai para outro lugar)
-        el.querySelector<HTMLElement>('h1')!.focus();
-        expect(document.activeElement).not.toBe(gatilho);
+        // N3: desabilitado, o botão perde o foco no navegador (o jsdom não o tira: o foco vai para o body)
+        const h1 = el.querySelector<HTMLElement>('h1')!;
+        h1.focus();
+        h1.blur();
+        expect(document.activeElement).toBe(document.body);
         falhar(new ErroOs('OS_SINCRONIZANDO', 'os', ''));
         await vi.waitFor(() => expect(erro).toHaveBeenCalledWith('A OS está sendo sincronizada. Tente de novo em instantes.'));
         await fixture.whenStable();
@@ -936,6 +938,25 @@ describe('PendenciasPage', () => {
         // o foco volta ao botão
         await vi.waitFor(() => expect(document.activeElement).toBe(botao(el, 'Gerar PDF novamente')));
         expect(cliques).toEqual([]);
+      });
+
+      it('N3: quem levou o foco a outro controle durante a geração fica lá quando ela falha', async () => {
+        let falhar!: (e: unknown) => void;
+        const regerarOs = vi.fn(() => new Promise((_, r) => (falhar = r)));
+        const { el, fixture } = montar([pdfRecusado('CODIGO_EXIBIDO_INVALIDO')], 0, 'ADMIN', {
+          os: [concluida()], anexos: [['d1', 'DOCUMENTO']], regerarOs,
+        });
+        const gatilho = botao(el, 'Gerar PDF novamente');
+        gatilho.focus();
+        gatilho.click();
+        fixture.detectChanges();
+        const outro = el.querySelector<HTMLElement>('h1')!;
+        outro.focus();
+        falhar(new ErroOs('OS_SINCRONIZANDO', 'os', ''));
+        await vi.waitFor(() => expect(botao(el, 'Gerar PDF novamente').disabled).toBe(false));
+        await fixture.whenStable();
+        fixture.detectChanges();
+        expect(document.activeElement).toBe(outro);
       });
 
       it('com CONFLITO da OS: desabilitado com a dica "Resolva a pendência primeiro."', () => {
@@ -963,6 +984,24 @@ describe('PendenciasPage', () => {
           os: [concluida()], anexos: [['d1', 'DOCUMENTO'], ['d2', 'DOCUMENTO']],
         });
         expect(botao(admin.el, 'Gerar PDF novamente')).toBeDefined();
+      });
+
+      it('M3 (regra compartilhada): TECNICO com o histórico dizendo que outro concluiu, também não; com a conclusão dele sem resposta, sim', () => {
+        const porOutro: Partial<OsDados> = {
+          concluidaEm: '2026-10-01T15:00:00Z',
+          historico: [{ statusDe: 'EM_ANDAMENTO', statusPara: 'CONCLUIDA', usuarioId: 'u-adm', em: '2026-10-01T15:00:00Z' }],
+        };
+        let { el } = montar([pdfRecusado('ANEXO_AUSENTE')], 0, 'TECNICO', { os: [concluida(porOutro)], anexos: [['d1', 'DOCUMENTO']] });
+        expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+        TestBed.resetTestingModule();
+        ({ el } = montar([pdfRecusado('ANEXO_AUSENTE')], 0, 'ADMIN', { os: [concluida(porOutro)], anexos: [['d1', 'DOCUMENTO']] }));
+        expect(botao(el, 'Gerar PDF novamente')).toBeDefined();
+        TestBed.resetTestingModule();
+        // a conclusão deste aparelho ainda sem resposta (concluidaEm null): a última no servidor vai ser a dele
+        ({ el } = montar([pdfRecusado('ANEXO_AUSENTE')], 0, 'TECNICO', {
+          os: [concluida({ ...porOutro, concluidaEm: null })], anexos: [['d1', 'DOCUMENTO']],
+        }));
+        expect(botao(el, 'Gerar PDF novamente')).toBeDefined();
       });
 
       it.each<[string, Partial<OsDados>, Perfil, [string, TipoAnexoOs][], [string, number][] | undefined]>([

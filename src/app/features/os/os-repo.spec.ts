@@ -1189,6 +1189,11 @@ describe('OsRepo', () => {
       await noAparelho('CONCLUIDA', recusada);
       usuario.set(OUTRO_TECNICO);
       expect((await erroDe(repo.regerarPdf('o1', gerarPdf))).codigo).toBe('ACESSO_NEGADO');
+      // a regra compartilhada (`pdfRegeravel`): o COMERCIAL responsável não executa a OS, como nas telas
+      usuario.set(COMERCIAL);
+      expect(await erroDe(repo.regerarPdf('o1', gerarPdf))).toMatchObject({
+        codigo: 'ACESSO_NEGADO', message: 'Só o técnico atribuído ou o administrador gera o PDF da OS.',
+      });
       usuario.set(TECNICO);
       await db.pendencias.put(conflito());
       expect((await erroDe(repo.regerarPdf('o1', gerarPdf))).codigo).toBe('RESOLVA_A_PENDENCIA');

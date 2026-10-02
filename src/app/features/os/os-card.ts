@@ -1,12 +1,13 @@
 import { Component, computed, input } from '@angular/core';
 import { RouterLink } from '@angular/router';
-import { LucideClock, LucideDynamicIcon, LucideIcon, LucideRefreshCw, LucideZap } from '@lucide/angular';
+import { LucideClock, LucideDynamicIcon, LucideIcon, LucideRefreshCw, LucideTriangleAlert, LucideZap } from '@lucide/angular';
 import { dataBr } from '../../core/pdf/formatos-pdf';
 import { localDaOs, SeloOs } from './formatos-os';
 import { codigoOsExibido, OsLocal, rotuloTipoOs, STATUS_OS } from './os-models';
 
 /** Cor e ícone de cada selo da OS. */
 export const ESTILO_SELO_OS: Readonly<Record<SeloOs['tipo'], { cor: string; icone: LucideIcon }>> = {
+  'proposta-cancelada': { cor: 'bg-red-100 text-red-800', icone: LucideTriangleAlert },
   urgente: { cor: 'bg-red-100 text-red-800', icone: LucideZap },
   atrasada: { cor: 'bg-orange-100 text-orange-800', icone: LucideClock },
   'nao-sincronizada': { cor: 'bg-amber-100 text-amber-800', icone: LucideRefreshCw },

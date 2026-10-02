@@ -298,7 +298,7 @@ interface LinhaItem {
         </section>
 
         @if (!restrito()) {
-          <app-os-da-proposta class="block" [proposta]="p" [clienteNome]="cliente()?.nome ?? ''" />
+          <app-os-da-proposta class="block" [proposta]="p" [clienteNome]="cliente()?.nome ?? ''" [bloqueado]="conflito()" />
         }
 
         <section aria-labelledby="itens-titulo" class="space-y-3 rounded-xl bg-white p-4">

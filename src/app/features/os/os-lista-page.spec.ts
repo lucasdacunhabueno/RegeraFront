@@ -8,6 +8,7 @@ import { AuthService } from '../../core/auth/auth-service';
 import type { UsuarioResumo } from '../../core/sync/sync-models';
 import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import type { PropostaLocal } from '../propostas/proposta-models';
 import { PropostasRepo } from '../propostas/propostas-repo';
 import { OsDados, OsLocal, paraOsLocal } from './os-models';
 import { EstadoSync, OsRepo } from './os-repo';
@@ -72,6 +73,8 @@ const DO_TECNICO: OsLocal[] = [
 ];
 
 interface Opcoes {
+  /** As propostas do aparelho (o ADMIN vê o selo da proposta cancelada na OS, M7). */
+  propostas?: PropostaLocal[];
   usuario?: UsuarioSessao;
   usuarioSinal?: WritableSignal<UsuarioSessao | null>;
   todas?: Observable<OsLocal[]>;
@@ -80,6 +83,10 @@ interface Opcoes {
 }
 
 function montar(o: Opcoes = {}) {
+  const propostas = {
+    observarUsuarios: () => of(USUARIOS),
+    observarTodas: vi.fn(() => of(o.propostas ?? [])),
+  };
   const repo = {
     observarTodas: vi.fn(() => o.todas ?? of(LISTA)),
     observarDoTecnico: vi.fn((usuarioId: string) => (usuarioId ? (o.doTecnico ?? of(DO_TECNICO)) : of([]))),
@@ -91,14 +98,14 @@ function montar(o: Opcoes = {}) {
       provideRouter([]),
       { provide: AuthService, useValue: { usuario: o.usuarioSinal ?? signal(o.usuario ?? ADMIN) } },
       { provide: OsRepo, useValue: repo },
-      { provide: PropostasRepo, useValue: { observarUsuarios: () => of(USUARIOS) } },
+      { provide: PropostasRepo, useValue: propostas },
       { provide: ClientesRepo, useValue: { observarTodos: () => of(CLIENTES) } },
     ],
   });
   const fixture = TestBed.createComponent(OsListaPage);
   fixture.detectChanges();
   const el = fixture.nativeElement as HTMLElement;
-  return { fixture, el, repo };
+  return { fixture, el, repo, propostas };
 }
 
 const codigos = (el: HTMLElement) => [...el.querySelectorAll('li app-os-card')].map((c) => c.querySelector('.font-mono')!.textContent!.trim());
@@ -125,7 +132,7 @@ describe('OsListaPage', () => {
   });
 
   describe('TECNICO ("Minhas OS")', () => {
-    it('só as atribuídas a ele, por data prevista com as urgentes primeiro no mesmo dia (sem data no fim), sem as encerradas', () => {
+    it('só as atribuídas a ele, por data prevista com as urgentes primeiro no mesmo dia (a normal sem data no fim), sem as encerradas', () => {
       const { el, repo } = montar({ usuario: TECNICO });
       expect(el.querySelector('h1')?.textContent?.trim()).toBe('Minhas OS');
       expect(repo.observarDoTecnico).toHaveBeenCalledWith(TECNICO.id);
@@ -231,6 +238,20 @@ describe('OsListaPage', () => {
       const cards = [...el.querySelectorAll('app-os-card')].map((c) => c.textContent).join(' ');
       expect(cards).not.toMatch(/R\$/);
       expect(cards).not.toMatch(/11\.?444\.?777|529\.?982\.?247/);
+    });
+
+    it('M7: o ADMIN vê "Trabalho em proposta cancelada" na OS em andamento ou concluída da proposta cancelada', () => {
+      const lista = [os('x', { numero: 901, status: 'EM_ANDAMENTO', propostaId: 'p-canc' }), os('y', { numero: 902, status: 'EM_ANDAMENTO', propostaId: 'p-ok' })];
+      const propostas = [{ id: 'p-canc', status: 'CANCELADA' }, { id: 'p-ok', status: 'EM_EXECUCAO' }] as PropostaLocal[];
+      const estado: EstadoSync = { naOutbox: new Set(), comPendencia: new Set(), comConflito: new Set() };
+      const admin = montar({ todas: of(lista), propostas, estado });
+      expect(selos(admin.el, 'OS-000901')).toEqual(['Trabalho em proposta cancelada']);
+      expect(selos(admin.el, 'OS-000902')).toEqual([]);
+      TestBed.resetTestingModule();
+      // o COMERCIAL não aceita o trabalho: sem o selo (e nem lê as propostas para isso)
+      const comercial = montar({ usuario: COMERCIAL, todas: of(lista), propostas, estado });
+      expect(selos(comercial.el, 'OS-000901')).toEqual([]);
+      expect(comercial.propostas.observarTodas).not.toHaveBeenCalled();
     });
 
     it('"Nova OS avulsa" leva a /os/nova, para ADMIN e COMERCIAL', () => {

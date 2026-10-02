@@ -20,7 +20,7 @@ export function osEncerrada(status: StatusOs): boolean {
 }
 
 export interface SeloOs {
-  tipo: 'urgente' | 'atrasada' | 'nao-sincronizada';
+  tipo: 'proposta-cancelada' | 'urgente' | 'atrasada' | 'nao-sincronizada';
   rotulo: string;
 }
 
@@ -67,14 +67,18 @@ export function atrasadaOs(
 }
 
 /**
- * Selos do card, sempre nesta ordem: "Urgente" (só com a OS aberta ou em andamento), "Atrasada" (`atrasadaOs`) e
- * "Não sincronizada" (há mutação ou upload da OS na outbox).
+ * Selos do card, sempre nesta ordem: "Trabalho em proposta cancelada" (M7, M2-R4: com `propostaCancelada`, que só a
+ * tela do ADMIN passa, e a OS em andamento ou concluída, como o selo do card da proposta), "Urgente" (só com a OS
+ * aberta ou em andamento), "Atrasada" (`atrasadaOs`) e "Não sincronizada" (há mutação ou upload da OS na outbox).
  */
 export function selosDaOs(
   os: Pick<OsLocal, 'id' | 'historico' | 'status' | 'urgente' | 'dataPrevista'>,
-  estado: { naoSincronizada: boolean; hoje: string },
+  estado: { naoSincronizada: boolean; hoje: string; propostaCancelada?: boolean },
 ): SeloOs[] {
   const selos: SeloOs[] = [];
+  if (estado.propostaCancelada && (os.status === 'EM_ANDAMENTO' || os.status === 'CONCLUIDA')) {
+    selos.push({ tipo: 'proposta-cancelada', rotulo: 'Trabalho em proposta cancelada' });
+  }
   if (os.urgente && !osEncerrada(os.status)) selos.push({ tipo: 'urgente', rotulo: 'Urgente' });
   if (atrasadaOs(os, estado.hoje)) selos.push({ tipo: 'atrasada', rotulo: 'Atrasada' });
   if (estado.naoSincronizada) selos.push({ tipo: 'nao-sincronizada', rotulo: 'Não sincronizada' });
@@ -118,6 +122,18 @@ export function selosOsDaProposta(
   }
   if (emExecucao && !emCurso && tem('CANCELADA')) selos.push({ tipo: 'os-cancelada', rotulo: 'OS cancelada' });
   return selos;
+}
+
+/** As OS de proposta agrupadas pela proposta (a avulsa fica de fora), para os selos dos cards (`selosOsDaProposta`). */
+export function osPorProposta<T extends Pick<OsLocal, 'propostaId'>>(oss: readonly T[]): Map<string, T[]> {
+  const mapa = new Map<string, T[]>();
+  for (const o of oss) {
+    if (o.propostaId === null) continue;
+    const lista = mapa.get(o.propostaId);
+    if (lista) lista.push(o);
+    else mapa.set(o.propostaId, [o]);
+  }
+  return mapa;
 }
 
 /** M2P3-R6 (Q15): o escritório vê por padrão as concluídas dos últimos 7 dias (hoje e os 6 anteriores). */
@@ -226,11 +242,15 @@ export function mensagemErroOs(e: unknown): string {
  * (P4c-R15, M2-P2 M1; `PendenciasService.perdaDaOs`).
  */
 export type ItemPerdaOs =
-  | 'inicio' | 'notas' | 'fotos' | 'assinatura' | 'recusa' | 'precisaVoltar' | 'conclusao' | 'resumo' | 'pdf'
-  | 'cancelamento' | 'reabertura';
+  | 'criacao' | 'inicio' | 'notas' | 'fotos' | 'assinatura' | 'recusa' | 'precisaVoltar' | 'conclusao' | 'resumo' | 'pdf'
+  | 'cancelamento' | 'reabertura' | 'cabecalho' | 'atribuicao';
 
-/** Na ordem do trabalho de campo (a da fila: iniciar, notas, fotos, assinatura, concluir, PDF), e depois o escritório. */
+/**
+ * A criação primeiro (ela leva a OS inteira); depois a ordem do trabalho de campo (a da fila: iniciar, notas, fotos,
+ * assinatura, concluir, PDF) e, no fim, o escritório (cancelar, reabrir, o cabeçalho e o técnico).
+ */
 const ROTULO_PERDA: Readonly<Record<ItemPerdaOs, string>> = {
+  criacao: 'a OS criada neste aparelho',
   inicio: 'o início',
   notas: 'as notas',
   fotos: 'as fotos',
@@ -242,6 +262,8 @@ const ROTULO_PERDA: Readonly<Record<ItemPerdaOs, string>> = {
   pdf: 'o PDF',
   cancelamento: 'o cancelamento',
   reabertura: 'a reabertura',
+  cabecalho: 'as alterações do cabeçalho',
+  atribuicao: 'a troca de técnico',
 };
 /** A ordem canônica dos itens (a do `ROTULO_PERDA`). */
 export const ORDEM_PERDA_OS: readonly ItemPerdaOs[] = Object.keys(ROTULO_PERDA) as ItemPerdaOs[];

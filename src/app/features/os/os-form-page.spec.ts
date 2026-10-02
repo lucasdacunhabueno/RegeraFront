@@ -1,7 +1,7 @@
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
-import { of } from 'rxjs';
+import { BehaviorSubject, of } from 'rxjs';
 import { vi } from 'vitest';
 import type { UsuarioSessao } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
@@ -63,6 +63,8 @@ function osDados(status: StatusOs, extra: Partial<OsDados> = {}): OsDados {
 const osLocal = (status: StatusOs, extra: Partial<OsDados> = {}): OsLocal => paraOsLocal('o1', 7, osDados(status, extra));
 
 interface Opcoes {
+  /** A lista de clientes (padrão: CLIENTES, fixa). */
+  clientes$?: BehaviorSubject<ClienteLocal[]>;
   usuario?: UsuarioSessao;
   /** Edição: a OS de `buscar`; ausente, o formulário da OS avulsa. */
   os?: OsLocal | undefined;
@@ -80,7 +82,7 @@ async function montar(o: Opcoes = {}) {
       provideRouter([]),
       { provide: AuthService, useValue: { usuario: signal(o.usuario ?? COMERCIAL) } },
       { provide: OsRepo, useValue: repo },
-      { provide: ClientesRepo, useValue: { observarTodos: () => of(CLIENTES) } },
+      { provide: ClientesRepo, useValue: { observarTodos: () => o.clientes$ ?? of(CLIENTES) } },
       { provide: PropostasRepo, useValue: { observarUsuarios: () => of(USUARIOS) } },
     ],
   });
@@ -266,6 +268,52 @@ describe('OsFormPage', () => {
       expect(navegar).not.toHaveBeenCalled();
     });
 
+    it('M4: a recusa do endereço copiado (endereco*) vai para a escolha do endereço, com o caminho para corrigir', async () => {
+      const { fixture, el, repo, toastErro } = await montar();
+      escolherCliente(fixture, el, 'Padaria São João');
+      escolher(fixture, campo(el, '#tipo-os'), 'SERVICO');
+      digitar(fixture, campo(el, '#descricao-os'), 'Visita');
+      repo.criarAvulsa.mockRejectedValueOnce(ErroOs.de({
+        codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { enderecoUf: 'UF inválida.', enderecoCidade: 'Máximo de 80 caracteres.' },
+      }));
+      botao(el, 'Criar OS')!.click();
+      await ate(fixture, () => expect(el.querySelector('#erro-endereco-os')!.textContent)
+        .toContain('O endereço escolhido tem dados inválidos: corrija no cadastro do cliente.'));
+      expect(toastErro).not.toHaveBeenCalled();
+      await vi.waitFor(() => expect(document.activeElement).toBe(campo(el, '#endereco-os-0')));
+    });
+
+    it('N4: a busca anuncia quantos clientes achou', async () => {
+      const { fixture, el } = await montar();
+      const anuncio = () => el.querySelector('[role=status][aria-live=polite]')!.textContent!.trim();
+      digitar(fixture, campo(el, '#busca-cliente-os'), 'padaria');
+      await ate(fixture, () => expect(anuncio()).toBe('1 cliente encontrado.'));
+      digitar(fixture, campo(el, '#busca-cliente-os'), '11444777');
+      await ate(fixture, () => expect(anuncio()).toBe('2 clientes encontrados.'));
+      digitar(fixture, campo(el, '#busca-cliente-os'), 'zzz');
+      await ate(fixture, () => expect(anuncio()).toBe('Nenhum cliente encontrado.'));
+    });
+
+    it('N5: os endereços do cliente reordenados pelo sync: a escolha segue o mesmo endereço; se ele sumiu, o padrão com aviso', async () => {
+      const clientes$ = new BehaviorSubject<ClienteLocal[]>(CLIENTES);
+      const { fixture, el, repo } = await montar({ clientes$ });
+      escolherCliente(fixture, el, 'Padaria São João');
+      marcar(fixture, el.querySelectorAll<HTMLInputElement>('input[name=endereco-os]')[2], true);
+      // o de Campinas passa para o começo da lista
+      const [cobranca, principal, instalacao] = PADARIA.enderecos;
+      clientes$.next([{ ...PADARIA, enderecos: [instalacao, cobranca, principal] }, MERCADO]);
+      await ate(fixture, () => expect(el.querySelectorAll<HTMLInputElement>('input[name=endereco-os]')[0].checked).toBe(true));
+      escolher(fixture, campo(el, '#tipo-os'), 'SERVICO');
+      digitar(fixture, campo(el, '#descricao-os'), 'Visita');
+      botao(el, 'Criar OS')!.click();
+      await vi.waitFor(() => expect(repo.criarAvulsa).toHaveBeenCalled());
+      expect(repo.criarAvulsa.mock.calls[0][0].enderecoId).toBe(0);
+      // e se ele some, volta ao principal com o aviso
+      clientes$.next([{ ...PADARIA, enderecos: [cobranca, principal] }, MERCADO]);
+      await ate(fixture, () => expect(el.querySelector('#erro-endereco-os')!.textContent).toContain('Os endereços do cliente mudaram'));
+      expect(el.querySelectorAll<HTMLInputElement>('input[name=endereco-os]')[1].checked).toBe(true);
+    });
+
     it('alterações não salvas: o guard pergunta; depois de criar, não', async () => {
       const { fixture, el, pagina } = await montar();
       expect(pagina.temAlteracoes()).toBe(false);
@@ -437,6 +485,39 @@ describe('OsFormPage', () => {
       escolher(fixture, campo(el, '#tipo-os'), 'CORRETIVA');
       botao(el, 'Salvar')!.click();
       await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Não pode ser alterado com a OS em andamento.'));
+    });
+
+    it('M6: a carga de outra OS que termina depois não sobrescreve a OS aberta agora', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN, os: osLocal('ABERTA') });
+      let liberarO1!: (o: OsLocal) => void;
+      repo.buscar.mockImplementation((id) => (id === 'o1'
+        ? new Promise<OsLocal>((r) => (liberarO1 = r))
+        : Promise.resolve(paraOsLocal('o2', 3, osDados('ABERTA', { numero: 456, descricao: 'Outra OS' })))));
+      fixture.componentRef.setInput('id', 'x');
+      fixture.componentRef.setInput('id', 'o1');
+      fixture.detectChanges();
+      fixture.componentRef.setInput('id', 'o2');
+      await ate(fixture, () => expect(campo<HTMLTextAreaElement>(el, '#descricao-os').value).toBe('Outra OS'));
+      liberarO1(osLocal('ABERTA', { descricao: 'A OS antiga' }));
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(campo<HTMLTextAreaElement>(el, '#descricao-os').value).toBe('Outra OS');
+      expect(el.querySelector('h1')!.textContent).toContain('OS-000456');
+    });
+
+    it('M6: o salvar de uma OS que termina com outra aberta não avisa nem navega', async () => {
+      const { fixture, el, repo, navegar, toast } = await montar({ usuario: ADMIN, os: osLocal('ABERTA') });
+      let liberar!: () => void;
+      repo.salvarCabecalho.mockImplementationOnce(() => new Promise<void>((r) => (liberar = r)));
+      marcar(fixture, campo(el, '#urgente-os'), true);
+      botao(el, 'Salvar')!.click();
+      await vi.waitFor(() => expect(repo.salvarCabecalho).toHaveBeenCalled());
+      fixture.componentRef.setInput('id', 'o2');
+      fixture.detectChanges();
+      liberar();
+      await fixture.whenStable();
+      expect(toast).not.toHaveBeenCalledWith('OS salva.');
+      expect(navegar).not.toHaveBeenCalled();
     });
 
     it('alterações não salvas no cabeçalho contam para o guard', async () => {

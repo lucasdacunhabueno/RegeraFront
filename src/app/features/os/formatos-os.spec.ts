@@ -3,7 +3,7 @@ import { ErroOs } from './erro-os';
 import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import {
   atrasadaOs, CODIGOS_ERRO_OS, concluidaRecente, correspondeABuscaOs, criacaoOs, localDaOs, mensagemErroOs, osEncerrada, rotuloCampoOs,
-  selosDaOs, selosOsDaProposta, textoPerdaOs,
+  osPorProposta, selosDaOs, selosOsDaProposta, textoPerdaOs,
 } from './formatos-os';
 import { OsDados, OsLocal, paraOsLocal, StatusOs } from './os-models';
 
@@ -64,6 +64,12 @@ describe('formatos-os', () => {
       expect(textoPerdaOs(['fotos', 'assinatura', 'precisaVoltar', 'cancelamento', 'reabertura'])).toBe(
         'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: as fotos, a assinatura, o "Precisa voltar", '
         + 'o cancelamento e a reabertura.');
+    });
+
+    it('T4 fix (I1 da T5): a OS criada aqui, as alterações do cabeçalho e a troca de técnico (as do escritório, no fim)', () => {
+      expect(textoPerdaOs(['atribuicao', 'cabecalho', 'notas', 'criacao'])).toBe(
+        'Isto descarta o que esta OS tem neste aparelho e ainda não foi enviado: a OS criada neste aparelho, as notas, '
+        + 'as alterações do cabeçalho e a troca de técnico.');
     });
   });
 
@@ -192,6 +198,20 @@ describe('formatos-os', () => {
       expect(rotulos(os('ABERTA', { dataPrevista: '2026-10-02' }))).toEqual([]);
       expect(rotulos(os('CONCLUIDA', { urgente: true, dataPrevista: '2026-09-01' }), true)).toEqual(['Não sincronizada']);
       expect(rotulos(os('CANCELADA', { urgente: true }))).toEqual([]);
+    });
+
+    it('M7: "Trabalho em proposta cancelada" primeiro, com a proposta cancelada e a OS em andamento ou concluída', () => {
+      const hoje = '2026-10-01';
+      const tipos = (o: OsLocal, propostaCancelada: boolean) =>
+        selosDaOs(o, { naoSincronizada: true, hoje, propostaCancelada }).map((s) => s.tipo);
+      expect(tipos(os('EM_ANDAMENTO', { urgente: true, dataPrevista: '2026-10-05' }), true))
+        .toEqual(['proposta-cancelada', 'urgente', 'nao-sincronizada']);
+      expect(selosDaOs(os('CONCLUIDA'), { naoSincronizada: false, hoje, propostaCancelada: true }))
+        .toEqual([{ tipo: 'proposta-cancelada', rotulo: 'Trabalho em proposta cancelada' }]);
+      // sem trabalho (aberta) ou já cancelada: nada a aceitar ali
+      expect(tipos(os('ABERTA', { dataPrevista: '2026-10-05' }), true)).toEqual(['nao-sincronizada']);
+      expect(tipos(os('CANCELADA'), true)).toEqual(['nao-sincronizada']);
+      expect(tipos(os('EM_ANDAMENTO', { dataPrevista: '2026-10-05' }), false)).toEqual(['nao-sincronizada']);
     });
 
     it('osEncerrada: concluída e cancelada', () => {
@@ -330,6 +350,14 @@ describe('formatos-os', () => {
       expect(tipos('CANCELADA', [os('CANCELADA')])).toEqual([]);
       // a recusada não tem aceite (o servidor só reabre a cancelada)
       expect(tipos('RECUSADA', [os('EM_ANDAMENTO')])).toEqual(['os-em-andamento']);
+    });
+
+    it('osPorProposta agrupa pela proposta, na ordem recebida, e deixa a avulsa de fora', () => {
+      const a = os('ABERTA', { propostaId: 'p1' });
+      const b = os('CONCLUIDA', { propostaId: 'p2' });
+      const c = os('CANCELADA', { propostaId: 'p1' });
+      const avulsa = os('ABERTA', { propostaId: null });
+      expect([...osPorProposta([a, b, avulsa, c])]).toEqual([['p1', [a, c]], ['p2', [b]]]);
     });
 
     it('um selo de cada tipo, mesmo com várias OS no mesmo status', () => {

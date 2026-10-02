@@ -1,7 +1,7 @@
 import { signal } from '@angular/core';
 import { ComponentFixture, TestBed } from '@angular/core/testing';
 import { provideRouter, Router } from '@angular/router';
-import { BehaviorSubject, of } from 'rxjs';
+import { BehaviorSubject, filter, of } from 'rxjs';
 import { vi } from 'vitest';
 import type { UsuarioSessao } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
@@ -49,6 +49,7 @@ interface Opcoes {
   usuario?: UsuarioSessao;
   proposta?: PropostaLocal;
   oss?: OsLocal[];
+  bloqueado?: boolean;
 }
 
 async function montar(o: Opcoes = {}) {
@@ -72,6 +73,7 @@ async function montar(o: Opcoes = {}) {
   const fixture = TestBed.createComponent(OsDaProposta);
   fixture.componentRef.setInput('proposta', o.proposta ?? proposta());
   fixture.componentRef.setInput('clienteNome', 'Padaria São João');
+  if (o.bloqueado !== undefined) fixture.componentRef.setInput('bloqueado', o.bloqueado);
   fixture.detectChanges();
   const el = fixture.nativeElement as HTMLElement;
   await ate(fixture, () => expect(el.textContent).not.toContain('Carregando'));
@@ -98,6 +100,17 @@ describe('OsDaProposta', () => {
     expect(el.textContent).toContain('Técnico: Téo Técnico');
     expect(el.textContent).toContain('Sem técnico');
     expect(el.querySelector('a[href="/os/a"]')).not.toBeNull();
+  });
+
+  it('M7: o ADMIN vê "Trabalho em proposta cancelada" na OS da proposta cancelada; o COMERCIAL, não', async () => {
+    const cancelada = proposta({ status: 'CANCELADA' });
+    let { el } = await montar({ usuario: ADMIN, proposta: cancelada, oss: [os('a', 'EM_ANDAMENTO'), os('b', 'CANCELADA')] });
+    const selos = (i: number) => [...el.querySelectorAll('app-os-card')[i].querySelectorAll('[data-selo]')].map((s) => s.textContent?.trim());
+    expect(selos(0)).toEqual(['Trabalho em proposta cancelada']);
+    expect(selos(1)).toEqual([]);
+    TestBed.resetTestingModule();
+    ({ el } = await montar({ usuario: COMERCIAL, proposta: cancelada, oss: [os('a', 'EM_ANDAMENTO')] }));
+    expect(el.querySelector('[data-selo]')).toBeNull();
   });
 
   it('sem OS: o aviso', async () => {
@@ -192,6 +205,68 @@ describe('OsDaProposta', () => {
     fixture.detectChanges();
     expect(el.querySelector('app-dialogo-gerar-os')).not.toBeNull();
     expect(navegar).not.toHaveBeenCalled();
+  });
+
+  it('M1: com CONFLITO da proposta, "Gerar OS" desabilitado com "Resolva a pendência primeiro"', async () => {
+    const { el } = await montar({ bloqueado: true });
+    const b = botao(el, 'Gerar OS')!;
+    expect(b.disabled).toBe(true);
+    expect(el.querySelector(`#${b.getAttribute('aria-describedby')}`)!.textContent).toContain('Resolva a pendência primeiro.');
+    b.click();
+    expect(el.querySelector('app-dialogo-gerar-os')).toBeNull();
+  });
+
+  it('M6: o toque duplo no "Gerar OS" do diálogo gera uma OS só', async () => {
+    const { fixture, el, repo } = await montar();
+    let liberar!: (id: string) => void;
+    repo.gerarDaProposta.mockImplementationOnce(() => new Promise((r) => (liberar = r)));
+    botao(el, 'Gerar OS')!.click();
+    fixture.detectChanges();
+    const dialogo = el.querySelector('app-dialogo-gerar-os') as HTMLElement;
+    // o confirmar do diálogo chega duas vezes antes do primeiro desenho (o botão ainda habilitado)
+    const confirmar = botao(dialogo, 'Gerar OS')!;
+    confirmar.click();
+    confirmar.click();
+    liberar('o-nova');
+    await vi.waitFor(() => expect(repo.gerarDaProposta).toHaveBeenCalledTimes(1));
+    await fixture.whenStable();
+    expect(repo.gerarDaProposta).toHaveBeenCalledTimes(1);
+  });
+
+  it('M3: a tela que saiu enquanto a OS era gerada não navega para ela', async () => {
+    const { fixture, el, repo, navegar, toast } = await montar();
+    let liberar!: (id: string) => void;
+    repo.gerarDaProposta.mockImplementationOnce(() => new Promise((r) => (liberar = r)));
+    botao(el, 'Gerar OS')!.click();
+    fixture.detectChanges();
+    botao(el.querySelector('app-dialogo-gerar-os') as HTMLElement, 'Gerar OS')!.click();
+    await vi.waitFor(() => expect(repo.gerarDaProposta).toHaveBeenCalled());
+    fixture.destroy();
+    liberar('o-nova');
+    await vi.waitFor(() => expect(toast).toHaveBeenCalledWith('OS gerada.'));
+    expect(navegar).not.toHaveBeenCalled();
+  });
+
+  it('N2: "Gerar OS" espera a lista de usuários (o técnico da proposta vem escolhido)', async () => {
+    const usuarios$ = new BehaviorSubject<UsuarioResumo[] | null>(null);
+    TestBed.configureTestingModule({
+      providers: [
+        provideRouter([]),
+        { provide: AuthService, useValue: { usuario: signal(COMERCIAL) } },
+        { provide: OsRepo, useValue: { observarDaProposta: () => of([]), observarEstadoSync: () => of(SEM_ESTADO), gerarDaProposta: vi.fn() } },
+        { provide: PropostasRepo, useValue: { observarUsuarios: () => usuarios$.pipe(filter((u): u is UsuarioResumo[] => u !== null)) } },
+      ],
+    });
+    const fixture = TestBed.createComponent(OsDaProposta);
+    fixture.componentRef.setInput('proposta', proposta());
+    fixture.detectChanges();
+    const el = fixture.nativeElement as HTMLElement;
+    expect(botao(el, 'Gerar OS')!.disabled).toBe(true);
+    usuarios$.next(USUARIOS);
+    await ate(fixture, () => expect(botao(el, 'Gerar OS')!.disabled).toBe(false));
+    botao(el, 'Gerar OS')!.click();
+    fixture.detectChanges();
+    expect(el.querySelector<HTMLSelectElement>('select[name=tecnico]')!.value).toBe(TECNICO.id);
   });
 
   it('Voltar fecha o diálogo sem gerar', async () => {

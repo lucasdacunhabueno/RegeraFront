@@ -1179,25 +1179,45 @@ describe('OsExecucaoPage', () => {
     const os = (status: StatusOs = 'CONCLUIDA', revisao = 1) => osLocal(status, { revisao });
 
     it('fora de CONCLUIDA, nunca', () => {
-      expect(motivoParaRegerarOs(os('EM_ANDAMENTO'), [], [])).toBeNull();
+      expect(motivoParaRegerarOs(os('EM_ANDAMENTO'), [], [], ADMIN)).toBeNull();
     });
 
     it('sem DOCUMENTO da revisão atual (o de outra revisão não conta)', () => {
-      expect(motivoParaRegerarOs(os(), [], [])).toBe('SEM_DOCUMENTO');
-      expect(motivoParaRegerarOs(os('CONCLUIDA', 2), [documentoPdf({ revisaoOs: 1 })], [])).toBe('SEM_DOCUMENTO');
-      expect(motivoParaRegerarOs(os('CONCLUIDA', 2), [documentoPdf({ revisaoOs: 2 })], [])).toBeNull();
+      expect(motivoParaRegerarOs(os(), [], [], ADMIN)).toBe('SEM_DOCUMENTO');
+      expect(motivoParaRegerarOs(os('CONCLUIDA', 2), [documentoPdf({ revisaoOs: 1 })], [], ADMIN)).toBe('SEM_DOCUMENTO');
+      expect(motivoParaRegerarOs(os('CONCLUIDA', 2), [documentoPdf({ revisaoOs: 2 })], [], ADMIN)).toBeNull();
     });
 
     it.each(['CODIGO_EXIBIDO_INVALIDO', 'ANEXO_AUSENTE'])('PDF desta revisão recusado com %s', (codigo) => {
-      expect(motivoParaRegerarOs(os(), [documentoPdf()], [recusaDoPdf(codigo)])).toBe('RECUSADO');
+      expect(motivoParaRegerarOs(os(), [documentoPdf()], [recusaDoPdf(codigo)], ADMIN)).toBe('RECUSADO');
     });
 
     it.each(['REVISAO_INVALIDA', 'STATUS_INVALIDO', 'OS_CONCLUIDA_POR_OUTRO'])('%s não se resolve gerando de novo', (codigo) => {
-      expect(motivoParaRegerarOs(os(), [documentoPdf()], [recusaDoPdf(codigo)])).toBeNull();
+      expect(motivoParaRegerarOs(os(), [documentoPdf()], [recusaDoPdf(codigo)], ADMIN)).toBeNull();
     });
 
     it('a recusa de uma foto não conta', () => {
-      expect(motivoParaRegerarOs(os(), [documentoPdf(), anexo('f1')], [recusaDoPdf('CODIGO_EXIBIDO_INVALIDO', 'f1')])).toBeNull();
+      expect(motivoParaRegerarOs(os(), [documentoPdf(), anexo('f1')], [recusaDoPdf('CODIGO_EXIBIDO_INVALIDO', 'f1')], ADMIN)).toBeNull();
+    });
+
+    it('a regra compartilhada (pdfRegeravel): o ADMIN e o técnico atribuído; o COMERCIAL e outro técnico, nunca', () => {
+      expect(motivoParaRegerarOs(os(), [], [], TECNICO)).toBe('SEM_DOCUMENTO');
+      expect(motivoParaRegerarOs(os(), [], [], COMERCIAL)).toBeNull();
+      expect(motivoParaRegerarOs(os(), [], [], OUTRO_TECNICO)).toBeNull();
+      expect(motivoParaRegerarOs(os(), [], [], null)).toBeNull();
+    });
+
+    it('o técnico, não depois que o servidor disse que outro concluiu (a pendência ou o histórico); o ADMIN, sim', () => {
+      expect(motivoParaRegerarOs(os(), [documentoPdf()], [recusaDoPdf('CODIGO_EXIBIDO_INVALIDO'), recusaDoPdf('OS_CONCLUIDA_POR_OUTRO', 'd9')], TECNICO))
+        .toBeNull();
+      const porOutro = osLocal('CONCLUIDA', {
+        concluidaEm: '2026-10-01T15:00:00Z',
+        historico: [{ statusDe: 'EM_ANDAMENTO', statusPara: 'CONCLUIDA', usuarioId: ADMIN.id, em: '2026-10-01T15:00:00Z' }],
+      });
+      expect(motivoParaRegerarOs(porOutro, [], [], TECNICO)).toBeNull();
+      expect(motivoParaRegerarOs(porOutro, [], [], ADMIN)).toBe('SEM_DOCUMENTO');
+      // a conclusão deste aparelho ainda sem resposta do servidor (concluidaEm null): a última lá vai ser a dele
+      expect(motivoParaRegerarOs({ ...porOutro, concluidaEm: null }, [], [], TECNICO)).toBe('SEM_DOCUMENTO');
     });
   });
 
@@ -1425,6 +1445,9 @@ describe('OsExecucaoPage', () => {
       repo.atribuir.mockRejectedValueOnce(ErroOs.de({ codigo: 'VALIDACAO', mensagem: 'Dados inválidos.', campos: { tecnicoId: 'Técnico inválido: escolha um técnico ativo.' } }));
       botao(el, 'Trocar técnico')!.click();
       fixture.detectChanges();
+      const select = el.querySelector<HTMLSelectElement>('#tecnico-atribuir-os')!;
+      select.value = OUTRO_TECNICO.id;
+      select.dispatchEvent(new Event('change'));
       botao(el, 'Salvar técnico')!.click();
       await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('Técnico inválido: escolha um técnico ativo.'));
     });
@@ -1457,6 +1480,96 @@ describe('OsExecucaoPage', () => {
       await fixture.whenStable();
       fixture.detectChanges();
       expect(toast).not.toHaveBeenCalledWith('Trabalho aceito. A proposta será reaberta ao sincronizar.');
+    });
+  });
+
+  describe('fix round 1 (T4)', () => {
+    const botaoEm = (raiz: Element, texto: string) =>
+      [...raiz.querySelectorAll<HTMLButtonElement>('button')].find((b) => b.textContent?.trim() === texto)!;
+
+    it('M2: depois do aceite, o botão sai e a faixa diz que a proposta reabre ao sincronizar (sem um segundo aceite)', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN, os: osLocal('CONCLUIDA'), propostaStatus: 'CANCELADA' });
+      botao(el, 'Aceitar o trabalho')!.click();
+      fixture.detectChanges();
+      botaoEm(el.querySelector('[role=alertdialog]')!, 'Aceitar o trabalho').click();
+      await vi.waitFor(() => expect(repo.aceitarTrabalho).toHaveBeenCalledTimes(1));
+      await ate(fixture, () => expect(botao(el, 'Aceitar o trabalho')).toBeUndefined());
+      expect(el.querySelector('[data-testid=proposta-cancelada]')!.textContent).toContain('Trabalho aceito: a proposta reabre ao sincronizar.');
+      expect(el.querySelector('[data-testid=proposta-cancelada]')!.textContent).not.toContain('Aceite o trabalho');
+    });
+
+    it('N1: salvar o mesmo técnico só fecha o editor, sem gravar nem avisar', async () => {
+      const { fixture, el, repo, toast } = await montar({ usuario: ADMIN, os: osLocal('ABERTA') });
+      botao(el, 'Trocar técnico')!.click();
+      fixture.detectChanges();
+      botao(el, 'Salvar técnico')!.click();
+      fixture.detectChanges();
+      expect(repo.atribuir).not.toHaveBeenCalled();
+      expect(toast).not.toHaveBeenCalled();
+      expect(el.querySelector('#tecnico-atribuir-os')).toBeNull();
+    });
+
+    it('T2 carry: o iniciar de uma OS que termina com outra aberta não avisa nem foca nesta', async () => {
+      const { fixture, el, repo, toast } = await montar({ os: osLocal('ABERTA') });
+      let liberar!: () => void;
+      repo.iniciar.mockImplementationOnce(() => new Promise<void>((r) => (liberar = r)));
+      botao(el, 'Iniciar OS')!.click();
+      await vi.waitFor(() => expect(repo.iniciar).toHaveBeenCalledWith('o1'));
+      fixture.componentRef.setInput('id', 'o2');
+      fixture.detectChanges();
+      liberar();
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(toast).not.toHaveBeenCalled();
+      expect(anuncio(el)).toBe('');
+    });
+
+    it('T2 carry: a nota de uma OS que termina com outra aberta não apaga o campo nem avisa nesta', async () => {
+      const { fixture, el, repo, toast } = await montar();
+      let liberar!: (id: string) => void;
+      repo.adicionarNota.mockImplementationOnce(() => new Promise<string>((r) => (liberar = r)));
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!, 'Da OS antiga');
+      botao(el, 'Adicionar')!.click();
+      await vi.waitFor(() => expect(repo.adicionarNota).toHaveBeenCalledWith('o1', 'Da OS antiga'));
+      fixture.componentRef.setInput('id', 'o2');
+      fixture.detectChanges();
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!, 'Já da OS nova');
+      liberar('n-x');
+      await fixture.whenStable();
+      fixture.detectChanges();
+      expect(el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!.value).toBe('Já da OS nova');
+      expect(toast).not.toHaveBeenCalled();
+    });
+
+    it('T2 carry: "Tirar foto" desabilitado durante o compartilhamento do PDF, com a dica ligada', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN, anexos: [documentoPdf()] });
+      let liberar!: (b: Blob) => void;
+      repo.blobDoAnexo.mockImplementationOnce(() => new Promise<Blob>((r) => (liberar = r)));
+      botao(el, 'Compartilhar')!.click();
+      fixture.detectChanges();
+      const tirar = botao(el, 'Tirar foto')!;
+      expect(tirar.disabled).toBe(true);
+      expect(el.querySelector(`#${tirar.getAttribute('aria-describedby')}`)!.textContent).toContain('Aguarde o compartilhamento do PDF');
+      liberar(new Blob(['%PDF'], { type: 'application/pdf' }));
+      await ate(fixture, () => expect(botao(el, 'Tirar foto')!.disabled).toBe(false));
+      expect(botao(el, 'Tirar foto')!.getAttribute('aria-describedby')).toBeNull();
+    });
+
+    it('T2 carry: e durante o registro da recusa da assinatura', async () => {
+      const { fixture, el, repo } = await montar();
+      let liberar!: () => void;
+      repo.recusarAssinatura.mockImplementationOnce(() => new Promise<void>((r) => (liberar = r)));
+      botao(el, 'Cliente não pôde assinar')!.click();
+      fixture.detectChanges();
+      const dialogo = el.querySelector<HTMLElement>('[role=dialog]')!;
+      digitar(fixture, dialogo.querySelector('textarea')!, 'Cliente ausente');
+      botaoEm(dialogo, 'Registrar').click();
+      fixture.detectChanges();
+      const tirar = botao(el, 'Tirar foto')!;
+      expect(tirar.disabled).toBe(true);
+      expect(el.querySelector(`#${tirar.getAttribute('aria-describedby')}`)!.textContent).toContain('Aguarde o registro da recusa');
+      liberar();
+      await ate(fixture, () => expect(botao(el, 'Tirar foto')!.disabled).toBe(false));
     });
   });
 

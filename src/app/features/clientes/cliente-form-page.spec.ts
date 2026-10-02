@@ -340,6 +340,35 @@ describe('ClienteFormPage', () => {
       expect(secao(el)!.textContent).not.toContain('Nenhuma proposta para este cliente.');
     });
 
+    it('M2-P3: os cards levam os selos das OS da proposta (as do cliente que o perfil vê)', async () => {
+      const osDe = (id: string, propostaId: string, status: OsLocal['status']): OsLocal => paraOsLocal(id, 1, {
+        codigoProvisorio: 'OSP-AAAAAA', propostaId, clienteId: 'id1', tipo: 'SERVICO', status, urgente: false, concluiProposta: true,
+        assinaturaRecusada: false, itens: [], notas: [],
+      });
+      const { fixture, el, osRepo } = montar({
+        id: 'id1',
+        propostas: [propostaDe('a', { numero: 277, revisao: 1, status: 'EM_EXECUCAO' }), propostaDe('c', { numero: 278, revisao: 1, status: 'APROVADA' })],
+        os: [osDe('o1', 'a', 'EM_ANDAMENTO'), osDe('o2', 'c', 'CANCELADA')],
+      });
+      await vi.waitFor(() => {
+        fixture.detectChanges();
+        expect(secao(el)!.querySelectorAll('app-proposta-card')).toHaveLength(2);
+      });
+      expect(osRepo.observarDoCliente).toHaveBeenCalledWith('id1');
+      const selos = (i: number) =>
+        [...secao(el)!.querySelectorAll('app-proposta-card')[i].querySelectorAll('[data-selo]')].map((s) => s.getAttribute('data-selo'));
+      expect(selos(0)).toEqual(['os-em-andamento']);
+      expect(selos(1)).toEqual(['os-cancelada']);
+    });
+
+    it('N4: "Carregando…" e o vazio numa região de status fixa', async () => {
+      const { fixture, el } = montar({ id: 'id1' });
+      await fixture.whenStable();
+      fixture.detectChanges();
+      const regiao = secao(el)!.querySelector('[role=status]')!;
+      expect(regiao.textContent?.trim()).toBe('Nenhuma proposta para este cliente.');
+    });
+
     it('sem propostas: texto vazio e "Nova proposta" com o clienteId', async () => {
       const { fixture, el } = montar({ id: 'id1' });
       await fixture.whenStable();

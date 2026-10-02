@@ -15,6 +15,7 @@ import { Toasts } from '../../shared/ui/toasts';
 import { mensagemErroOs, rotuloCampoOs, textoPerdaOs } from '../os/formatos-os';
 import { codigoOsExibido, OsDados, OsLocal, TipoAnexoOs } from '../os/os-models';
 import { OsRepo } from '../os/os-repo';
+import { pdfRegeravel, recusaDePdfRegeravel } from '../os/pdf-regeravel';
 import { arquivoPdf, compartilharArquivo, ResultadoCompartilhar } from '../propostas/compartilhar';
 import { DialogoMotivo } from '../propostas/dialogo-motivo';
 import { mensagemErroProposta, rotuloCodigo } from '../propostas/formatos-proposta';
@@ -35,11 +36,11 @@ const ROTULO_ANEXO_OS: Readonly<Record<TipoAnexoOs, string>> = { FOTO: 'Foto', A
 const AVISO_PROPOSTA = 'Isto descarta o envio e o PDF gerado neste aparelho.';
 
 /**
- * M2P2-R18: as recusas do PDF da OS que "Gerar PDF novamente" resolve (as mesmas da tela da OS), com o texto da
- * pendência quando dá para gerar: o código impresso mudou (o `OSP-` trocado, a numeração que chegou) ou o arquivo
- * sumiu do aparelho.
+ * M2P2-R18: o texto da pendência quando dá para gerar o PDF da OS de novo, para cada recusa que isso resolve
+ * (`RECUSAS_PDF_OS_QUE_SE_REGERAM`, a regra compartilhada): o código impresso mudou (o `OSP-` trocado, a numeração que
+ * chegou) ou o arquivo sumiu do aparelho.
  */
-const RECUSAS_PDF_OS_QUE_SE_REGERAM: Readonly<Record<string, string>> = {
+const TEXTO_RECUSA_PDF_OS: Readonly<Record<string, string>> = {
   CODIGO_EXIBIDO_INVALIDO: 'O código da OS mudou depois que o PDF foi gerado. Gere o PDF novamente.',
   ANEXO_AUSENTE: 'O arquivo deste PDF não está mais neste aparelho. Gere o PDF novamente.',
 };
@@ -337,21 +338,21 @@ export class PendenciasPage {
   }
 
   /**
-   * O PDF da OS recusado que o `OsRepo.regerarPdf` troca (M2P2-R18), as regras dele vistas daqui: a recusa é das que
-   * gerar de novo resolve (`RECUSAS_PDF_OS_QUE_SE_REGERAM`); a OS está CONCLUIDA no aparelho; o PDF é da revisão atual
-   * (o de outra revisão fica, com a pendência dele); quem vê é o ADMIN ou o técnico atribuído. O TECNICO nunca, se o
-   * servidor disse que outro usuário concluiu a OS (`OS_CONCLUIDA_POR_OUTRO`, M2P1-R28/R29: o PDF dele voltaria 403).
+   * O PDF da OS recusado que o `OsRepo.regerarPdf` troca (M2P2-R18), pela regra compartilhada (`pdf-regeravel`): a
+   * recusa é das que gerar de novo resolve, do PDF da revisão atual (o de outra revisão fica, com a pendência dele); a
+   * OS está CONCLUIDA no aparelho; quem vê é o ADMIN ou o técnico atribuído; o TECNICO nunca, se o servidor disse que
+   * outro usuário concluiu a OS (a pendência `OS_CONCLUIDA_POR_OUTRO` ou o histórico, M2P1-R28/R29).
    */
   private podeRegerarOs(p: Pendencia): boolean {
-    if (p.tipo !== 'REJEITADO' || p.entidade !== TIPO_UPLOAD_ANEXO_OS) return false;
-    if (!Object.hasOwn(RECUSAS_PDF_OS_QUE_SE_REGERAM, p.erro?.codigo ?? '')) return false;
     const os = this.osLocal(p);
+    if (!os) return false;
     const anexoId = (p.mutacao.dados as DadosUploadAnexoOs | null)?.anexoId;
     // só os PDFs têm revisão no contexto
     const revisao = anexoId ? this.contextoOs().revisoesDosPdfs.get(anexoId) : undefined;
-    if (!os || os.status !== 'CONCLUIDA' || revisao !== (os.revisao ?? 1) || !this.executaOs(p)) return false;
-    const porOutro = this.itens().some((x) => x.agregadoId === p.agregadoId && x.erro?.codigo === 'OS_CONCLUIDA_POR_OUTRO');
-    return !(porOutro && this.auth.usuario()?.perfil === 'TECNICO');
+    if (!recusaDePdfRegeravel(p, os, revisao)) return false;
+    // a regra compartilhada (`pdfRegeravel`); a tela não vê a fila: a conclusão daqui ainda sem resposta é `concluidaEm` null
+    const daOs = this.itens().filter((x) => x.agregadoId === p.agregadoId);
+    return pdfRegeravel(os, this.auth.usuario(), daOs, os.concluidaEm === null);
   }
 
   /** O PDF da OS reaberta no servidor (`RECUSAS_PDF_OS_REABERTA`), para quem a executa: a pendência diz o que fazer. */
@@ -393,7 +394,7 @@ export class PendenciasPage {
         ? 'Este PDF é de uma revisão que já foi substituída. Descarte esta pendência.'
         : `${p.erro?.mensagem ?? 'O código impresso no PDF não é o da proposta.'} Descarte esta pendência.`;
     }
-    if (this.podeRegerarOs(p)) return RECUSAS_PDF_OS_QUE_SE_REGERAM[p.erro?.codigo ?? ''];
+    if (this.podeRegerarOs(p)) return TEXTO_RECUSA_PDF_OS[p.erro?.codigo ?? ''];
     if (this.pdfDaOsReaberta(p)) return `${p.erro?.mensagem ?? ''} ${CONCLUIR_DE_NOVO}`.trim();
     // M2-R3/R22: o envio do técnico que perdeu a atribuição há mais de 7 dias; o upload recusado já vem com o texto
     if (p.entidade === 'os' && p.erro?.codigo === 'ACESSO_NEGADO' && this.auth.usuario()?.perfil === 'TECNICO') {
@@ -492,10 +493,12 @@ export class PendenciasPage {
         });
       }
     });
-    // N3: com a pendência ainda na lista, o botão volta a ficar habilitado no próximo render e retoma o foco
+    // N3: com a pendência ainda na lista, o botão volta a ficar habilitado no próximo render e retoma o foco, só se o
+    // foco se perdeu (no body) ou ficou nele: o usuário que foi a outro controle durante a geração fica onde está
     if (!falhou || !gatilho) return;
     afterNextRender(() => {
-      if (gatilho.isConnected) gatilho.focus();
+      const ativo = gatilho.ownerDocument.activeElement;
+      if (gatilho.isConnected && (!ativo || ativo === gatilho.ownerDocument.body || ativo === gatilho)) gatilho.focus();
     }, { injector: this.injector });
   }
 

@@ -87,7 +87,8 @@ describe('OsDoCliente', () => {
   it('"Carregando…" antes da primeira leitura; troca de cliente relê', async () => {
     const lista = new Subject<OsLocal[]>();
     const { el, fixture, repo } = montar({ lista });
-    expect(secao(el).querySelector('[role=status]')?.textContent?.trim()).toBe('Carregando…');
+    const regiao = secao(el).querySelector('[role=status]');
+    expect(regiao?.textContent?.trim()).toBe('Carregando…');
     expect(secao(el).textContent).not.toContain('Nenhuma OS');
     lista.next([os('a', { numero: 1 })]);
     fixture.detectChanges();
@@ -99,5 +100,8 @@ describe('OsDoCliente', () => {
     fixture.detectChanges();
     expect(repo.observarDoCliente).toHaveBeenLastCalledWith('c2');
     expect(secao(el).textContent).toContain('Nenhuma OS para este cliente.');
+    // N4: a mesma região do começo (fixa), agora com o vazio
+    expect(secao(el).querySelector('[role=status]')).toBe(regiao);
+    expect(regiao?.textContent?.trim()).toBe('Nenhuma OS para este cliente.');
   });
 });

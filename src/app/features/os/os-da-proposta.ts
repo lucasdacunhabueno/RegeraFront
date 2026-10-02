@@ -1,4 +1,4 @@
-import { Component, computed, effect, inject, input, signal } from '@angular/core';
+import { Component, computed, DestroyRef, effect, inject, input, signal } from '@angular/core';
 import { toSignal } from '@angular/core/rxjs-interop';
 import { Router } from '@angular/router';
 import { AuthService } from '../../core/auth/auth-service';
@@ -23,7 +23,9 @@ interface Linha {
  * perfil: o COMERCIAL só as em que é o responsável), da mais recente à mais antiga, com o card da lista de OS. "Gerar
  * OS" com a proposta APROVADA ou EM_EXECUCAO, para o ADMIN e o COMERCIAL responsável: o `DialogoGerarOs` (com a
  * descrição para revisar, M2P2-R17), `gerarDaProposta` e a navegação para a OS nova. A recusa fica num toast pelo
- * `mensagemErroOs`, com o diálogo aberto.
+ * `mensagemErroOs`, com o diálogo aberto. Com um CONFLITO da proposta (`bloqueado`, P4c-R15) o botão fica desabilitado
+ * com "Resolva a pendência primeiro": o status local pode estar velho, e a OS voltaria recusada. Até a lista de usuários
+ * carregar também (o técnico da proposta vem escolhido no diálogo).
  */
 @Component({
   selector: 'app-os-da-proposta',
@@ -33,10 +35,14 @@ interface Linha {
       <div class="flex flex-wrap items-center justify-between gap-2">
         <h2 id="os-proposta-titulo" class="font-semibold">Ordens de serviço</h2>
         @if (podeGerar()) {
-          <button type="button" (click)="abrir($any($event.currentTarget))" [disabled]="gerando()"
+          <button type="button" (click)="abrir($any($event.currentTarget))" [disabled]="gerando() || bloqueado() || usuarios() === undefined"
+                  [attr.aria-describedby]="bloqueado() ? 'dica-pendencia-gerar-os' : null"
                   class="h-12 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60">Gerar OS</button>
         }
       </div>
+      @if (podeGerar() && bloqueado()) {
+        <p id="dica-pendencia-gerar-os" class="text-sm text-amber-800">Resolva a pendência primeiro.</p>
+      }
       @if (lista() === undefined) {
         <p class="text-sm text-slate-500">Carregando…</p>
       } @else if (linhas().length === 0) {
@@ -62,12 +68,15 @@ export class OsDaProposta {
   readonly proposta = input.required<PropostaLocal>();
   /** O nome que o card mostra (o cliente da proposta). */
   readonly clienteNome = input('');
+  /** M1: a proposta tem um CONFLITO (P4c-R15): o "Gerar OS" espera. */
+  readonly bloqueado = input(false);
 
   private readonly repo = inject(OsRepo);
   private readonly router = inject(Router);
   private readonly toasts = inject(Toasts);
   private readonly usuario = inject(AuthService).usuario;
-  private readonly usuarios = toSignal(inject(PropostasRepo).observarUsuarios(), { initialValue: [] });
+  /** undefined até a primeira leitura: o "Gerar OS" espera (N2: o técnico da proposta vem escolhido no diálogo). */
+  protected readonly usuarios = toSignal(inject(PropostasRepo).observarUsuarios());
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
   });
@@ -86,13 +95,15 @@ export class OsDaProposta {
     return (this.lista() ?? []).filter((o) => u?.perfil === 'ADMIN' || (u?.perfil === 'COMERCIAL' && o.responsavelId === u.id));
   });
   protected readonly linhas = computed<Linha[]>(() => {
-    const nomes = new Map(this.usuarios().map((u) => [u.id, u.nome]));
+    const nomes = new Map((this.usuarios() ?? []).map((u) => [u.id, u.nome]));
     const { naOutbox } = this.estado();
     const hoje = this.hoje();
+    // M7: só o ADMIN aceita o trabalho (M2-R4)
+    const propostaCancelada = this.usuario()?.perfil === 'ADMIN' && this.proposta().status === 'CANCELADA';
     return this.visiveis().map((o) => ({
       os: o,
       tecnicoNome: o.tecnicoId ? (nomes.get(o.tecnicoId) ?? 'não identificado') : null,
-      selos: selosDaOs(o, { naoSincronizada: naOutbox.has(o.id), hoje }),
+      selos: selosDaOs(o, { naoSincronizada: naOutbox.has(o.id), hoje, propostaCancelada }),
     }));
   });
   protected readonly emCurso = computed(() => this.visiveis().filter((o) => o.status === 'ABERTA' || o.status === 'EM_ANDAMENTO').length);
@@ -104,7 +115,7 @@ export class OsDaProposta {
     return quem && (p.status === 'APROVADA' || p.status === 'EM_EXECUCAO');
   });
   protected readonly tecnicos = computed<TecnicoOpcao[]>(() =>
-    this.usuarios()
+    (this.usuarios() ?? [])
       .filter((u) => u.perfil === 'TECNICO' && u.ativo !== false)
       .map((u) => ({ id: u.id, nome: u.nome }))
       .sort((a, b) => a.nome.localeCompare(b.nome, 'pt-BR')),
@@ -113,7 +124,11 @@ export class OsDaProposta {
   /** Só o id: a proposta é reemitida a cada escrita, e a lista não precisa ser assinada de novo. */
   private readonly propostaId = computed(() => this.proposta().id);
 
+  /** M3: a tela saiu enquanto a OS era gerada (o input da proposta continua com a antiga): não navega mais. */
+  private destruido = false;
+
   constructor() {
+    inject(DestroyRef).onDestroy(() => (this.destruido = true));
     effect((aoLimpar) => {
       this.lista.set(undefined);
       const assinatura = this.repo.observarDaProposta(this.propostaId()).subscribe((l) => this.lista.set(l));
@@ -127,15 +142,15 @@ export class OsDaProposta {
   }
 
   protected async gerar(opcoes: OpcoesGerarOs): Promise<void> {
-    if (this.gerando()) return;
+    if (this.gerando() || this.bloqueado()) return;
     const propostaId = this.proposta().id;
     this.gerando.set(true);
     try {
       const id = await this.repo.gerarDaProposta(propostaId, opcoes);
       this.dialogo.set(false);
       this.toasts.mostrar('OS gerada.');
-      // a tela trocou de proposta enquanto gravava: a OS foi gerada, mas a navegação não é mais desta tela
-      if (this.proposta().id === propostaId) await this.router.navigate(['/os', id]);
+      // a tela saiu ou trocou de proposta enquanto gravava: a OS foi gerada, mas a navegação não é mais desta tela
+      if (!this.destruido && this.proposta().id === propostaId) await this.router.navigate(['/os', id]);
     } catch (e) {
       // o diálogo fica aberto, com o que foi escolhido
       this.toasts.erro(mensagemErroOs(e));

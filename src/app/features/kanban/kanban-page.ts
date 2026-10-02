@@ -10,7 +10,7 @@ import { LucideDynamicIcon, LucideListFilter } from '@lucide/angular';
 import { AuthService } from '../../core/auth/auth-service';
 import { Toasts } from '../../shared/ui/toasts';
 import { ClientesRepo } from '../clientes/clientes-repo';
-import { SeloOsProposta, selosOsDaProposta } from '../os/formatos-os';
+import { osPorProposta, SeloOsProposta, selosOsDaProposta } from '../os/formatos-os';
 import type { OsLocal } from '../os/os-models';
 import { OsRepo } from '../os/os-repo';
 import { DialogoMotivo } from '../propostas/dialogo-motivo';
@@ -295,16 +295,7 @@ export class KanbanPage {
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
   /** As OS que o perfil vê, agrupadas pela proposta (a avulsa não entra). */
   private readonly oss = toSignal(inject(OsRepo).observarTodas(), { initialValue: [] as OsLocal[] });
-  private readonly osPorProposta = computed(() => {
-    const mapa = new Map<string, OsLocal[]>();
-    for (const o of this.oss()) {
-      if (o.propostaId === null) continue;
-      const lista = mapa.get(o.propostaId);
-      if (lista) lista.push(o);
-      else mapa.set(o.propostaId, [o]);
-    }
-    return mapa;
-  });
+  private readonly osPorProposta = computed(() => osPorProposta(this.oss()));
   private readonly usuarios = toSignal(this.repo.observarUsuarios(), { initialValue: [] });
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,

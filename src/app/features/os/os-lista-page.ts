@@ -31,7 +31,7 @@ const instante = (o: OsLocal) => (o.atualizadoEm ? Date.parse(o.atualizadoEm) : 
 /**
  * Lista de OS (`/os`, spec M2 §9).
  * - TECNICO: "Minhas OS" (`observarDoTecnico`), na ordem do `ordenarParaTecnico` (data prevista, urgentes primeiro no
- *   mesmo dia, sem data no fim). As encerradas ficam ocultas até "Mostrar encerradas" e então vêm depois das abertas,
+ *   mesmo dia; a urgente sem data conta como de hoje, M2P3-R8, e a normal sem data vai para o fim). As encerradas ficam ocultas até "Mostrar encerradas" e então vêm depois das abertas,
  *   as mais recentes primeiro: as concluídas, de datas passadas, não empurram o trabalho do dia para baixo.
  * - ADMIN e COMERCIAL: `observarTodas` (o repositório já filtra o que o perfil vê), busca, chips de status, tipo, o
  *   técnico (só o ADMIN) e "Nova OS avulsa". M2P3-R6 (Q15): as concluídas dos últimos 7 dias aparecem por padrão, com
@@ -150,7 +150,10 @@ export class OsListaPage {
   /** undefined até a primeira leitura do banco (sem isso a tela piscaria o estado vazio); preenchido pelo effect. */
   protected readonly lista = signal<OsLocal[] | undefined>(undefined);
   private readonly clientes = toSignal(inject(ClientesRepo).observarTodos());
-  private readonly usuarios = toSignal(inject(PropostasRepo).observarUsuarios(), { initialValue: [] });
+  private readonly propostasRepo = inject(PropostasRepo);
+  private readonly usuarios = toSignal(this.propostasRepo.observarUsuarios(), { initialValue: [] });
+  /** M7: as propostas canceladas do aparelho, só para o ADMIN (o único que aceita o trabalho, M2-R4). */
+  private readonly propostasCanceladas = signal<ReadonlySet<string>>(new Set());
   private readonly estado = toSignal(this.repo.observarEstadoSync(), {
     initialValue: { naOutbox: new Set<string>(), comPendencia: new Set<string>(), comConflito: new Set<string>() } as EstadoSync,
   });
@@ -227,12 +230,15 @@ export class OsListaPage {
     const restrito = this.restrito();
     const hoje = this.hoje();
     const { naOutbox } = this.estado();
+    const canceladas = this.propostasCanceladas();
     return this.visiveis().map((o) => ({
       os: o,
       clienteNome: o.clienteId ? (clientes.get(o.clienteId)?.nome ?? 'Cliente não encontrado') : 'Sem cliente',
       // null = sem técnico; o atribuído que não está nos usuários do aparelho não vira "Sem técnico"
       tecnicoNome: restrito || !o.tecnicoId ? null : (nomes.get(o.tecnicoId) ?? 'não identificado'),
-      selos: selosDaOs(o, { naoSincronizada: naOutbox.has(o.id), hoje }),
+      selos: selosDaOs(o, {
+        naoSincronizada: naOutbox.has(o.id), hoje, propostaCancelada: o.propostaId !== null && canceladas.has(o.propostaId),
+      }),
     }));
   });
 
@@ -244,6 +250,13 @@ export class OsListaPage {
       this.lista.set(undefined);
       const fonte = q === 'todas' ? this.repo.observarTodas() : this.repo.observarDoTecnico(q.slice('tecnico:'.length));
       const assinatura = fonte.subscribe((lista) => this.lista.set(lista));
+      aoLimpar(() => assinatura.unsubscribe());
+    });
+    effect((aoLimpar) => {
+      this.propostasCanceladas.set(new Set());
+      if (!this.admin()) return;
+      const assinatura = this.propostasRepo.observarTodas().subscribe((ps) =>
+        this.propostasCanceladas.set(new Set(ps.filter((p) => p.status === 'CANCELADA').map((p) => p.id))));
       aoLimpar(() => assinatura.unsubscribe());
     });
   }

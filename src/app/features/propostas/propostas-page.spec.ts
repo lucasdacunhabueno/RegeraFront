@@ -1,13 +1,15 @@
 import { signal } from '@angular/core';
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
-import { Observable, of, Subject } from 'rxjs';
+import { BehaviorSubject, Observable, of, Subject } from 'rxjs';
 import { vi } from 'vitest';
 import type { UsuarioSessao } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
 import type { UsuarioResumo } from '../../core/sync/sync-models';
 import { ClienteLocal, paraClienteLocal } from '../clientes/cliente-models';
 import { ClientesRepo } from '../clientes/clientes-repo';
+import { OsDados, OsLocal, paraOsLocal, StatusOs } from '../os/os-models';
+import { OsRepo } from '../os/os-repo';
 import { PropostaLocal } from './proposta-models';
 import { EstadoSync, PropostasRepo } from './propostas-repo';
 
@@ -56,7 +58,15 @@ interface Opcoes {
   usuario?: UsuarioSessao;
   todas?: Observable<PropostaLocal[]>;
   estado?: EstadoSync;
+  /** As OS que o perfil vê (`OsRepo.observarTodas`): os selos da OS nos cards. */
+  oss?: Observable<OsLocal[]>;
 }
+
+const osDe = (id: string, propostaId: string | null, status: StatusOs, extra: Partial<OsDados> = {}): OsLocal =>
+  paraOsLocal(id, 1, {
+    codigoProvisorio: 'OSP-AAAAAA', propostaId, clienteId: 'c1', tipo: 'SERVICO', status, urgente: false, concluiProposta: true,
+    assinaturaRecusada: false, itens: [], notas: [], ...extra,
+  });
 
 function montar(o: Opcoes = {}) {
   const repo = {
@@ -70,6 +80,7 @@ function montar(o: Opcoes = {}) {
       { provide: AuthService, useValue: { usuario: signal(o.usuario ?? ADMIN) } },
       { provide: PropostasRepo, useValue: repo },
       { provide: ClientesRepo, useValue: { observarTodos: () => of(CLIENTES) } },
+      { provide: OsRepo, useValue: { observarTodas: () => o.oss ?? of([]) } },
     ],
   });
   const fixture = TestBed.createComponent(PropostasPage);
@@ -94,6 +105,31 @@ describe('PropostasPage', () => {
   beforeEach(() => {
     vi.useFakeTimers({ toFake: ['Date'] });
     vi.setSystemTime(AGORA);
+  });
+
+  describe('M2-P3: selos das OS nos cards (como no kanban)', () => {
+    const selosOs = (el: HTMLElement, codigo: string) =>
+      [...card(el, codigo).querySelectorAll('[data-selo]')].map((s) => s.getAttribute('data-selo')).filter((s) => s!.startsWith('os-')
+        || s === 'retorno-pendente' || s === 'trabalho-proposta-cancelada');
+
+    it('cada card leva os selos das OS da própria proposta; a avulsa não entra', async () => {
+      const oss = new BehaviorSubject<OsLocal[]>([
+        osDe('o1', 'c', 'EM_ANDAMENTO'), osDe('o2', 'c', 'CONCLUIDA', { concluiProposta: false }), osDe('o3', null, 'CANCELADA'),
+      ]);
+      const { el, fixture } = montar({ oss });
+      expect(selosOs(el, '000012')).toEqual(['os-em-andamento', 'os-concluida']);
+      expect(selosOs(el, '000277-R2')).toEqual([]);
+      // o pull que conclui a OS de retorno chega ao card
+      oss.next([osDe('o2', 'c', 'CONCLUIDA', { concluiProposta: false })]);
+      await ate(fixture, () => expect(selosOs(el, '000012')).toEqual(['os-concluida', 'retorno-pendente']));
+    });
+
+    it('"Trabalho em proposta cancelada" na cancelada (com as encerradas à mostra)', async () => {
+      const { el, fixture } = montar({ oss: of([osDe('o1', 'd', 'CONCLUIDA')]) });
+      botao(el, 'Mostrar encerradas')!.click();
+      fixture.detectChanges();
+      expect(selosOs(el, '000013')).toEqual(['trabalho-proposta-cancelada', 'os-concluida']);
+    });
   });
 
   afterEach(() => {

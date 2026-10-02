@@ -62,6 +62,43 @@ function perdaDasMutacoes(mutacoes: readonly MutacaoLocal[], servidor: OsDados |
   return r;
 }
 
+/** Os campos do cabeçalho da OS (o que `salvarCabecalho` edita, menos as linhas, comparadas à parte). */
+const CAMPOS_CABECALHO_OS = [
+  'tipo', 'descricao', 'dataPrevista', 'urgente', 'enderecoCep', 'enderecoLogradouro', 'enderecoNumero', 'enderecoComplemento',
+  'enderecoBairro', 'enderecoCidade', 'enderecoUf',
+] as const satisfies readonly (keyof OsDados)[];
+
+/** As linhas como o servidor as compara (sem a `ordem`, que é a posição). */
+function chaveDasLinhas(d: OsDados): string {
+  return JSON.stringify((d.itens ?? []).map((l) => [l.id, l.itemCatalogoId ?? null, l.codigo, l.nome, l.unidade, l.natureza, Number(l.quantidadePrevista)]));
+}
+
+/**
+ * I1 (T5): as edições do escritório retidas atrás da mutação da pendência, que o Descartar e o "Usar a do servidor"
+ * levariam: cada mutação seguinte da OS comparada com a anterior (a primeira, com a da pendência). A da pendência não é
+ * comparada com o servidor: o cabeçalho dela pode diferir só porque outro usuário o mudou lá (M2P1-R30). E a criação
+ * recusada (a primeira sem versão) leva a OS inteira.
+ * - `cabecalho`: tipo, descrição, data, urgência, endereço ou linhas;
+ * - `atribuicao`: o técnico ou o responsável (o null que o aparelho manda na OS de proposta não conta como troca).
+ */
+function perdaDoCabecalho(mutacoes: readonly MutacaoLocal[]): Set<ItemPerdaOs> {
+  const r = new Set<ItemPerdaOs>();
+  const [primeira, ...resto] = mutacoes;
+  if (!primeira) return r;
+  if (primeira.op === 'UPSERT' && primeira.baseVersion === null) r.add('criacao');
+  let antes = primeira.dados as OsDados;
+  for (const m of resto) {
+    const d = m.dados as OsDados;
+    if (CAMPOS_CABECALHO_OS.some((c) => (d[c] ?? null) !== (antes[c] ?? null)) || chaveDasLinhas(d) !== chaveDasLinhas(antes)) {
+      r.add('cabecalho');
+    }
+    const responsavel = d.responsavelId != null && antes.responsavelId != null && d.responsavelId !== antes.responsavelId;
+    if ((d.tecnicoId ?? null) !== (antes.tecnicoId ?? null) || responsavel) r.add('atribuicao');
+    antes = d;
+  }
+  return r;
+}
+
 /** Os ids das notas das mutações que o servidor ainda não tem (sem a data dele e fora das notas de `servidor`). */
 function notasNovas(mutacoes: readonly OsDados[], servidor: OsDados | null | undefined): string[] {
   const doServidor = new Set((servidor?.notas ?? []).map((n) => n.id));
@@ -193,7 +230,8 @@ export class PendenciasService {
    * - as notas que o servidor ainda não tem;
    * - o início, a conclusão (com o resumo), o cancelamento e a reabertura, a recusa da assinatura e o "Precisa voltar"
    *   (`perdaDasMutacoes`);
-   * - as fotos, a assinatura e o PDF: um anexo gravado aqui e não enviado (o de todo upload na fila ou numa pendência).
+   * - as fotos, a assinatura e o PDF: um anexo gravado aqui e não enviado (o de todo upload na fila ou numa pendência);
+   * - a criação recusada, e o cabeçalho e o técnico alterados atrás da pendência (`perdaDoCabecalho`, I1 da T5).
    * O Descartar do upload da OS que não existe mais (`osNaoEncontrada`, M2P2-R13) leva a OS inteira: conta o resto dela,
    * não o próprio anexo. Não escreve nada.
    */
@@ -214,6 +252,7 @@ export class PendenciasService {
     const servidor = p.dadosServidor as OsDados | null | undefined;
     const daOs = mutacoes.filter((m) => m.entidade === 'os' && !!m.dados);
     const r = perdaDasMutacoes(daOs, servidor);
+    for (const item of perdaDoCabecalho(daOs)) r.add(item);
     if (notasNovas(daOs.map((m) => m.dados as OsDados), servidor).length > 0) r.add('notas');
     // todo upload na fila ou numa pendência tem o anexo dele aqui, não enviado; sem o anexo, não há bytes a perder
     const naoEnviados = await this.db.anexosOs.where('osId').equals(id).filter((a) => !a.enviado && a.id !== proprio).toArray();

@@ -3,6 +3,7 @@ import { toSignal } from '@angular/core/rxjs-interop';
 import { Router, RouterLink } from '@angular/router';
 import { LucideCamera, LucideDynamicIcon, LucideMapPin, LucidePhone } from '@lucide/angular';
 import { ArquivosService, ErroDownload } from '../../core/arquivos/arquivos-service';
+import type { Perfil } from '../../core/auth/auth-models';
 import { AuthService } from '../../core/auth/auth-service';
 import { ConectividadeService } from '../../core/conectividade/conectividade-service';
 import { abrirJanelaEmBranco, baixarArquivo, revogarUrl } from '../../core/pdf/abrir-pdf';
@@ -25,6 +26,7 @@ import { AssinaturaTela } from './assinatura-tela';
 import { ErroOs } from './erro-os';
 import { mensagemErroOs, rotuloCampoOs, SeloOs, selosDaOs } from './formatos-os';
 import { GaleriaOs, MAX_FOTOS_OS, MOMENTOS, ROTULO_MOMENTO } from './galeria-os';
+import { pdfRegeravel, recusaDePdfRegeravel } from './pdf-regeravel';
 import { ESTILO_SELO_OS } from './os-card';
 import {
   camposEditaveisOs, codigoOsExibido, MomentoFoto, OsLocal, podeEditarCabecalho, podeExecutar, RESUMO_MAX_OS, RESUMO_MIN_OS,
@@ -63,20 +65,23 @@ const CONCLUIDA_COM_RETORNO = 'OS concluída. A proposta continua em execução 
  */
 export type MotivoRegerarOs = 'SEM_DOCUMENTO' | 'RECUSADO';
 
-const RECUSAS_QUE_SE_REGERAM: ReadonlySet<string> = new Set(['CODIGO_EXIBIDO_INVALIDO', 'ANEXO_AUSENTE']);
-
+/**
+ * Quem e quando, pela regra compartilhada com o repositório e as Pendências (`pdfRegeravel`): o ADMIN ou o técnico
+ * atribuído, a OS concluída e, para o técnico, sem outro usuário tê-la concluído (a pendência `OS_CONCLUIDA_POR_OUTRO`
+ * ou o histórico; a tela não vê a fila, e a conclusão daqui ainda sem resposta do servidor é a de `concluidaEm` null).
+ */
 export function motivoParaRegerarOs(
   os: OsLocal,
   anexos: readonly AnexoOsVisivel[],
   pendencias: readonly Pendencia[],
+  usuario: { id: string; perfil: Perfil } | null | undefined,
 ): MotivoRegerarOs | null {
-  if (os.status !== 'CONCLUIDA') return null;
+  if (!pdfRegeravel(os, usuario, pendencias, os.concluidaEm === null)) return null;
   const revisao = os.revisao ?? 1;
   const daRevisao = new Set(anexos.filter((a) => a.tipo === 'DOCUMENTO' && (a.revisaoOs ?? 1) === revisao).map((a) => a.id));
   const recusado = pendencias.some((p) => {
     const anexoId = (p.mutacao.dados as DadosUploadAnexoOs | null)?.anexoId;
-    return p.tipo === 'REJEITADO' && p.entidade === TIPO_UPLOAD_ANEXO_OS && RECUSAS_QUE_SE_REGERAM.has(p.erro?.codigo ?? '')
-      && !!anexoId && daRevisao.has(anexoId);
+    return recusaDePdfRegeravel(p, os, anexoId && daRevisao.has(anexoId) ? revisao : undefined);
   });
   if (recusado) return 'RECUSADO';
   return daRevisao.size === 0 ? 'SEM_DOCUMENTO' : null;
@@ -234,8 +239,12 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
             <h2 id="acoes-os-titulo" class="sr-only">Ações do escritório</h2>
             @if (propostaCancelada()) {
               <p data-testid="proposta-cancelada" class="rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-950">
-                A proposta desta OS foi cancelada.
-                {{ admin() ? 'Aceite o trabalho para reabrir a proposta.' : 'Só o administrador aceita o trabalho, reabrindo a proposta.' }}
+                @if (aceito()) {
+                  Trabalho aceito: a proposta reabre ao sincronizar.
+                } @else {
+                  A proposta desta OS foi cancelada.
+                  {{ admin() ? 'Aceite o trabalho para reabrir a proposta.' : 'Só o administrador aceita o trabalho, reabrindo a proposta.' }}
+                }
               </p>
             }
             @if (conflito() && temAcaoTravada()) {
@@ -475,14 +484,12 @@ type DialogoEscritorio = 'cancelar' | 'reabrir' | 'aceitar' | 'excluir';
                     Vale para a próxima foto. <span [class.text-red-600]="legendaLonga()">{{ tamanhoLegenda() }}/{{ maxLegenda }}</span>
                   </p>
                 </div>
-                @if (limiteFotos()) {
-                  <p id="dica-limite-fotos" class="text-sm text-slate-600">Esta OS já tem o máximo de {{ maxFotos }} fotos.</p>
-                } @else if (concluindo()) {
-                  <p id="dica-foto-concluindo" class="text-sm text-slate-600">Aguarde a conclusão da OS para tirar outra foto.</p>
+                @if (dicaFoto(); as d) {
+                  <p id="dica-foto" class="text-sm text-slate-600">{{ d }}</p>
                 }
                 <input #inputFoto type="file" accept="image/*" capture="environment" class="hidden" (change)="fotoEscolhida($event)" />
                 <button #botaoFoto type="button" (click)="tirarFoto(inputFoto)" [disabled]="gravandoFoto() || limiteFotos() || ocupado()"
-                        [attr.aria-describedby]="limiteFotos() ? 'dica-limite-fotos' : concluindo() ? 'dica-foto-concluindo' : null"
+                        [attr.aria-describedby]="dicaFoto() ? 'dica-foto' : null"
                         class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 sm:w-auto">
                   <svg [lucideIcon]="iconeCamera" [size]="18" aria-hidden="true"></svg>
                   {{ gravandoFoto() ? 'Gravando foto…' : 'Tirar foto' }}
@@ -706,6 +713,8 @@ export class OsExecucaoPage {
   protected readonly iniciando = signal(false);
   protected readonly concluindo = signal(false);
   protected readonly regerando = signal(false);
+  /** O que mais deixou a tela `ocupado` (a dica do "Tirar foto"). */
+  private readonly emCurso = signal<'compartilhar' | 'recusa' | null>(null);
   protected readonly gravandoNota = signal(false);
   protected readonly gravandoFoto = signal(false);
   protected readonly gravandoAssinatura = signal(false);
@@ -732,6 +741,8 @@ export class OsExecucaoPage {
   protected readonly atribuindo = signal(false);
   protected readonly tecnicoEscolhido = signal('');
   private readonly statusProposta = signal<StatusProposta | null>(null);
+  /** M2: a OS cujo "Aceitar o trabalho" já foi para a fila: até o sync reabrir a proposta, não se oferece de novo. */
+  protected readonly aceiteEnviado = signal<string | null>(null);
 
   protected readonly uploadAnexo = TIPO_UPLOAD_ANEXO_OS;
   protected readonly momentos = MOMENTOS;
@@ -804,7 +815,7 @@ export class OsExecucaoPage {
   protected readonly conflito = computed(() => this.pendencias().some((x) => x.tipo === 'CONFLITO'));
   protected readonly motivoRegerar = computed(() => {
     const o = this.os();
-    return o && this.executor() ? motivoParaRegerarOs(o, this.anexos(), this.pendencias()) : null;
+    return o ? motivoParaRegerarOs(o, this.anexos(), this.pendencias(), this.usuario()) : null;
   });
 
   // ---- escritório (T4) ----
@@ -843,8 +854,9 @@ export class OsExecucaoPage {
     const o = this.os();
     return !!o?.propostaId && o.status !== 'CANCELADA' && this.statusProposta() === 'CANCELADA';
   });
-  /** M2-R4: só o ADMIN aceita o trabalho. */
-  protected readonly podeAceitar = computed(() => this.admin() && this.propostaCancelada());
+  /** M2-R4: só o ADMIN aceita o trabalho; uma vez (M2: o aceite enviado espera o sync reabrir a proposta). */
+  protected readonly aceito = computed(() => this.aceiteEnviado() === this.id());
+  protected readonly podeAceitar = computed(() => this.admin() && this.propostaCancelada() && !this.aceito());
   /** Como o DELETE do servidor: ABERTA sem técnico (com técnico, cancela-se), pelo ADMIN ou o COMERCIAL responsável. */
   protected readonly podeExcluir = computed(() => {
     const o = this.os();
@@ -931,6 +943,25 @@ export class OsExecucaoPage {
   protected readonly tamanhoResumo = computed(() => tamanhoTextoOs(this.resumo()));
   protected readonly fotos = computed(() => this.anexos().filter((a) => a.tipo === 'FOTO'));
   protected readonly limiteFotos = computed(() => this.fotos().length >= MAX_FOTOS_OS);
+  /**
+   * T2 carry: por que o "Tirar foto" está desabilitado, à vista e ligado ao botão: o limite, ou a ação em curso que o
+   * trava (a conclusão, o PDF de novo, o compartilhamento, o registro da recusa ou outra). A foto gravando já diz
+   * "Gravando foto…" no próprio botão.
+   */
+  protected readonly dicaFoto = computed(() => {
+    if (this.limiteFotos()) return `Esta OS já tem o máximo de ${MAX_FOTOS_OS} fotos.`;
+    if (this.gravandoFoto() || !this.ocupado()) return null;
+    if (this.concluindo()) return 'Aguarde a conclusão da OS para tirar outra foto.';
+    if (this.regerando()) return 'Aguarde o PDF ficar pronto para tirar outra foto.';
+    switch (this.emCurso()) {
+      case 'compartilhar':
+        return 'Aguarde o compartilhamento do PDF para tirar outra foto.';
+      case 'recusa':
+        return 'Aguarde o registro da recusa para tirar outra foto.';
+      default:
+        return 'Aguarde a ação em curso para tirar outra foto.';
+    }
+  });
   protected readonly documentos = computed(() => this.anexos().filter((a) => a.tipo === 'DOCUMENTO' && !!a.codigoExibido));
 
   /**
@@ -1048,6 +1079,11 @@ export class OsExecucaoPage {
   /** O técnico novo (`atribuir`: TECNICO ativo; em andamento não fica sem técnico; trava do CONFLITO). */
   protected async salvarTecnico(): Promise<void> {
     const tecnicoId = this.tecnicoEscolhido() || null;
+    // N1: o mesmo técnico não grava nada (o repositório não muda a OS): só fecha
+    if (tecnicoId === (this.os()?.tecnicoId ?? null)) {
+      this.fecharAtribuir();
+      return;
+    }
     await this.acaoEscritorio((id) => this.repo.atribuir(id, { tecnicoId }), 'Técnico atualizado.', () => {
       this.atribuindo.set(false);
       this.devolverFoco(() => this.botaoAtribuir()?.nativeElement);
@@ -1066,9 +1102,10 @@ export class OsExecucaoPage {
 
   /** M2-R4: o comando vai na fila; o servidor reabre a proposta (EM_EXECUCAO, ou FINALIZADA se o trabalho acabou). */
   protected async aceitarTrabalho(): Promise<void> {
-    await this.acaoEscritorio(
-      (id) => this.repo.aceitarTrabalho(id), 'Trabalho aceito. A proposta será reaberta ao sincronizar.', () => this.focarTitulo(),
-    );
+    await this.acaoEscritorio((id) => this.repo.aceitarTrabalho(id), 'Trabalho aceito. A proposta será reaberta ao sincronizar.', () => {
+      this.aceiteEnviado.set(this.id());
+      this.focarTitulo();
+    });
   }
 
   /** A OS sai do aparelho (e do servidor): a tela volta para a proposta dela, ou para a lista na avulsa. */
@@ -1104,15 +1141,17 @@ export class OsExecucaoPage {
 
   protected async iniciar(): Promise<void> {
     if (this.ocupado()) return;
+    const id = this.id();
     this.ocupado.set(true);
     this.iniciando.set(true);
     try {
-      await this.repo.iniciar(this.id());
+      await this.repo.iniciar(id);
+      if (this.id() !== id) return;
       this.avisar('OS iniciada. Agora você pode tirar fotos.');
       // o botão some com a OS em andamento: o foco vai ao título, não ao body
       this.focarTitulo();
     } catch (e) {
-      this.toasts.erro(mensagemErroOs(e));
+      if (this.id() === id) this.toasts.erro(mensagemErroOs(e));
     } finally {
       this.iniciando.set(false);
       this.ocupado.set(false);
@@ -1135,13 +1174,16 @@ export class OsExecucaoPage {
       this.campoNota()?.nativeElement.focus();
       return;
     }
+    const id = this.id();
     this.gravandoNota.set(true);
     try {
-      await this.repo.adicionarNota(this.id(), texto);
+      await this.repo.adicionarNota(id, texto);
+      if (this.id() !== id) return;
       this.nota.set('');
       this.avisar('Nota adicionada.');
       this.campoNota()?.nativeElement.focus();
     } catch (e) {
+      if (this.id() !== id) return;
       this.erroNota.set(mensagemErroOs(e));
       this.campoNota()?.nativeElement.focus();
     } finally {
@@ -1206,14 +1248,17 @@ export class OsExecucaoPage {
     const documento = this.host.nativeElement.ownerDocument;
     const botao = this.botaoFoto()?.nativeElement;
     if (documento.activeElement === botao || documento.activeElement === documento.body) this.tituloFotos()?.nativeElement.focus();
+    const id = this.id();
     this.gravandoFoto.set(true);
     this.erroFoto.set(null);
     this.anuncio.set('Gravando a foto…');
     try {
-      await this.repo.adicionarFoto(this.id(), arquivo, { legenda: legenda === '' ? null : legenda, momento: this.momento() });
+      await this.repo.adicionarFoto(id, arquivo, { legenda: legenda === '' ? null : legenda, momento: this.momento() });
+      if (this.id() !== id) return;
       this.legenda.set('');
       this.anuncio.set(`Foto gravada (${antes + 1} de ${MAX_FOTOS_OS}).`);
     } catch (e) {
+      if (this.id() !== id) return;
       // o técnico não entende um erro interno (Dexie, decodificador): a mensagem genérica é a da foto
       this.erroFoto.set(e instanceof ErroCampo ? mensagemErroOs(e) : FALHA_GRAVAR_FOTO);
       this.anuncio.set('');
@@ -1262,16 +1307,18 @@ export class OsExecucaoPage {
 
   protected async assinar(a: AssinaturaColhida): Promise<void> {
     if (this.gravandoAssinatura()) return;
+    const id = this.id();
     this.gravandoAssinatura.set(true);
     this.erroTelaAssinatura.set(null);
     try {
-      await this.repo.assinar(this.id(), a);
+      await this.repo.assinar(id, a);
+      if (this.id() !== id) return;
       this.assinando.set(false);
       this.erroAssinatura.set(null);
       this.avisar('Assinatura colhida.');
     } catch (e) {
       // a tela fica aberta, com o desenho e o nome
-      this.erroTelaAssinatura.set(mensagemErroOs(e));
+      if (this.id() === id) this.erroTelaAssinatura.set(mensagemErroOs(e));
     } finally {
       this.gravandoAssinatura.set(false);
     }
@@ -1284,16 +1331,20 @@ export class OsExecucaoPage {
 
   protected async recusar(motivo: string | null): Promise<void> {
     if (this.ocupado() || motivo === null) return;
+    const id = this.id();
     this.ocupado.set(true);
+    this.emCurso.set('recusa');
     try {
-      await this.repo.recusarAssinatura(this.id(), motivo);
+      await this.repo.recusarAssinatura(id, motivo);
+      if (this.id() !== id) return;
       this.recusando.set(false);
       this.erroAssinatura.set(null);
       this.avisar('Recusa registrada.');
     } catch (e) {
       // o diálogo fica aberto, com o motivo digitado
-      this.toasts.erro(mensagemErroOs(e));
+      if (this.id() === id) this.toasts.erro(mensagemErroOs(e));
     } finally {
+      this.emCurso.set(null);
       this.ocupado.set(false);
     }
   }
@@ -1333,23 +1384,26 @@ export class OsExecucaoPage {
     const aviso = o.propostaId === null
       ? CONCLUIDA_AVULSA
       : precisaVoltar || !o.concluiProposta ? CONCLUIDA_COM_RETORNO : CONCLUIDA_COM_PROPOSTA;
+    const id = this.id();
     this.ocupado.set(true);
     this.concluindo.set(true);
     this.anuncio.set('Gerando o PDF da OS…');
     try {
-      const { blob, codigoExibido } = await this.repo.concluir(this.id(), resumo, (e) => this.pdf.gerarBlobOs(e), { precisaVoltar });
+      const { blob, codigoExibido } = await this.repo.concluir(id, resumo, (e) => this.pdf.gerarBlobOs(e), { precisaVoltar });
+      // a rota trocou de OS: o PDF é da outra (ela o mostra em "PDF da OS"); nada desta tela muda
+      if (this.id() !== id) return;
       this.precisaVoltar.set(false);
       this.avisar(aviso);
       // a seção do concluir some com a OS concluída: o foco vai ao título (o painel "PDF pronto" o toma, se aparecer)
       this.focarTitulo();
       await this.compartilhar(arquivoPdf(blob, nomeDoPdfOs(codigoExibido)), blob);
     } catch (e) {
-      if (!this.erroNosCampos(e)) this.toasts.erro(mensagemErroOs(e));
+      if (this.id() === id && !this.erroNosCampos(e)) this.toasts.erro(mensagemErroOs(e));
     } finally {
       this.concluindo.set(false);
       this.ocupado.set(false);
       // M2: o botão se desabilitou com o foco nele; numa recusa ele fica, e o foco volta a ele
-      this.devolverFoco(() => this.botaoConcluir()?.nativeElement);
+      if (this.id() === id) this.devolverFoco(() => this.botaoConcluir()?.nativeElement);
     }
   }
 
@@ -1370,17 +1424,19 @@ export class OsExecucaoPage {
   /** "Gerar PDF novamente" (M2P2-R18): `regerarPdf` com o gerador do PDF da OS, depois o compartilhamento. */
   protected async regerar(): Promise<void> {
     if (this.ocupado() || this.gravandoCampo()) return;
+    const id = this.id();
     this.ocupado.set(true);
     this.regerando.set(true);
     this.anuncio.set('Gerando o PDF da OS…');
     try {
-      const { blob, codigoExibido } = await this.repo.regerarPdf(this.id(), (e) => this.pdf.gerarBlobOs(e));
+      const { blob, codigoExibido } = await this.repo.regerarPdf(id, (e) => this.pdf.gerarBlobOs(e));
+      if (this.id() !== id) return;
       this.avisar('PDF gerado de novo. Ele vai para o servidor na próxima sincronização.');
       // M3: a faixa do "Gerar PDF novamente" some com o PDF novo: o foco vai ao título (o painel "PDF pronto" o toma)
       this.focarTitulo();
       await this.compartilhar(arquivoPdf(blob, nomeDoPdfOs(codigoExibido)), blob);
     } catch (e) {
-      this.toasts.erro(mensagemErroOs(e));
+      if (this.id() === id) this.toasts.erro(mensagemErroOs(e));
     } finally {
       this.regerando.set(false);
       this.ocupado.set(false);
@@ -1409,13 +1465,17 @@ export class OsExecucaoPage {
       return;
     }
     if (this.ocupado()) return;
+    const id = this.id();
     this.ocupado.set(true);
+    this.emCurso.set('compartilhar');
     try {
       const blob = await this.bytesDoAnexo(d, 'application/pdf');
+      if (this.id() !== id) return;
       await this.compartilhar(arquivoPdf(blob, nomeDoPdfOs(d.codigoExibido ?? this.codigo())), blob);
     } catch (e) {
-      this.toasts.erro(this.erroDoDownload(e, SEM_INTERNET_PDF, FALHA_PDF));
+      if (this.id() === id) this.toasts.erro(this.erroDoDownload(e, SEM_INTERNET_PDF, FALHA_PDF));
     } finally {
+      this.emCurso.set(null);
       this.ocupado.set(false);
     }
   }

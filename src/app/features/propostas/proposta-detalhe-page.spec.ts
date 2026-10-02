@@ -340,6 +340,12 @@ describe('PropostaDetalhePage', () => {
       expect(TestBed.inject(OsRepo).observarDaProposta).toHaveBeenCalledWith('p1');
     });
 
+    it('M1: com CONFLITO da proposta, "Gerar OS" desabilitado', async () => {
+      const { el } = await montar({ proposta: proposta({ status: 'APROVADA' }), pendencias: [conflito()] });
+      const b = [...el.querySelectorAll<HTMLButtonElement>('[data-testid=os-da-proposta] button')].find((x) => x.textContent?.trim() === 'Gerar OS')!;
+      expect(b.disabled).toBe(true);
+    });
+
     it('sem "Gerar OS" fora de APROVADA e EM_EXECUCAO; a lista continua', async () => {
       const { el } = await montar({ usuario: ADMIN, proposta: proposta({ status: 'FINALIZADA' }) });
       const secao = el.querySelector('[data-testid=os-da-proposta]')!;

@@ -25,6 +25,7 @@ import type { TipoProposta } from '../templates/template-models';
 import { gerarCodigoProvisorioOs } from './codigo-provisorio-os';
 import { ErroOs } from './erro-os';
 import { FotoPreparada, gerarMiniatura, prepararFoto } from './foto-os';
+import { bloqueioDoPdfOs } from './pdf-regeravel';
 import {
   AnexoOsLocal,
   AnexoOsServidor,
@@ -588,19 +589,6 @@ function visivelPara(o: OsLocal, u: UsuarioSessao): boolean {
 }
 
 /**
- * O `concluidaPorOutro` do `AnexoOsService` sobre o histórico do servidor: a última transição para CONCLUIDA (por data;
- * no empate, a que vem depois na ordem do pull) foi de outro usuário. Os registros sem transição não contam.
- */
-function concluidaPorOutro(os: OsLocal, usuarioId: string): boolean {
-  let ultima: OsLocal['historico'][number] | undefined;
-  for (const h of os.historico) {
-    if (h.statusPara !== 'CONCLUIDA' || h.statusDe === 'CONCLUIDA') continue;
-    if (!ultima || h.em >= ultima.em) ultima = h;
-  }
-  return !!ultima && ultima.usuarioId !== usuarioId;
-}
-
-/**
  * Há assinatura para concluir: a aceita pelo servidor ou uma colhida neste aparelho ainda não enviada (sai na fila
  * antes do concluir). A colhida com a OS encerrada (M2P1-R26) é evidência e só existe com a OS já encerrada aqui.
  */
@@ -656,7 +644,7 @@ export class OsRepo {
     });
   }
 
-  /** As atribuídas ao técnico, por data prevista (sem data no fim) e urgentes primeiro no mesmo dia. */
+  /** As atribuídas ao técnico, na ordem do `ordenarParaTecnico` (urgente sem data como de hoje; normal sem data no fim). */
   observarDoTecnico(usuarioId: string): Observable<OsLocal[]> {
     return observar(async () => ordenarParaTecnico(await this.db.os.where('tecnicoId').equals(usuarioId).toArray()));
   }
@@ -1287,19 +1275,23 @@ export class OsRepo {
   }
 
   /**
-   * O `regerarPdf` pode gerar: sem CONFLITO da OS e, para o TECNICO, sem o servidor dizer que outro usuário a concluiu
-   * (o PDF dele voltaria 403 `OS_CONCLUIDA_POR_OUTRO`, M2P1-R28/R29). O histórico só vale se a conclusão deste aparelho
-   * não está mais na fila (com ela na fila, a última conclusão no servidor vai ser a dele).
+   * O `regerarPdf` pode gerar: sem CONFLITO da OS e pela regra compartilhada com as telas (`bloqueioDoPdfOs`): o ADMIN
+   * ou o técnico atribuído, a OS concluída e, para o TECNICO, sem o servidor dizer que outro usuário a concluiu (o PDF
+   * dele voltaria 403 `OS_CONCLUIDA_POR_OUTRO`, M2P1-R28/R29). Aqui a fila é conhecida: o histórico só vale se a
+   * conclusão deste aparelho não está mais nela (nem numa pendência).
    */
   private async exigirPdfPossivel(os: OsLocal, u: UsuarioSessao): Promise<void> {
     const pendencias = await this.pendenciasDa(os.id);
     exigirSemConflito(pendencias, 'regerarPdf');
-    if (u.perfil !== 'TECNICO') return;
-    const recusado = pendencias.some((x) => x.erro?.codigo === 'OS_CONCLUIDA_POR_OUTRO');
-    const concluirNaFila = [...(await this.db.outbox.where('agregadoId').equals(os.id).toArray()), ...pendencias.map((x) => x.mutacao)]
+    const conclusaoNaFila = [...(await this.db.outbox.where('agregadoId').equals(os.id).toArray()), ...pendencias.map((x) => x.mutacao)]
       .some((m) => m.entidade === 'os' && (m.dados as OsDados | null)?.status === 'CONCLUIDA');
-    if (recusado || (!concluirNaFila && concluidaPorOutro(os, u.id))) {
-      throw new ErroOs('OS_CONCLUIDA_POR_OUTRO', 'os', 'Esta OS foi concluída pelo escritório.');
+    switch (bloqueioDoPdfOs(os, u, pendencias, conclusaoNaFila)) {
+      case 'ACESSO':
+        throw new ErroOs('ACESSO_NEGADO', 'os', 'Só o técnico atribuído ou o administrador gera o PDF da OS.');
+      case 'STATUS':
+        throw new ErroOs('STATUS_INVALIDO', 'os', 'Só uma OS concluída tem o PDF para gerar de novo.');
+      case 'CONCLUIDA_POR_OUTRO':
+        throw new ErroOs('OS_CONCLUIDA_POR_OUTRO', 'os', 'Esta OS foi concluída pelo escritório.');
     }
   }
 
