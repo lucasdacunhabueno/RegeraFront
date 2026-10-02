@@ -63,7 +63,7 @@ function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
       { statusDe: null, statusPara: 'RASCUNHO', usuarioId: COMERCIAL.id, em: '2026-09-20T13:00:00Z', observacao: null },
       { statusDe: 'RASCUNHO', statusPara: 'ENVIADA', usuarioId: COMERCIAL.id, em: '2026-09-20T17:30:00Z', observacao: null },
     ],
-    documentos: [], atualizadoEm: '2026-09-20T17:30:00Z', ...p,
+    documentos: [], atualizadoEm: '2026-09-20T17:30:00Z', origem: null, ...p,
   };
 }
 
@@ -662,6 +662,43 @@ describe('PropostaDetalhePage', () => {
       repo.regerarDocumento.mockRejectedValueOnce(new ErroProposta('PDF_GRANDE', 'proposta', 'O PDF passou de 10 MB. Reduza imagens do template.'));
       botao(el, 'Gerar PDF novamente')!.click();
       await vi.waitFor(() => expect(toastErro).toHaveBeenCalledWith('O PDF passou de 10 MB. Reduza imagens do template.'));
+    });
+  });
+
+  describe('proposta importada do SIGEM (origem)', () => {
+    const HISTORICO_SIGEM = [
+      { statusDe: null, statusPara: 'FINALIZADA' as StatusProposta, usuarioId: ADMIN.id, em: '2026-10-01T10:00:00Z', observacao: 'Importada do SIGEM' },
+    ];
+    const sigem = (p: Partial<PropostaLocal> = {}) =>
+      proposta({ numero: 12, status: 'FINALIZADA', responsavelId: ADMIN.id, tecnicoId: null, origem: 'SIGEM', historico: HISTORICO_SIGEM, ...p });
+
+    it('FINALIZADA: sem "Ver prévia", sem "Gerar PDF novamente", Documentos diz que não tem PDF e o selo SIGEM aparece', async () => {
+      const { el } = await montar({ usuario: ADMIN, proposta: sigem(), documentos: [] });
+      expect(acoes(el)).toEqual(['Duplicar']);
+      expect(botao(el, 'Ver prévia')).toBeUndefined();
+      expect(el.querySelector('[data-testid=regerar]')).toBeNull();
+      expect(botao(el, 'Gerar PDF novamente')).toBeUndefined();
+      const docs = texto(el.querySelector<HTMLElement>('[data-testid=documentos]')!);
+      expect(docs).toContain('Importada do SIGEM: sem PDF.');
+      expect(docs).not.toContain('Nenhum PDF ainda.');
+      expect([...el.querySelectorAll('[data-testid=resumo] [data-selo]')].map((s) => [s.getAttribute('data-selo'), s.textContent?.trim()]))
+        .toEqual([['sigem', 'SIGEM']]);
+    });
+
+    it('APROVADA: segue o fluxo (Iniciar execução, Cancelar, Duplicar), só sem a prévia', async () => {
+      const { el } = await montar({ usuario: ADMIN, proposta: sigem({ status: 'APROVADA' }), documentos: [] });
+      expect(acoes(el)).toEqual(['Iniciar execução', 'Cancelar proposta', 'Duplicar']);
+      expect(el.querySelector('[data-testid=regerar]')).toBeNull();
+    });
+
+    it('a nativa no mesmo estado continua igual: "Ver prévia", "Gerar PDF novamente" e "Nenhum PDF ainda."', async () => {
+      const { el } = await montar({ usuario: ADMIN, proposta: sigem({ origem: null }), documentos: [] });
+      expect(acoes(el)).toEqual(['Ver prévia', 'Duplicar']);
+      expect(el.querySelector('[data-testid=regerar]')).not.toBeNull();
+      const docs = texto(el.querySelector<HTMLElement>('[data-testid=documentos]')!);
+      expect(docs).toContain('Nenhum PDF ainda. O PDF é gerado no envio.');
+      expect(docs).not.toContain('SIGEM');
+      expect(el.querySelector('[data-selo=sigem]')).toBeNull();
     });
   });
 

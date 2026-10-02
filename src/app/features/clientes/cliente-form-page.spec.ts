@@ -27,7 +27,7 @@ function propostaDe(id: string, p: Partial<PropostaLocal> = {}): PropostaLocal {
     id, version: 1, codigoProvisorio: 'PROV-ABC123', numero: null, revisao: null, tipo: 'VENDA', status: 'RASCUNHO', clienteId: 'id1',
     templateId: null, responsavelId: 'u1', tecnicoId: null, dataEmissao: '2026-09-20', validadeAte: '2026-10-05', condicoesPagamento: null,
     prazoExecucao: null, observacoes: null, descontoGeralCentesimos: null, totalItensCentavos: 150000, totalDescontosCentavos: 0,
-    totalCentavos: 150000, motivoEncerramento: null, itens: [], historico: [], documentos: [], atualizadoEm: null, ...p,
+    totalCentavos: 150000, motivoEncerramento: null, itens: [], historico: [], documentos: [], atualizadoEm: null, origem: null, ...p,
   };
 }
 

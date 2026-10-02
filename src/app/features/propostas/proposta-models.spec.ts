@@ -10,6 +10,7 @@ import {
   ContextoTransicao,
   dadosDaProposta,
   exigeMotivo,
+  importadaDoSigem,
   motivoValido,
   numeroExibido,
   paraPropostaLocal,
@@ -17,6 +18,7 @@ import {
   podeAlterarTecnico,
   podeEditar,
   PropostaDados,
+  PropostaLocal,
   STATUS_PROPOSTA,
   StatusProposta,
   stripJava,
@@ -284,6 +286,23 @@ describe('proposta-models', () => {
       const volta = dadosDaProposta(p);
       expect(volta.numero).toBeNull();
       expect(volta.itens[0]).toMatchObject({ quantidade: 2, precoUnitario: 10, descontoPercentual: 0, meses: null });
+    });
+
+    it('origem [srv]: "SIGEM" do pull fica na proposta local; sem a chave (nativa) é null; a rede nunca a recebe', () => {
+      const sigem = paraPropostaLocal(ID, 1, { ...dadosAdmin(), origem: 'SIGEM' });
+      expect(sigem.origem).toBe('SIGEM');
+      expect(importadaDoSigem(sigem)).toBe(true);
+      const nativa = paraPropostaLocal(ID, 1, dadosAdmin());
+      expect(nativa.origem).toBeNull();
+      expect(importadaDoSigem(nativa)).toBe(false);
+      expect('origem' in dadosDaProposta(sigem)).toBe(false);
+      expect(JSON.stringify(dadosDaProposta(sigem))).not.toContain('origem');
+    });
+
+    it('importadaDoSigem: a linha do Dexie gravada antes do campo (sem `origem`) é nativa', () => {
+      const antiga: Partial<PropostaLocal> = paraPropostaLocal(ID, 1, dadosAdmin());
+      delete antiga.origem;
+      expect(importadaDoSigem(antiga as PropostaLocal)).toBe(false);
     });
 
     it('aceita decimais como string (BigDecimal serializado como texto)', () => {

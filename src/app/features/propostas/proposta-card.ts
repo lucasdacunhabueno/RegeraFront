@@ -1,7 +1,7 @@
 import { Component, computed, input } from '@angular/core';
 import {
-  LucideBan, LucideCircleCheck, LucideClock, LucideDynamicIcon, LucideIcon, LucideRefreshCw, LucideRotateCcw, LucideTriangleAlert,
-  LucideWrench,
+  LucideBan, LucideCircleCheck, LucideClock, LucideDynamicIcon, LucideHistory, LucideIcon, LucideRefreshCw, LucideRotateCcw,
+  LucideTriangleAlert, LucideWrench,
 } from '@lucide/angular';
 import { RouterLink } from '@angular/router';
 import type { SeloOsProposta } from '../os/formatos-os';
@@ -10,6 +10,7 @@ import { PropostaLocal, STATUS_PROPOSTA } from './proposta-models';
 
 /** Cor e ícone de cada selo (o card e o cabeçalho do detalhe). */
 export const ESTILO_SELO: Readonly<Record<Selo['tipo'], { cor: string; icone: LucideIcon }>> = {
+  sigem: { cor: 'bg-slate-100 text-slate-700', icone: LucideHistory },
   expirada: { cor: 'bg-orange-100 text-orange-800', icone: LucideClock },
   'nao-sincronizada': { cor: 'bg-amber-100 text-amber-800', icone: LucideRefreshCw },
   pendencia: { cor: 'bg-red-100 text-red-800', icone: LucideTriangleAlert },

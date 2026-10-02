@@ -40,6 +40,8 @@ export interface PropostaDados {
   documentos?: DocumentoDados[];
   /** [srv] Última escrita no servidor (ISO-8601, P4b-R19): ordena o kanban. */
   atualizadoEm?: string | null;
+  /** [srv] `SIGEM` só na proposta importada do SIGEM (sem PDF nem prévia); ausente na nativa. */
+  origem?: 'SIGEM' | null;
 }
 
 export interface ItemPropostaDados {
@@ -126,6 +128,11 @@ export interface PropostaLocal {
   documentos: DocumentoDados[];
   /** ISO-8601. Uma escrita local marca o agora (otimista); o servidor sobrescreve no retorno. */
   atualizadoEm: string | null;
+  /**
+   * [srv] `SIGEM` na proposta importada do SIGEM; null na nativa. Não é indexado (sem versão nova do Dexie): a linha
+   * gravada antes deste campo não o tem, e `importadaDoSigem` lê a ausência como nativa.
+   */
+  origem: 'SIGEM' | null;
 }
 
 /** PDF de um envio, guardado no aparelho (tabela `documentos`). `enviado` = o upload já foi aceito. */
@@ -207,10 +214,11 @@ export function paraPropostaLocal(id: string, version: number | null, d: Propost
     historico: (d.historico ?? []).map((h) => ({ ...h, statusDe: h.statusDe ?? null, observacao: h.observacao ?? null })),
     documentos: [...(d.documentos ?? [])],
     atualizadoEm: d.atualizadoEm ?? null,
+    origem: d.origem ?? null,
   };
 }
 
-/** Para a rede: decimais como `number` exatos (o texto mais curto do double é o próprio decimal). */
+/** Para a rede: decimais como `number` exatos (o texto mais curto do double é o próprio decimal). Sem `origem` ([srv]). */
 export function dadosDaProposta(p: PropostaLocal): PropostaDados {
   return {
     codigoProvisorio: p.codigoProvisorio,
@@ -255,6 +263,14 @@ export function dadosDaProposta(p: PropostaLocal): PropostaDados {
 }
 
 // --- exibição ---
+
+/**
+ * A proposta veio do SIGEM (`origem`): não tem PDF nem prévia. A linha do Dexie gravada antes do campo existir não
+ * tem a chave, e conta como nativa.
+ */
+export function importadaDoSigem(p: Pick<PropostaLocal, 'origem'>): boolean {
+  return p.origem != null;
+}
 
 export const STATUS_PROPOSTA: Readonly<Record<StatusProposta, { rotulo: string; cor: string }>> = {
   RASCUNHO: { rotulo: 'Rascunho', cor: 'bg-slate-100 text-slate-700' },

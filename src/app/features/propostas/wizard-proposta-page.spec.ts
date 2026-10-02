@@ -76,7 +76,7 @@ function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
     clienteId: 'c1', templateId: 't-venda', responsavelId: COMERCIAL.id, tecnicoId: null, dataEmissao: '2026-10-01',
     validadeAte: '2026-10-16', condicoesPagamento: '50% na assinatura', prazoExecucao: null, observacoes: null,
     descontoGeralCentesimos: 0, totalItensCentavos: 0, totalDescontosCentavos: 0, totalCentavos: 0, motivoEncerramento: null,
-    itens: [linha('l1')], historico: [], documentos: [], atualizadoEm: null, ...p,
+    itens: [linha('l1')], historico: [], documentos: [], atualizadoEm: null, origem: null, ...p,
   };
 }
 

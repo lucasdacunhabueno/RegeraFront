@@ -22,7 +22,7 @@ function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
     clienteId: 'c1', templateId: null, responsavelId: 'u1', tecnicoId: null, dataEmissao: '2026-09-20',
     validadeAte: '2026-09-30', condicoesPagamento: null, prazoExecucao: null, observacoes: null, descontoGeralCentesimos: null,
     totalItensCentavos: null, totalDescontosCentavos: null, totalCentavos: null, motivoEncerramento: null, itens: [],
-    historico: [], documentos: [], atualizadoEm: null, ...p,
+    historico: [], documentos: [], atualizadoEm: null, origem: null, ...p,
   };
 }
 
@@ -74,6 +74,20 @@ describe('formatos-proposta', () => {
         { tipo: 'nao-sincronizada', rotulo: 'Não sincronizada' },
         { tipo: 'pendencia', rotulo: 'Pendência' },
       ]);
+    });
+
+    it('SIGEM: a importada leva o selo "SIGEM", antes de todos', () => {
+      const selos = selosDaProposta(proposta({ status: 'ENVIADA', validadeAte: '2026-09-15', origem: 'SIGEM' }), {
+        pendente: true, naoSincronizada: true, hoje: HOJE,
+      });
+      expect(selos).toEqual([
+        { tipo: 'sigem', rotulo: 'SIGEM' },
+        { tipo: 'expirada', rotulo: 'Expirada' },
+        { tipo: 'nao-sincronizada', rotulo: 'Não sincronizada' },
+        { tipo: 'pendencia', rotulo: 'Pendência' },
+      ]);
+      expect(selosDaProposta(proposta({ status: 'FINALIZADA', origem: 'SIGEM' }), { pendente: false, naoSincronizada: false, hoje: HOJE }))
+        .toEqual([{ tipo: 'sigem', rotulo: 'SIGEM' }]);
     });
 
     it('nenhum quando está em dia', () => {

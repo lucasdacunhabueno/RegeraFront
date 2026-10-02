@@ -24,7 +24,8 @@ import { PdfPronto } from './pdf-pronto';
 import { regerarPdf } from './regerar-pdf';
 import { ESTILO_SELO } from './proposta-card';
 import {
-  ItemPropostaLocal, podeAlterarTecnico, podeEditar, PropostaLocal, STATUS_PROPOSTA, StatusProposta, transicoesPermitidas,
+  importadaDoSigem, ItemPropostaLocal, podeAlterarTecnico, podeEditar, PropostaLocal, STATUS_PROPOSTA, StatusProposta,
+  transicoesPermitidas,
 } from './proposta-models';
 import {
   DocumentoDaProposta, enderecoDoCliente, EstadoSync, motivoParaRegerar, pendenciaCorrigivel, PropostasRepo,
@@ -84,6 +85,8 @@ interface LinhaItem {
  *   responsável e técnico ("Atribuir/Trocar técnico" quando P4b-R3 deixa).
  * - Itens (cards no celular, tabela a partir do lg), totais, condições, histórico e documentos (`observarDocumentos`;
  *   "Abrir" pelo PDF do aparelho ou baixado na hora sem cache, P4b-R6; "Compartilhar").
+ * - Importada do SIGEM (`origem`): selo "SIGEM", sem "Ver prévia" nem "Gerar PDF novamente", e Documentos diz que não
+ *   tem PDF.
  * - Ações: só as de `transicoesPermitidas` (e Editar, Enviar, Ver prévia, Duplicar, Excluir rascunho); RECUSADA e
  *   CANCELADA pedem o motivo (`DialogoMotivo`); com CONFLITO, as transições, Editar, Enviar e "Gerar PDF novamente"
  *   ficam desabilitados (P4c-R15).
@@ -418,7 +421,9 @@ interface LinhaItem {
                   </span>
                 </li>
               } @empty {
-                <li class="py-2 text-sm text-slate-500">Nenhum PDF ainda. O PDF é gerado no envio.</li>
+                <li class="py-2 text-sm text-slate-500">
+                  {{ sigem() ? 'Importada do SIGEM: sem PDF.' : 'Nenhum PDF ainda. O PDF é gerado no envio.' }}
+                </li>
               }
             </ul>
             <app-visor-pdf #visorDocumento [titulo]="'PDF ' + (documentoAberto()?.codigoExibido ?? '')" rotuloAbrir="Abrir PDF"
@@ -606,6 +611,11 @@ export class PropostaDetalhePage {
   });
 
   protected readonly conflito = computed(() => this.pendencias().some((x) => x.tipo === 'CONFLITO'));
+  /** A proposta veio do SIGEM: sem prévia, sem PDF (e `motivoParaRegerar` já é nulo para ela). */
+  protected readonly sigem = computed(() => {
+    const p = this.proposta();
+    return !!p && importadaDoSigem(p);
+  });
   protected readonly motivoRegerar = computed(() => {
     const p = this.proposta();
     return p && this.pode() ? motivoParaRegerar(p, this.documentos(), this.pendencias()) : null;
@@ -628,7 +638,8 @@ export class PropostaDetalhePage {
     if (destinos.includes('RECUSADA')) lista.push({ acao: 'recusar', rotulo: 'Recusar', transicao: true, perigo: true });
     if (p.status === 'ENVIADA' && destinos.includes('RASCUNHO')) lista.push({ acao: 'nova-revisao', rotulo: 'Nova revisão', transicao: true });
     if (destinos.includes('CANCELADA')) lista.push({ acao: 'cancelar', rotulo: 'Cancelar proposta', transicao: true, perigo: true });
-    lista.push({ acao: 'previa', rotulo: 'Ver prévia', transicao: false });
+    // a importada do SIGEM não tem PDF: nem a prévia
+    if (!importadaDoSigem(p)) lista.push({ acao: 'previa', rotulo: 'Ver prévia', transicao: false });
     if (pode) lista.push({ acao: 'duplicar', rotulo: 'Duplicar', transicao: false });
     if (pode && p.status === 'RASCUNHO' && p.numero === null) {
       lista.push({ acao: 'excluir', rotulo: 'Excluir rascunho', transicao: false, perigo: true });

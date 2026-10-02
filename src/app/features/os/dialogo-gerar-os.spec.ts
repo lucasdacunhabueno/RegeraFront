@@ -12,7 +12,7 @@ function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
     validadeAte: '2026-10-05', condicoesPagamento: '50% na assinatura', prazoExecucao: '30 dias',
     observacoes: 'Telhado de laje. Desconto de R$ 500,00 combinado.', descontoGeralCentesimos: 0, totalItensCentavos: 185184,
     totalDescontosCentavos: 0, totalCentavos: 185184, motivoEncerramento: null, itens: [], historico: [], documentos: [],
-    atualizadoEm: null, ...p,
+    atualizadoEm: null, origem: null, ...p,
   };
 }
 

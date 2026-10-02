@@ -1,8 +1,8 @@
 import { TestBed } from '@angular/core/testing';
 import { provideRouter } from '@angular/router';
 import type { SeloOsProposta } from '../os/formatos-os';
-import type { Selo } from './formatos-proposta';
-import { ESTILO_SELO_OS_PROPOSTA, PropostaCard } from './proposta-card';
+import { Selo, selosDaProposta } from './formatos-proposta';
+import { ESTILO_SELO, ESTILO_SELO_OS_PROPOSTA, PropostaCard } from './proposta-card';
 import { PropostaLocal, STATUS_PROPOSTA } from './proposta-models';
 
 function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
@@ -11,7 +11,7 @@ function proposta(p: Partial<PropostaLocal> = {}): PropostaLocal {
     clienteId: 'c1', templateId: 't1', responsavelId: 'u1', tecnicoId: null, dataEmissao: '2026-09-20',
     validadeAte: '2026-09-30', condicoesPagamento: null, prazoExecucao: null, observacoes: null, descontoGeralCentesimos: null,
     totalItensCentavos: 123456, totalDescontosCentavos: 0, totalCentavos: 123456, motivoEncerramento: null, itens: [],
-    historico: [], documentos: [], atualizadoEm: null, ...p,
+    historico: [], documentos: [], atualizadoEm: null, origem: null, ...p,
   };
 }
 
@@ -103,6 +103,18 @@ describe('PropostaCard', () => {
       ['nao-sincronizada', 'Não sincronizada'],
       ['pendencia', 'Pendência'],
     ]);
+  });
+
+  it('SIGEM: o selo da proposta importada, em cinza neutro com o ícone de histórico, antes dos outros', () => {
+    const p = proposta({ status: 'FINALIZADA', origem: 'SIGEM' });
+    const el = montar({ proposta: p, selos: selosDaProposta(p, { pendente: true, naoSincronizada: false, hoje: '2026-10-01' }) });
+    const selos = [...el.querySelectorAll('[data-selo]')];
+    expect(selos.map((s) => [s.getAttribute('data-selo'), s.textContent?.trim()])).toEqual([['sigem', 'SIGEM'], ['pendencia', 'Pendência']]);
+    expect(ESTILO_SELO.sigem.cor).toBe('bg-slate-100 text-slate-700');
+    for (const c of ESTILO_SELO.sigem.cor.split(' ')) expect(selos[0].classList).toContain(c);
+    const icone = selos[0].querySelector('svg')!;
+    expect(icone.getAttribute('aria-hidden')).toBe('true');
+    expect(icone.getAttribute('class')).toContain('lucide-history');
   });
 
   it('M2-P3: os selos da OS (selosOs) depois dos da proposta, cada um com a cor e o ícone dele', () => {
