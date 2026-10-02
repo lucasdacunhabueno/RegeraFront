@@ -1331,6 +1331,21 @@ describe('SyncService', () => {
       expect((await fila()).map((m) => [m.agregadoId, m.enviando])).toEqual([['o1', true], ['o2', false]]);
     });
 
+    it('M8: o upload que saiu numa sincronização anterior continua em voo quando o push da seguinte falha sem rede', async () => {
+      await gravarAnexos(anexoLocal());
+      await sync.registrarUploadAnexoOs('o1', 'f1');
+      const p1 = sync.sincronizar();
+      (await upload()).flush(null, { status: 504, statusText: 'Gateway Timeout' });
+      expect(await p1).toBe('sem-rede');
+
+      await sync.registrar('os', 'o2', 'UPSERT', os('EM_ANDAMENTO'), 2, { separada: true });
+      const p2 = sync.sincronizar();
+      (await push()).error(new ProgressEvent('error'), { status: 0 });
+      expect(await p2).toBe('sem-rede');
+      http.expectNone(URL_OS);
+      expect((await fila()).map((m) => [m.agregadoId, m.enviando])).toEqual([['o1', true], ['o2', true]]);
+    });
+
     it('pull aplica a OS pelo adaptador', async () => {
       const p = sync.sincronizar();
       (await vi.waitFor(() => http.expectOne((r) => r.url === '/api/sync/pull'))).flush({

@@ -355,8 +355,9 @@ export class SyncService {
         if (transitorio) return;
       } catch (erro) {
         // M2: os uploads do lote que nem saíram voltam a ficar fora de voo (senão "está sendo enviado" trava o PDF e a
-        // exclusão até a próxima sincronização chegar ao servidor); o que saiu pode ter chegado e fica em voo
-        for (const m of uploads.slice(tentados)) await this.liberar(m);
+        // exclusão até a próxima sincronização chegar ao servidor); o que saiu pode ter chegado e fica em voo, inclusive o
+        // que saiu numa sincronização anterior (o lote guarda o `enviando` de antes desta rodada)
+        for (const m of uploads.slice(tentados)) if (!m.enviando) await this.liberar(m);
         throw erro;
       }
     }
