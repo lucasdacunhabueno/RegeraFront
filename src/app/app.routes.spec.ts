@@ -7,6 +7,7 @@ import { AuthService } from './core/auth/auth-service';
 import { routes } from './app.routes';
 import { alteracoesGuard } from './core/navegacao/alteracoes-guard';
 import { KanbanPage } from './features/kanban/kanban-page';
+import { OsExecucaoPage } from './features/os/os-execucao-page';
 import { OsListaPage } from './features/os/os-lista-page';
 import { PropostaDetalhePage } from './features/propostas/proposta-detalhe-page';
 import { PropostasPage } from './features/propostas/propostas-page';
@@ -59,6 +60,23 @@ describe('app.routes', () => {
     expect(r.canMatch).toBeUndefined();
     expect(r.component).toBeUndefined();
     expect(await (r.loadComponent as () => Promise<unknown>)()).toBe(OsListaPage);
+  });
+
+  it('M2-P3: /os/:id é lazy e de todos os perfis (a página mostra a execução ou a leitura conforme o perfil)', async () => {
+    const r = rota('os/:id')!;
+    expect(r.canMatch).toBeUndefined();
+    expect(r.component).toBeUndefined();
+    expect(await (r.loadComponent as () => Promise<unknown>)()).toBe(OsExecucaoPage);
+  });
+
+  it('M2-P3: as rotas específicas da OS (os/nova, os/:id/editar, da T4) vêm antes de os/:id', () => {
+    const ordem = filhas.map((r) => r.path);
+    const generica = ordem.indexOf('os/:id');
+    expect(generica).toBeGreaterThan(ordem.indexOf('os'));
+    for (const especifica of ['os/nova', 'os/:id/editar']) {
+      const i = ordem.indexOf(especifica);
+      if (i > -1) expect(i).toBeLessThan(generica);
+    }
   });
 
   it.each(['propostas/nova', 'propostas/:id/editar'])('%s: wizard lazy em modo rascunho, ADMIN e COMERCIAL, com aviso ao sair', async (path) => {
@@ -187,6 +205,13 @@ describe('app.routes', () => {
       expect(await navegar('COMERCIAL', '/os')).toBe('/os');
       expect(await navegar('COMERCIAL', '/propostas/x')).toBe('/propostas/x');
       expect(await navegar('ADMIN', '/propostas')).toBe('/propostas');
+    });
+
+    it('a OS (/os/:id) abre para todos os perfis', async () => {
+      const id = '0198a1b2-0000-7000-8000-000000000001';
+      for (const perfil of ['TECNICO', 'ADMIN', 'COMERCIAL'] as Perfil[]) {
+        expect(await navegar(perfil, `/os/${id}`)).toBe(`/os/${id}`);
+      }
     });
   });
 });

@@ -59,6 +59,9 @@ export const routes: Routes = [
       },
       // todos os perfis: a página mostra ao técnico só as dele e ao escritório as que o perfil vê
       { path: 'os', loadComponent: () => import('./features/os/os-lista-page').then((m) => m.OsListaPage) },
+      // a OS: a execução (técnico atribuído e ADMIN) ou só a leitura, conforme o perfil. As rotas específicas da OS
+      // (os/nova, os/:id/editar) entram antes desta
+      { path: 'os/:id', loadComponent: () => import('./features/os/os-execucao-page').then((m) => m.OsExecucaoPage) },
       {
         path: 'clientes/novo',
         canMatch: [perfilGuard('ADMIN', 'COMERCIAL')],

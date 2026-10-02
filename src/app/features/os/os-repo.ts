@@ -320,8 +320,11 @@ function cortar(t: string, max: number): string {
   return pontos.length > max ? pontos.slice(0, max).join('') : t;
 }
 
-/** Endereço em uma linha: `Logradouro, nº - compl. - bairro - Cidade/UF - CEP 00000-000`. */
-function linhaDoEndereco(e: EnderecoOs): string | null {
+/**
+ * Endereço em uma linha: `Logradouro, nº - compl. - bairro - Cidade/UF - CEP 00000-000`. É o do PDF e o da tela da OS
+ * (com o link do mapa).
+ */
+export function linhaDoEndereco(e: EnderecoOs): string | null {
   const local = [e.cidade, e.uf].map(texto).filter((x) => x !== null).join('/');
   const partes = [
     [e.logradouro, e.numero].map(texto).filter((x) => x !== null).join(', '),
@@ -333,7 +336,7 @@ function linhaDoEndereco(e: EnderecoOs): string | null {
   return partes.length > 0 ? partes.join(' - ') : null;
 }
 
-function enderecoDaOs(os: OsLocal): EnderecoOs {
+export function enderecoDaOs(os: OsLocal): EnderecoOs {
   return {
     cep: os.enderecoCep, logradouro: os.enderecoLogradouro, numero: os.enderecoNumero, complemento: os.enderecoComplemento,
     bairro: os.enderecoBairro, cidade: os.enderecoCidade, uf: os.enderecoUf,
