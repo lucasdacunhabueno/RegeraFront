@@ -9,6 +9,7 @@ import { abrirJanelaEmBranco, baixarArquivo, revogarUrl } from '../../core/pdf/a
 import { dataBr, dataHoraBr, quantidadeBr } from '../../core/pdf/formatos-pdf';
 import { PdfService } from '../../core/pdf/pdf-service';
 import { DadosUploadAnexoOs, Pendencia, TIPO_UPLOAD_ANEXO_OS } from '../../core/sync/sync-models';
+import { ErroCampo } from '../../core/util/erro-campo';
 import { formatarTelefone, somenteDigitos } from '../../core/util/formatos';
 import { Toasts } from '../../shared/ui/toasts';
 import { VisorPdf } from '../../shared/ui/visor-pdf';
@@ -37,6 +38,8 @@ const MAPA = 'https://www.google.com/maps/search/?api=1&query=';
 const MAX_NOTA = 2000;
 const MAX_LEGENDA = 200;
 const ERRO_LEGENDA = `A legenda tem no máximo ${MAX_LEGENDA} caracteres.`;
+const FALHA_GRAVAR_FOTO = 'Não foi possível gravar a foto. Tente de novo.';
+const FOTO_DURANTE_PDF = 'A foto chegou enquanto o PDF da OS era gerado e não foi gravada. Tire de novo.';
 
 const SEM_INTERNET_PDF = 'Sem internet: este PDF não está no aparelho.';
 const FALHA_PDF = 'Não foi possível baixar o PDF. Tente de novo.';
@@ -198,7 +201,7 @@ interface AssinaturaVista {
             @if (conflito()) {
               <p id="dica-pendencia-regerar" class="font-semibold">Resolva a pendência primeiro.</p>
             }
-            <button type="button" (click)="regerar()" [disabled]="ocupado() || conflito()"
+            <button type="button" (click)="regerar()" [disabled]="ocupado() || conflito() || gravandoCampo()"
                     [attr.aria-describedby]="conflito() ? 'dica-pendencia-regerar' : null"
                     class="h-12 w-full rounded-lg bg-amber-700 px-4 font-semibold text-white disabled:opacity-60 sm:w-auto">
               {{ regerando() ? 'Gerando PDF…' : 'Gerar PDF novamente' }}
@@ -244,7 +247,7 @@ interface AssinaturaVista {
               @if (endereco(); as e) {
                 <span class="block">{{ e }}</span>
                 <a data-testid="mapa" [href]="urlMapa()" target="_blank" rel="noopener noreferrer"
-                   aria-label="Abrir o endereço no mapa (nova aba)"
+                   aria-label="Abrir no mapa (nova aba)"
                    class="inline-flex min-h-12 items-center gap-2 font-semibold text-blue-700 underline">
                   <svg [lucideIcon]="iconeMapa" [size]="16" aria-hidden="true"></svg>
                   Abrir no mapa
@@ -363,12 +366,14 @@ interface AssinaturaVista {
           }
         </section>
 
-        @if (podeFotografar() || fotoDepoisDeIniciar() || fotos().length > 0) {
+        @if (podeFotografar() || fotoDepoisDeIniciar() || fotos().length > 0 || erroFoto()) {
           <section aria-labelledby="fotos-titulo" class="space-y-3 rounded-xl bg-white p-4">
-            <h2 id="fotos-titulo" class="font-semibold">Fotos</h2>
+            <h2 #tituloFotos id="fotos-titulo" tabindex="-1" class="font-semibold outline-none">Fotos</h2>
             @if (fotoDepoisDeIniciar()) {
               <p class="text-sm text-slate-600">Inicie a OS para tirar fotos.</p>
             }
+            <!-- fora do bloco de captura: a recusa de uma foto que chega com a OS já em outro status continua visível -->
+            @if (erroFoto(); as e) { <p id="erro-foto" data-testid="erro-foto" role="alert" class="text-sm text-red-600">{{ e }}</p> }
             @if (podeFotografar()) {
               <div class="space-y-3">
                 <div class="flex flex-wrap items-center gap-2" role="group" aria-label="Momento da foto">
@@ -384,19 +389,20 @@ interface AssinaturaVista {
                   <label for="foto-legenda" class="text-sm font-medium">Legenda (opcional)</label>
                   <input #campoLegenda id="foto-legenda" name="legenda" type="text" [value]="legenda()" (input)="digitarLegenda($any($event.target).value)"
                          [attr.aria-invalid]="legendaLonga() ? 'true' : 'false'"
-                         [attr.aria-describedby]="'legenda-ajuda' + (erroFoto() ? ' erro-foto' : '')"
+                         [attr.aria-describedby]="'legenda-ajuda' + (erroFoto() === erroLegenda ? ' erro-foto' : '')"
                          class="h-12 w-full rounded-lg border px-3" [class.border-slate-300]="!legendaLonga()" [class.border-red-600]="legendaLonga()" />
                   <p id="legenda-ajuda" class="text-xs text-slate-500">
                     Vale para a próxima foto. <span [class.text-red-600]="legendaLonga()">{{ tamanhoLegenda() }}/{{ maxLegenda }}</span>
                   </p>
                 </div>
-                @if (erroFoto(); as e) { <p id="erro-foto" data-testid="erro-foto" role="alert" class="text-sm text-red-600">{{ e }}</p> }
                 @if (limiteFotos()) {
                   <p id="dica-limite-fotos" class="text-sm text-slate-600">Esta OS já tem o máximo de {{ maxFotos }} fotos.</p>
+                } @else if (concluindo()) {
+                  <p id="dica-foto-concluindo" class="text-sm text-slate-600">Aguarde a conclusão da OS para tirar outra foto.</p>
                 }
                 <input #inputFoto type="file" accept="image/*" capture="environment" class="hidden" (change)="fotoEscolhida($event)" />
-                <button type="button" (click)="tirarFoto(inputFoto)" [disabled]="gravandoFoto() || limiteFotos()"
-                        [attr.aria-describedby]="limiteFotos() ? 'dica-limite-fotos' : null"
+                <button #botaoFoto type="button" (click)="tirarFoto(inputFoto)" [disabled]="gravandoFoto() || limiteFotos() || ocupado()"
+                        [attr.aria-describedby]="limiteFotos() ? 'dica-limite-fotos' : concluindo() ? 'dica-foto-concluindo' : null"
                         class="inline-flex h-12 w-full items-center justify-center gap-2 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 sm:w-auto">
                   <svg [lucideIcon]="iconeCamera" [size]="18" aria-hidden="true"></svg>
                   {{ gravandoFoto() ? 'Gravando foto…' : 'Tirar foto' }}
@@ -454,17 +460,18 @@ interface AssinaturaVista {
 
             @if (o.propostaId) {
               @if (o.concluiProposta) {
-                <div class="flex items-start gap-3">
+                <!-- um alvo só (a caixa e o texto), de pelo menos 48 px -->
+                <label for="precisa-voltar" class="flex min-h-12 cursor-pointer items-start gap-3 py-1">
                   <input id="precisa-voltar" name="precisaVoltar" type="checkbox" [checked]="precisaVoltar()"
-                         (change)="precisaVoltar.set($any($event.target).checked)" aria-describedby="precisa-voltar-ajuda"
-                         class="mt-3 size-5 shrink-0" />
-                  <div>
-                    <label for="precisa-voltar" class="inline-flex min-h-12 items-center text-sm font-medium">Precisa voltar</label>
-                    <p id="precisa-voltar-ajuda" class="text-xs text-slate-500">
+                         (change)="precisaVoltar.set($any($event.target).checked)" [disabled]="ocupado()"
+                         class="mt-0.5 size-5 shrink-0" />
+                  <span>
+                    <span class="block text-sm font-medium">Precisa voltar</span>
+                    <span class="block text-xs text-slate-500">
                       Falta peça ou parte do serviço. A proposta continua em execução, e o escritório agenda o retorno.
-                    </p>
-                  </div>
-                </div>
+                    </span>
+                  </span>
+                </label>
               } @else {
                 <p class="text-sm text-slate-600">Esta OS não conclui a proposta: ela continua em execução depois da conclusão.</p>
               }
@@ -472,9 +479,11 @@ interface AssinaturaVista {
 
             @if (conflito()) {
               <p id="dica-pendencia-concluir" class="text-sm text-amber-800">Resolva a pendência primeiro.</p>
+            } @else if (gravandoCampo()) {
+              <p id="dica-gravando-concluir" class="text-sm text-slate-600">Aguarde: {{ gravandoFoto() ? 'a foto' : gravandoNota() ? 'a nota' : 'a assinatura' }} ainda está sendo gravada.</p>
             }
-            <button type="button" (click)="concluir()" [disabled]="ocupado() || conflito()"
-                    [attr.aria-describedby]="conflito() ? 'dica-pendencia-concluir' : null"
+            <button #botaoConcluir type="button" (click)="concluir()" [disabled]="ocupado() || conflito() || gravandoCampo()"
+                    [attr.aria-describedby]="conflito() ? 'dica-pendencia-concluir' : gravandoCampo() ? 'dica-gravando-concluir' : null"
                     class="h-12 w-full rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60 lg:w-auto">
               {{ concluindo() ? 'Gerando PDF…' : 'Concluir e gerar PDF' }}
             </button>
@@ -559,11 +568,15 @@ export class OsExecucaoPage {
   private readonly online = inject(ConectividadeService).online;
   private readonly usuario = inject(AuthService).usuario;
   private readonly injector = inject(Injector);
+  private readonly host = inject<ElementRef<HTMLElement>>(ElementRef);
   private readonly titulo = viewChild<ElementRef<HTMLElement>>('titulo');
   private readonly campoNota = viewChild<ElementRef<HTMLTextAreaElement>>('campoNota');
   private readonly campoResumo = viewChild<ElementRef<HTMLTextAreaElement>>('campoResumo');
   private readonly campoLegenda = viewChild<ElementRef<HTMLInputElement>>('campoLegenda');
   private readonly botaoColher = viewChild<ElementRef<HTMLButtonElement>>('botaoColher');
+  private readonly botaoFoto = viewChild<ElementRef<HTMLButtonElement>>('botaoFoto');
+  private readonly botaoConcluir = viewChild<ElementRef<HTMLButtonElement>>('botaoConcluir');
+  private readonly tituloFotos = viewChild<ElementRef<HTMLElement>>('tituloFotos');
   private readonly visorDocumento = viewChild('visorDocumento', { read: VisorPdf });
 
   protected readonly os = signal<OsLocal | undefined>(undefined);
@@ -619,6 +632,7 @@ export class OsExecucaoPage {
   protected readonly data = dataBr;
   protected readonly dataHora = dataHoraBr;
   protected readonly nomeDoPdf = nomeDoPdfOs;
+  protected readonly erroLegenda = ERRO_LEGENDA;
 
   // ---- perfil e posse ----
 
@@ -650,18 +664,27 @@ export class OsExecucaoPage {
     const u = this.usuario();
     return !!o && !!u && this.executor() && podeExecutar(o.status, u.perfil, this.ehTecnicoAtribuido());
   });
-  /** Notas: quem executa, pela matriz (em CONCLUIDA o ADMIN e o técnico, R26); a CANCELADA é só leitura nesta tela. */
+  /**
+   * Notas: quem executa, pela matriz. Depois do encerramento (M2P1-R26, M2P3-R9: a evidência do campo), em CONCLUIDA o
+   * ADMIN e o técnico atribuído; em CANCELADA só o técnico atribuído.
+   */
   protected readonly podeNotar = computed(() => {
     const o = this.os();
     const u = this.usuario();
-    if (!o || !u || !this.executor() || o.status === 'CANCELADA') return false;
+    if (!o || !u || !this.executor()) return false;
     return camposEditaveisOs(o.status, u.perfil, this.ehResponsavel(), this.ehTecnicoAtribuido()).includes('notas');
   });
-  /** Fotos (o `exigirAnexoDeCampo` do repositório): quem executa, em andamento; o técnico atribuído também na concluída. */
+  /**
+   * Fotos (o `exigirAnexoDeCampo` do repositório): quem executa, em andamento; o técnico atribuído também na OS
+   * encerrada, concluída ou cancelada (M2P1-R26, M2P3-R9).
+   */
   protected readonly podeFotografar = computed(() => {
     const status = this.os()?.status;
-    return (status === 'EM_ANDAMENTO' && this.executor()) || (status === 'CONCLUIDA' && this.ehTecnicoAtribuido());
+    return (status === 'EM_ANDAMENTO' && this.executor())
+      || ((status === 'CONCLUIDA' || status === 'CANCELADA') && this.ehTecnicoAtribuido());
   });
+  /** I1: uma escrita de campo em curso (foto, nota, assinatura): o concluir espera, e o PDF sai com ela. */
+  protected readonly gravandoCampo = computed(() => this.gravandoFoto() || this.gravandoNota() || this.gravandoAssinatura());
   protected readonly fotoDepoisDeIniciar = computed(() => this.os()?.status === 'ABERTA' && this.executor());
   protected readonly conflito = computed(() => this.pendencias().some((x) => x.tipo === 'CONFLITO'));
   protected readonly motivoRegerar = computed(() => {
@@ -700,9 +723,11 @@ export class OsExecucaoPage {
     const o = this.os();
     return o ? linhaDoEndereco(enderecoDaOs(o)) : null;
   });
+  /** O mapa procura o endereço sem o complemento (sala, bloco, apto.): só atrapalha a busca. */
   protected readonly urlMapa = computed(() => {
-    const e = this.endereco();
-    return e ? MAPA + encodeURIComponent(e) : null;
+    const o = this.os();
+    const busca = o ? linhaDoEndereco({ ...enderecoDaOs(o), complemento: null }) : null;
+    return busca ? MAPA + encodeURIComponent(busca) : null;
   });
   protected readonly iniciadaEm = computed(() => {
     const o = this.os();
@@ -769,6 +794,7 @@ export class OsExecucaoPage {
       this.os.set(undefined);
       this.anexos.set([]);
       this.pendencias.set([]);
+      this.limparFormulario();
       let primeira = true;
       const assinaturas = [
         this.repo.observarOs(id).subscribe((o) => {
@@ -888,7 +914,7 @@ export class OsExecucaoPage {
    * tirada não se perderia, mas teria de ser tirada de novo.
    */
   protected tirarFoto(input: HTMLInputElement): void {
-    if (this.gravandoFoto()) return;
+    if (this.gravandoFoto() || this.ocupado()) return;
     if (this.legendaLonga()) {
       this.erroFoto.set(ERRO_LEGENDA);
       this.campoLegenda()?.nativeElement.focus();
@@ -907,12 +933,21 @@ export class OsExecucaoPage {
     const arquivo = input.files?.[0] ?? null;
     input.value = '';
     if (!arquivo || this.gravandoFoto()) return;
+    if (this.ocupado()) {
+      // I1: a foto que chega durante a geração do PDF (ex.: o seletor do computador) ficaria fora dele
+      this.erroFoto.set(FOTO_DURANTE_PDF);
+      return;
+    }
     const legenda = stripJava(this.legenda());
     if (this.legendaLonga()) {
       this.erroFoto.set(ERRO_LEGENDA);
       return;
     }
     const antes = this.fotos().length;
+    // M2: o "Tirar foto" se desabilita com o foco nele; o foco fica no título da seção e volta ao botão no fim
+    const documento = this.host.nativeElement.ownerDocument;
+    const botao = this.botaoFoto()?.nativeElement;
+    if (documento.activeElement === botao || documento.activeElement === documento.body) this.tituloFotos()?.nativeElement.focus();
     this.gravandoFoto.set(true);
     this.erroFoto.set(null);
     this.anuncio.set('Gravando a foto…');
@@ -921,11 +956,12 @@ export class OsExecucaoPage {
       this.legenda.set('');
       this.anuncio.set(`Foto gravada (${antes + 1} de ${MAX_FOTOS_OS}).`);
     } catch (e) {
-      const mensagem = mensagemErroOs(e);
-      this.erroFoto.set(mensagem);
+      // o técnico não entende um erro interno (Dexie, decodificador): a mensagem genérica é a da foto
+      this.erroFoto.set(e instanceof ErroCampo ? mensagemErroOs(e) : FALHA_GRAVAR_FOTO);
       this.anuncio.set('');
     } finally {
       this.gravandoFoto.set(false);
+      this.devolverFoco(() => this.botaoFoto()?.nativeElement, () => this.tituloFotos()?.nativeElement);
     }
   }
 
@@ -1017,7 +1053,8 @@ export class OsExecucaoPage {
    */
   protected async concluir(): Promise<void> {
     const o = this.os();
-    if (!o || this.ocupado()) return;
+    // I1: com uma foto, nota ou assinatura ainda gravando, o PDF sairia sem ela (e a foto do ADMIN seria recusada)
+    if (!o || this.ocupado() || this.gravandoCampo()) return;
     const resumo = this.resumo();
     const erroResumo = textoOsValido(resumo, RESUMO_MIN_OS, RESUMO_MAX_OS)
       ? null
@@ -1053,6 +1090,8 @@ export class OsExecucaoPage {
     } finally {
       this.concluindo.set(false);
       this.ocupado.set(false);
+      // M2: o botão se desabilitou com o foco nele; numa recusa ele fica, e o foco volta a ele
+      this.devolverFoco(() => this.botaoConcluir()?.nativeElement);
     }
   }
 
@@ -1072,13 +1111,15 @@ export class OsExecucaoPage {
 
   /** "Gerar PDF novamente" (M2P2-R18): `regerarPdf` com o gerador do PDF da OS, depois o compartilhamento. */
   protected async regerar(): Promise<void> {
-    if (this.ocupado()) return;
+    if (this.ocupado() || this.gravandoCampo()) return;
     this.ocupado.set(true);
     this.regerando.set(true);
     this.anuncio.set('Gerando o PDF da OS…');
     try {
       const { blob, codigoExibido } = await this.repo.regerarPdf(this.id(), (e) => this.pdf.gerarBlobOs(e));
       this.avisar('PDF gerado de novo. Ele vai para o servidor na próxima sincronização.');
+      // M3: a faixa do "Gerar PDF novamente" some com o PDF novo: o foco vai ao título (o painel "PDF pronto" o toma)
+      this.focarTitulo();
       await this.compartilhar(arquivoPdf(blob, nomeDoPdfOs(codigoExibido)), blob);
     } catch (e) {
       this.toasts.erro(mensagemErroOs(e));
@@ -1159,8 +1200,46 @@ export class OsExecucaoPage {
     this.anuncio.set(mensagem);
   }
 
+  /**
+   * M2: depois do próximo desenho, o foco volta a `alvo` se ele se perdeu (no body, ou num dos `de`, onde foi deixado
+   * enquanto `alvo` estava desabilitado).
+   */
+  private devolverFoco(alvo: () => HTMLElement | undefined, ...de: (() => HTMLElement | undefined)[]): void {
+    afterNextRender(
+      () => {
+        const documento = this.host.nativeElement.ownerDocument;
+        const ativo = documento.activeElement;
+        const el = alvo();
+        const perdido = !ativo || ativo === documento.body || de.some((f) => f() === ativo);
+        if (el && perdido && !(el as HTMLButtonElement).disabled) el.focus();
+      },
+      { injector: this.injector },
+    );
+  }
+
+  /** M4: o que é desta OS na tela (campos, erros, diálogos e o painel do PDF) não passa para outra. */
+  private limparFormulario(): void {
+    this.nota.set('');
+    this.erroNota.set(null);
+    this.legenda.set('');
+    this.momento.set(null);
+    this.erroFoto.set(null);
+    this.resumo.set('');
+    this.erroResumo.set(null);
+    this.erroAssinatura.set(null);
+    this.erroTelaAssinatura.set(null);
+    this.precisaVoltar.set(false);
+    this.pdfPronto.set(null);
+    this.assinando.set(false);
+    this.recusando.set(false);
+    this.documentoAberto.set(null);
+  }
+
   /** O foco vai ao título depois do próximo desenho (o botão da ação some com a mudança de status). */
   private focarTitulo(): void {
-    afterNextRender(() => this.titulo()?.nativeElement.focus(), { injector: this.injector });
+    // com o painel "PDF pronto" na tela, o foco é dele (ele o toma ao abrir; o título não o rouba)
+    afterNextRender(() => {
+      if (!this.pdfPronto()) this.titulo()?.nativeElement.focus();
+    }, { injector: this.injector });
   }
 }

@@ -1,8 +1,8 @@
 import {
-  afterNextRender, Component, DestroyRef, DOCUMENT, ElementRef, inject, input, output, signal, viewChild,
+  afterNextRender, Component, DestroyRef, DOCUMENT, effect, ElementRef, inject, Injector, input, output, signal, viewChild,
 } from '@angular/core';
 import { stripJava } from '../propostas/proposta-models';
-import { AssinaturaCanvas, Traco } from './assinatura-canvas';
+import { AssinaturaCanvas, Ponto } from './assinatura-canvas';
 import { mensagemErroOs } from './formatos-os';
 import { tamanhoTextoOs } from './os-models';
 import type { AssinaturaColhida } from './os-repo';
@@ -16,10 +16,7 @@ const NOME_MIN = 2;
 const NOME_MAX = 120;
 const PAPEL_MAX = 60;
 
-/** Algum ponto do traço caiu fora da área de `largura` × `altura` px CSS (o PNG mostra só o que está dentro). */
-function foraDaArea(tracos: readonly Traco[], largura: number, altura: number): boolean {
-  return tracos.some((t) => t.some((p) => p.x < 0 || p.y < 0 || p.x > largura || p.y > altura));
-}
+const dentro = (p: Ponto, largura: number, altura: number) => p.x >= 0 && p.y >= 0 && p.x <= largura && p.y <= altura;
 
 /**
  * Assinatura em tela cheia (spec M2 §9), sobre o `AssinaturaCanvas`: quem assina desenha com o dedo e informa o nome
@@ -32,7 +29,8 @@ function foraDaArea(tracos: readonly Traco[], largura: number, altura: number): 
  * - O canvas tem o tamanho no CSS (ocupa a área útil), não rola nem seleciona (`touch-none`, `select-none`, sem o menu
  *   do toque longo do iOS) e não tem borda nem padding: a moldura é da div em volta.
  * - Em paisagem, os campos e os botões vão para a lateral e o quadro fica com a altura toda. Se a tela girar com parte
- *   do traço fora da área nova, a tela avisa: o PNG só leva o que se vê.
+ *   do traço que se via fora da área nova, a tela avisa: o PNG só leva o que se vê. Os pontos de quando o dedo passou
+ *   da borda (o ponteiro fica capturado) nunca se viram e não contam.
  */
 @Component({
   selector: 'app-assinatura-tela',
@@ -48,7 +46,7 @@ function foraDaArea(tracos: readonly Traco[], largura: number, altura: number): 
         </div>
         <p [id]="id + '-instrucao'" class="sr-only">Assine com o dedo no quadro. Depois informe o nome e o papel de quem assina.</p>
         <div class="relative min-h-40 flex-1 rounded-lg border-2 border-dashed border-slate-300">
-          <canvas #quadro aria-label="Quadro da assinatura"
+          <canvas #quadro role="img" aria-label="Quadro da assinatura"
                   class="absolute inset-0 block size-full touch-none select-none [-webkit-touch-callout:none]"></canvas>
           @if (vazia()) {
             <p aria-hidden="true" class="pointer-events-none absolute inset-x-0 bottom-3 text-center text-sm text-slate-400">Assine aqui</p>
@@ -96,7 +94,7 @@ function foraDaArea(tracos: readonly Traco[], largura: number, altura: number): 
                   class="h-12 rounded-lg border border-slate-300 px-4 font-semibold disabled:opacity-60">Limpar</button>
           <button type="button" (click)="cancelado.emit()" [disabled]="travada()"
                   class="h-12 rounded-lg border border-slate-300 px-4 font-semibold disabled:opacity-60">Cancelar</button>
-          <button type="button" (click)="confirmar()" [disabled]="travada() || vazia()"
+          <button #botaoConfirmar type="button" (click)="confirmar()" [disabled]="travada() || vazia()"
                   [attr.aria-describedby]="vazia() ? id + '-dica-vazia' : null"
                   class="col-span-2 h-12 rounded-lg bg-blue-600 px-4 font-semibold text-white disabled:opacity-60">
             {{ travada() ? 'Gravando…' : 'Confirmar' }}
@@ -133,10 +131,18 @@ export class AssinaturaTela {
   private readonly quadro = viewChild.required<ElementRef<HTMLCanvasElement>>('quadro');
   private readonly campoNome = viewChild.required<ElementRef<HTMLInputElement>>('campoNome');
   private readonly campoPapel = viewChild.required<ElementRef<HTMLInputElement>>('campoPapel');
+  private readonly botaoConfirmar = viewChild.required<ElementRef<HTMLButtonElement>>('botaoConfirmar');
 
   private readonly assinatura = new AssinaturaCanvas({ aoMudar: () => this.vazia.set(this.assinatura.vazio()) });
   /** O tamanho do quadro na última medida: o aviso só olha uma mudança de tamanho (o giro). */
   private medida = { largura: 0, altura: 0 };
+  /**
+   * M1: os pontos que estavam dentro do quadro quando foram desenhados. Com o ponteiro capturado, o dedo que passa da
+   * borda continua gerando pontos que nunca se viram (nem saem no PNG): eles não contam para o aviso do giro.
+   */
+  private vistos: Ponto[] = [];
+  /** Quantos pontos (na ordem dos traços) já foram conferidos para `vistos`. */
+  private conferidos = 0;
 
   protected travada(): boolean {
     return this.ocupado() || this.gerando();
@@ -150,10 +156,17 @@ export class AssinaturaTela {
     const documento = inject(DOCUMENT);
     const anterior = documento.activeElement instanceof HTMLElement ? documento.activeElement : null;
     let observador: ResizeObserver | null = null;
+    const eventos = new AbortController();
+    const injector = inject(Injector);
     afterNextRender(() => {
       const canvas = this.quadro().nativeElement;
       this.assinatura.ligar(canvas);
       this.medida = { largura: canvas.clientWidth, altura: canvas.clientHeight };
+      // depois dos ouvintes do AssinaturaCanvas (o último ponto do traço já entrou): confere o traço no tamanho de agora
+      const aoSoltar = () => this.conferirVistos(canvas.clientWidth || this.medida.largura, canvas.clientHeight || this.medida.altura);
+      for (const tipo of ['pointerup', 'pointercancel', 'lostpointercapture']) {
+        canvas.addEventListener(tipo, aoSoltar, { signal: eventos.signal });
+      }
       // o giro muda o tamanho do quadro (todo navegador alvo tem o ResizeObserver; sem ele, só não há o aviso)
       if (typeof ResizeObserver !== 'undefined') {
         observador = new ResizeObserver(() => this.conferirArea());
@@ -161,7 +174,22 @@ export class AssinaturaTela {
       }
       this.painel().nativeElement.focus();
     });
+    // M2: Confirmar (ou outro controle) se desabilita com o foco nele enquanto grava; no fim, o foco volta ao Confirmar
+    let estavaTravada = false;
+    effect(() => {
+      const travada = this.travada();
+      if (estavaTravada && !travada) {
+        afterNextRender(() => {
+          const painel = this.painel().nativeElement;
+          const ativo = documento.activeElement;
+          const botao = this.botaoConfirmar().nativeElement;
+          if ((ativo === painel || ativo === documento.body) && !botao.disabled) botao.focus();
+        }, { injector });
+      }
+      estavaTravada = travada;
+    });
     inject(DestroyRef).onDestroy(() => {
+      eventos.abort();
       observador?.disconnect();
       this.assinatura.desligar();
       const alvo = this.gatilho() ?? anterior;
@@ -182,6 +210,8 @@ export class AssinaturaTela {
   protected limpar(): void {
     if (this.travada()) return;
     this.assinatura.limpar();
+    this.vistos = [];
+    this.conferidos = 0;
     this.foraDaArea.set(false);
     this.erroPng.set(null);
   }
@@ -196,6 +226,8 @@ export class AssinaturaTela {
       (erroNome ? this.campoNome() : this.campoPapel()).nativeElement.focus();
       return;
     }
+    // M2: o Confirmar se desabilita a seguir; o foco fica no painel, dentro do diálogo
+    this.painel().nativeElement.focus();
     this.gerando.set(true);
     this.erroPng.set(null);
     try {
@@ -223,7 +255,12 @@ export class AssinaturaTela {
     if (e.key !== 'Tab') return;
     const painel = this.painel().nativeElement;
     const focaveis = [...painel.querySelectorAll<HTMLElement>(FOCAVEIS)];
-    if (focaveis.length === 0) return;
+    if (focaveis.length === 0) {
+      // tudo desabilitado (gravando): o foco fica no painel, sem escapar do diálogo
+      e.preventDefault();
+      painel.focus();
+      return;
+    }
     const primeiro = focaveis[0];
     const ultimo = focaveis[focaveis.length - 1];
     const ativo = painel.ownerDocument.activeElement;
@@ -244,8 +281,19 @@ export class AssinaturaTela {
     // escondido ou fechando: não é um giro
     if (largura <= 0 || altura <= 0) return;
     if (largura === this.medida.largura && altura === this.medida.altura) return;
+    // o traço em andamento foi desenhado no tamanho anterior
+    this.conferirVistos(this.medida.largura, this.medida.altura);
     this.medida = { largura, altura };
-    this.foraDaArea.set(foraDaArea(this.assinatura.tracos, largura, altura));
+    this.foraDaArea.set(this.vistos.some((p) => !dentro(p, largura, altura)));
+  }
+
+  /** Guarda em `vistos` os pontos novos (desde a última conferência) que estão dentro do quadro de `largura` × `altura`. */
+  private conferirVistos(largura: number, altura: number): void {
+    const pontos = this.assinatura.tracos.flat();
+    for (let i = this.conferidos; i < pontos.length; i++) {
+      if (dentro(pontos[i], largura, altura)) this.vistos.push(pontos[i]);
+    }
+    this.conferidos = pontos.length;
   }
 
   private validarNome(valor: string): string | null {

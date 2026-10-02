@@ -252,10 +252,14 @@ describe('OsExecucaoPage', () => {
       const endereco = 'Av. Paulista, 1000 - cj 12 - Bela Vista - São Paulo/SP - CEP 01310-100';
       expect(texto(el)).toContain(endereco);
       const mapa = el.querySelector<HTMLAnchorElement>('[data-testid=mapa]')!;
-      expect(mapa.getAttribute('href')).toBe(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(endereco)}`);
+      // o mapa procura sem o complemento
+      const busca = 'Av. Paulista, 1000 - Bela Vista - São Paulo/SP - CEP 01310-100';
+      expect(mapa.getAttribute('href')).toBe(`https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(busca)}`);
       expect(mapa.target).toBe('_blank');
       expect(mapa.rel).toContain('noopener');
-      expect(mapa.getAttribute('aria-label')).toContain('nova aba');
+      // o nome acessível contém o rótulo visível (WCAG 2.5.3)
+      expect(mapa.textContent!.trim()).toBe('Abrir no mapa');
+      expect(mapa.getAttribute('aria-label')).toBe('Abrir no mapa (nova aba)');
       expect(el.querySelector('[data-testid=descricao]')!.textContent).toContain('Instalar o quadro');
       const itens = [...el.querySelectorAll('[data-testid=itens] li')].map((l) =>
         ['[data-codigo]', '[data-nome]', '[data-quantidade]'].map((s) => l.querySelector(s)!.textContent!.trim()));
@@ -324,7 +328,8 @@ describe('OsExecucaoPage', () => {
       ['técnico atribuído', 'CONCLUIDA', TECNICO, { ...nada, nota: true, foto: true }],
       ['ADMIN', 'CONCLUIDA', ADMIN, { ...nada, nota: true }],
       ['COMERCIAL (só lê)', 'CONCLUIDA', COMERCIAL, nada],
-      ['técnico atribuído', 'CANCELADA', TECNICO, nada],
+      // M2P3-R9: também na cancelada (a evidência do trabalho feito offline)
+      ['técnico atribuído', 'CANCELADA', TECNICO, { ...nada, nota: true, foto: true }],
       ['ADMIN', 'CANCELADA', ADMIN, nada],
       ['COMERCIAL (só lê)', 'CANCELADA', COMERCIAL, nada],
     ];
@@ -332,6 +337,18 @@ describe('OsExecucaoPage', () => {
     it.each(casos)('%s em %s', async (_quem, status, usuario, esperado) => {
       const { el } = await montar({ usuario, os: osLocal(status) });
       expect(controles(el)).toEqual(esperado);
+    });
+
+    it('M2P3-R9: o técnico atribuído acrescenta nota e foto na OS cancelada', async () => {
+      const { fixture, el, repo } = await montar({ os: osLocal('CANCELADA', { motivoCancelamento: 'Cliente desistiu' }) });
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!, 'Material deixado no local');
+      botao(el, 'Adicionar')!.click();
+      await vi.waitFor(() => expect(repo.adicionarNota).toHaveBeenCalledWith('o1', 'Material deixado no local'));
+      const arquivo = foto();
+      escolherFoto(fixture, el, arquivo);
+      await vi.waitFor(() => expect(repo.adicionarFoto).toHaveBeenCalledWith('o1', arquivo, { legenda: null, momento: null }));
+      expect(controles(el).concluir).toBe(false);
+      expect(controles(el).iniciar).toBe(false);
     });
 
     it('CANCELADA: só leitura, com o motivo', async () => {
@@ -535,7 +552,7 @@ describe('OsExecucaoPage', () => {
       [new ErroOs('SEM_ESPACO', 'foto', 'Pouco espaço no aparelho para mais fotos.'), 'Pouco espaço no aparelho para mais fotos.'],
       [new ErroOs('FOTO_ILEGIVEL', 'foto', 'Não foi possível abrir a foto. Escolha outra imagem.'), 'Não foi possível abrir a foto.'],
       [new ErroOs('LIMITE_FOTOS', 'foto', 'Esta OS já tem o máximo de 20 fotos.'), 'Esta OS já tem o máximo de 20 fotos.'],
-      [new Error('QuotaExceededError interno'), 'Não foi possível concluir. Tente de novo.'],
+      [new Error('QuotaExceededError interno'), 'Não foi possível gravar a foto. Tente de novo.'],
     ])('erro %#: mensagem clara no lugar da foto (alerta), sem toast técnico', async (erro, mensagem) => {
       const { fixture, el, repo } = await montar();
       repo.adicionarFoto.mockRejectedValue(erro);
@@ -544,6 +561,21 @@ describe('OsExecucaoPage', () => {
       expect(el.querySelector('[data-testid=erro-foto]')!.getAttribute('role')).toBe('alert');
       expect(texto(el)).not.toContain('QuotaExceededError');
       expect(botao(el, 'Tirar foto')!.disabled).toBe(false);
+    });
+
+    it('M2: enquanto grava, o foco sai do botão desabilitado para o título da seção e volta a ele no fim', async () => {
+      const { fixture, el, repo } = await montar();
+      let terminar!: (id: string) => void;
+      repo.adicionarFoto.mockImplementation(() => new Promise<string>((r) => (terminar = r)));
+      const tirar = botao(el, 'Tirar foto')!;
+      tirar.focus();
+      escolherFoto(fixture, el, foto());
+      fixture.detectChanges();
+      expect(tirar.disabled).toBe(true);
+      expect(document.activeElement).toBe(el.querySelector('#fotos-titulo'));
+      terminar('f1');
+      await ate(fixture, () => expect(document.activeElement).toBe(tirar));
+      expect(tirar.disabled).toBe(false);
     });
 
     it('com 20 fotos: "Tirar foto" desabilitado, com o aviso do limite', async () => {
@@ -831,6 +863,41 @@ describe('OsExecucaoPage', () => {
       expect(share).toHaveBeenCalledTimes(2);
     });
 
+    it('depois de concluir, o foco vai ao título; com o painel "PDF pronto", ao painel', async () => {
+      let { fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] });
+      digitar(fixture, resumo(el), 'Feito.');
+      botao(el, 'Concluir e gerar PDF')!.click();
+      await vi.waitFor(() => expect(repo.concluir).toHaveBeenCalled());
+      repo.os$.next(osLocal('CONCLUIDA', { resumoExecucao: 'Feito.' }));
+      await ate(fixture, () => expect(document.activeElement).toBe(el.querySelector('h1')));
+      TestBed.resetTestingModule();
+      comShare('NotAllowedError');
+      ({ fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] }));
+      digitar(fixture, resumo(el), 'Feito.');
+      botao(el, 'Concluir e gerar PDF')!.click();
+      await ate(fixture, () => expect(el.querySelector('app-pdf-pronto')).not.toBeNull());
+      await ate(fixture, () => expect(document.activeElement).toBe(el.querySelector('app-pdf-pronto [role=dialog]')));
+    });
+
+    it('a recusa do concluir devolve o foco ao botão (ele se desabilitou com o foco nele)', async () => {
+      const { fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] });
+      let recusar!: (e: unknown) => void;
+      repo.concluir.mockImplementation(() => new Promise((_, rej) => (recusar = rej)));
+      digitar(fixture, resumo(el), 'Feito.');
+      const concluir = botao(el, 'Concluir e gerar PDF')!;
+      concluir.focus();
+      concluir.click();
+      await ate(fixture, () => expect(botao(el, 'Gerando PDF…')!.disabled).toBe(true));
+      // o navegador tira o foco do botão que se desabilita (o jsdom não, nem deixa o blur nele): simulado com um
+      // elemento focado que sai da página
+      const temporario = document.body.appendChild(document.createElement('button'));
+      temporario.focus();
+      temporario.remove();
+      expect(document.activeElement).toBe(document.body);
+      recusar(new ErroOs('OS_ALTERADA', 'os', 'A OS mudou enquanto o PDF era gerado. Conclua de novo.'));
+      await ate(fixture, () => expect(document.activeElement).toBe(botao(el, 'Concluir e gerar PDF')));
+    });
+
     it('durante a geração: o botão diz "Gerando PDF…", fica desabilitado e o anúncio avisa', async () => {
       const { fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] });
       let terminar!: (r: { blob: Blob; codigoExibido: string }) => void;
@@ -859,6 +926,112 @@ describe('OsExecucaoPage', () => {
     it('o resumo de uma OS reaberta vem preenchido', async () => {
       const { el } = await montar({ os: osLocal('EM_ANDAMENTO', { revisao: 2, resumoExecucao: 'Primeira visita' }) });
       expect(resumo(el).value).toBe('Primeira visita');
+    });
+  });
+
+  // ------------------------------------------------------------------ I1: concluir e as escritas de campo
+
+  describe('I1: o concluir espera a foto, a nota e a assinatura em gravação', () => {
+    const resumo = (el: HTMLElement) => el.querySelector<HTMLTextAreaElement>('textarea[name=resumo]')!;
+
+    it('com uma foto gravando, "Concluir" fica desabilitado (com o aviso) e o toque não conclui; depois, conclui com ela', async () => {
+      comShare();
+      const { fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] });
+      let terminar!: (id: string) => void;
+      repo.adicionarFoto.mockImplementation(() => new Promise<string>((r) => (terminar = r)));
+      digitar(fixture, resumo(el), 'Quadro instalado.');
+      escolherFoto(fixture, el, foto());
+      await vi.waitFor(() => expect(repo.adicionarFoto).toHaveBeenCalledTimes(1));
+      fixture.detectChanges();
+      const concluir = botao(el, 'Concluir e gerar PDF')!;
+      expect(concluir.disabled).toBe(true);
+      expect(el.querySelector(`#${concluir.getAttribute('aria-describedby')}`)!.textContent).toContain('a foto ainda está sendo gravada');
+      // mesmo que o clique chegue (o botão desabilitado não o recebe; a guarda vale para qualquer caminho)
+      concluir.disabled = false;
+      concluir.click();
+      await fixture.whenStable();
+      expect(repo.concluir).not.toHaveBeenCalled();
+      // a foto gravou: a ordem é foto, depois concluir
+      terminar('f1');
+      repo.anexos$.next([assinaturaPendente(), anexo('f1', { enviado: false })]);
+      await ate(fixture, () => expect(botao(el, 'Concluir e gerar PDF')!.disabled).toBe(false));
+      botao(el, 'Concluir e gerar PDF')!.click();
+      await vi.waitFor(() => expect(repo.concluir).toHaveBeenCalledTimes(1));
+      expect(repo.adicionarFoto.mock.invocationCallOrder[0]).toBeLessThan(repo.concluir.mock.invocationCallOrder[0]);
+    });
+
+    it('com uma nota gravando, "Concluir" também espera', async () => {
+      const { fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] });
+      repo.adicionarNota.mockImplementation(() => new Promise<string>(() => undefined));
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!, 'Troquei o disjuntor');
+      botao(el, 'Adicionar')!.click();
+      fixture.detectChanges();
+      const concluir = botao(el, 'Concluir e gerar PDF')!;
+      expect(concluir.disabled).toBe(true);
+      expect(el.querySelector(`#${concluir.getAttribute('aria-describedby')}`)!.textContent).toContain('a nota ainda está sendo gravada');
+    });
+
+    it('durante a geração do PDF: "Tirar foto" desabilitado (com o aviso) e a foto que chegar não é gravada, com a mensagem', async () => {
+      const { fixture, el, repo } = await montar({ anexos: [assinaturaPendente()] });
+      let terminar!: (r: { blob: Blob; codigoExibido: string }) => void;
+      repo.concluir.mockImplementation(() => new Promise((r) => (terminar = r)));
+      digitar(fixture, resumo(el), 'Feito.');
+      botao(el, 'Concluir e gerar PDF')!.click();
+      await ate(fixture, () => expect(botao(el, 'Gerando PDF…')).toBeTruthy());
+      const tirar = botao(el, 'Tirar foto')!;
+      expect(tirar.disabled).toBe(true);
+      expect(el.querySelector(`#${tirar.getAttribute('aria-describedby')}`)!.textContent).toContain('Aguarde a conclusão');
+      const input = el.querySelector<HTMLInputElement>('input[type=file]')!;
+      const clique = vi.spyOn(input, 'click').mockImplementation(() => undefined);
+      tirar.disabled = false;
+      tirar.click();
+      expect(clique).not.toHaveBeenCalled();
+      escolherFoto(fixture, el, foto());
+      expect(repo.adicionarFoto).not.toHaveBeenCalled();
+      expect(el.querySelector('[data-testid=erro-foto]')!.textContent).toContain('não foi gravada');
+      terminar({ blob: new Blob(['x']), codigoExibido: 'OS-000123' });
+      await fixture.whenStable();
+    });
+
+    it('a recusa da foto que chega com a OS já em outro status continua visível (ADMIN: sem o bloco de captura)', async () => {
+      const { fixture, el, repo } = await montar({ usuario: ADMIN });
+      let recusar!: (e: unknown) => void;
+      repo.adicionarFoto.mockImplementation(() => new Promise<string>((_, rej) => (recusar = rej)));
+      escolherFoto(fixture, el, foto());
+      await vi.waitFor(() => expect(repo.adicionarFoto).toHaveBeenCalledTimes(1));
+      // concluída em outro aparelho (o pull) enquanto a foto gravava: o ADMIN não fotografa a concluída
+      repo.os$.next(osLocal('CONCLUIDA', { resumoExecucao: 'Feito.' }));
+      await ate(fixture, () => expect(botao(el, 'Tirar foto')).toBeUndefined());
+      recusar(new ErroOs('STATUS_INVALIDO', 'os', 'Fotos e assinatura só com a OS em andamento.'));
+      await ate(fixture, () => expect(el.querySelector('[data-testid=erro-foto]')?.textContent).toContain('Fotos e assinatura só com a OS em andamento.'));
+      expect(el.querySelector('[data-testid=erro-foto]')!.getAttribute('role')).toBe('alert');
+    });
+  });
+
+  // ------------------------------------------------------------------ M4: troca de OS
+
+  describe('M4: outra OS na mesma página', () => {
+    it('os campos, erros, diálogos e o painel do PDF da OS anterior não passam para a nova', async () => {
+      const { fixture, el } = await montar();
+      digitar(fixture, el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!, 'Rascunho de nota');
+      digitar(fixture, el.querySelector<HTMLInputElement>('input[name=legenda]')!, 'Legenda');
+      botao(el, 'Antes')!.click();
+      el.querySelector<HTMLInputElement>('input[name=precisaVoltar]')!.click();
+      botao(el, 'Concluir e gerar PDF')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('[data-testid=erro-resumo]')).not.toBeNull();
+      botao(el, 'Colher assinatura')!.click();
+      fixture.detectChanges();
+      expect(el.querySelector('app-assinatura-tela')).not.toBeNull();
+      fixture.componentRef.setInput('id', 'o2');
+      await ate(fixture, () => expect(el.querySelector('[data-testid=carregando]')).toBeNull());
+      expect(el.querySelector('app-assinatura-tela')).toBeNull();
+      expect(el.querySelector<HTMLTextAreaElement>('textarea[name=nota]')!.value).toBe('');
+      expect(el.querySelector<HTMLInputElement>('input[name=legenda]')!.value).toBe('');
+      expect(botao(el, 'Antes')!.getAttribute('aria-pressed')).toBe('false');
+      expect(el.querySelector<HTMLInputElement>('input[name=precisaVoltar]')!.checked).toBe(false);
+      expect(el.querySelector('[data-testid=erro-resumo]')).toBeNull();
+      expect(el.querySelector('[data-testid=erro-assinatura-os]')).toBeNull();
     });
   });
 
@@ -936,6 +1109,46 @@ describe('OsExecucaoPage', () => {
       const b = botao(el, 'Gerar PDF novamente')!;
       expect(b.disabled).toBe(true);
       expect(el.querySelector(`#${b.getAttribute('aria-describedby')}`)!.textContent).toContain('Resolva a pendência primeiro.');
+    });
+
+    it('M3: depois do "Gerar PDF novamente", o foco vai ao título', async () => {
+      const { fixture, el } = await montar({ os: concluida(), anexos: [] });
+      botao(el, 'Gerar PDF novamente')!.click();
+      await ate(fixture, () => expect(document.activeElement).toBe(el.querySelector('h1')));
+    });
+
+    it('"Gerar PDF novamente" sem gesto (precisa-toque): o painel "PDF pronto" com o foco', async () => {
+      comShare('NotAllowedError');
+      const { fixture, el } = await montar({ os: concluida(), anexos: [] });
+      botao(el, 'Gerar PDF novamente')!.click();
+      await ate(fixture, () => expect(el.querySelector('app-pdf-pronto')).not.toBeNull());
+      expect(el.querySelector('app-pdf-pronto')!.textContent).toContain('OS-000123.pdf');
+      await ate(fixture, () => expect(document.activeElement).toBe(el.querySelector('app-pdf-pronto [role=dialog]')));
+    });
+
+    it('"Compartilhar" do PDF sem gesto (precisa-toque): o painel "PDF pronto"', async () => {
+      comShare('NotAllowedError');
+      const { fixture, el } = await montar({ os: concluida(), anexos: [documentoPdf()] });
+      el.querySelector<HTMLButtonElement>('[aria-label="Compartilhar OS-000123"]')!.click();
+      await ate(fixture, () => expect(el.querySelector('app-pdf-pronto')).not.toBeNull());
+      expect(el.querySelector('app-pdf-pronto')!.textContent).toContain('OS-000123.pdf');
+    });
+
+    it('no celular, "Abrir" abre a aba dentro do toque, antes de ler os bytes', async () => {
+      const largura = window.innerWidth;
+      Object.defineProperty(window, 'innerWidth', { configurable: true, value: 390 });
+      try {
+        const janela = { opener: {}, document: { title: '', body: { textContent: '' } }, location: { href: '' }, close: vi.fn() };
+        const abrir = vi.spyOn(window, 'open').mockReturnValue(janela as unknown as Window);
+        const { el, repo } = await montar({ os: concluida(), anexos: [documentoPdf()] });
+        el.querySelector<HTMLButtonElement>('[aria-label="Abrir OS-000123"]')!.click();
+        // síncrono: ainda no gesto, sem nenhum await antes
+        expect(abrir).toHaveBeenCalledTimes(1);
+        expect(abrir.mock.invocationCallOrder[0]).toBeLessThan(repo.blobDoAnexo.mock.invocationCallOrder[0]);
+        await vi.waitFor(() => expect(janela.location.href).toMatch(/^blob:/));
+      } finally {
+        Object.defineProperty(window, 'innerWidth', { configurable: true, value: largura });
+      }
     });
 
     it('a recusa da assinatura aparece no lugar dela', async () => {

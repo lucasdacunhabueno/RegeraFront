@@ -325,6 +325,73 @@ describe('AssinaturaTela', () => {
     expect(el.querySelector('[data-testid=fora-da-area]')).toBeNull();
   });
 
+  it('M1: o ponto de quando o dedo passou da borda (ponteiro capturado) nunca se viu e não dispara o aviso', async () => {
+    comObservador();
+    const { fixture, el } = await montar();
+    const c = canvas(el);
+    const tamanho = { largura: 600, altura: 300 };
+    Object.defineProperty(c, 'clientWidth', { configurable: true, get: () => tamanho.largura });
+    Object.defineProperty(c, 'clientHeight', { configurable: true, get: () => tamanho.altura });
+    // o traço sai pela direita do quadro (x 650 num quadro de 600)
+    assinar(fixture, el, [[100, 50], [500, 80], [650, 120]]);
+    // a altura muda e a largura fica: tudo o que se via continua dentro
+    tamanho.altura = 400;
+    girar();
+    fixture.detectChanges();
+    expect(el.querySelector('[data-testid=fora-da-area]')).toBeNull();
+    // estreitou: o ponto visível em x 500 sai
+    tamanho.largura = 360;
+    girar();
+    fixture.detectChanges();
+    expect(el.querySelector('[data-testid=fora-da-area]')).not.toBeNull();
+  });
+
+  it('M1: o traço em andamento durante o giro conta no tamanho de antes', async () => {
+    comObservador();
+    const { fixture, el } = await montar();
+    const c = canvas(el);
+    const tamanho = { largura: 600, altura: 300 };
+    Object.defineProperty(c, 'clientWidth', { configurable: true, get: () => tamanho.largura });
+    Object.defineProperty(c, 'clientHeight', { configurable: true, get: () => tamanho.altura });
+    girar(); // a primeira medida com o tamanho de verdade
+    ponteiro(c, 'pointerdown', 100, 50);
+    ponteiro(c, 'pointermove', 500, 80);
+    tamanho.largura = 360;
+    girar();
+    fixture.detectChanges();
+    expect(el.querySelector('[data-testid=fora-da-area]')).not.toBeNull();
+  });
+
+  it('M2: enquanto gera o PNG, o foco fica no painel (o Confirmar se desabilita) e volta ao Confirmar no fim', async () => {
+    const { fixture, el, host } = await montar();
+    let terminar!: (v: typeof PNG) => void;
+    vi.spyOn(AssinaturaCanvas.prototype, 'paraPng').mockImplementation(() => new Promise((r) => (terminar = r)));
+    assinar(fixture, el);
+    digitar(fixture, el.querySelector<HTMLInputElement>('input[name=nome]')!, 'Maria');
+    const confirmar = botao(el, 'Confirmar');
+    confirmar.focus();
+    confirmar.click();
+    fixture.detectChanges();
+    const dialogo = el.querySelector<HTMLElement>('[role=dialog]')!;
+    expect(document.activeElement).toBe(dialogo);
+    // tudo desabilitado: o Tab não sai do diálogo
+    const tab = new KeyboardEvent('keydown', { key: 'Tab', bubbles: true, cancelable: true });
+    dialogo.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(true);
+    expect(document.activeElement).toBe(dialogo);
+    terminar(PNG);
+    await vi.waitFor(() => expect(host.recebidas).toHaveLength(1));
+    await vi.waitFor(() => {
+      fixture.detectChanges();
+      expect(document.activeElement).toBe(botao(el, 'Confirmar'));
+    });
+  });
+
+  it('o quadro é uma imagem com rótulo', async () => {
+    const { el } = await montar();
+    expect(canvas(el).getAttribute('role')).toBe('img');
+  });
+
   it('girar sem traço não avisa', async () => {
     comObservador();
     const { fixture, el } = await montar();
