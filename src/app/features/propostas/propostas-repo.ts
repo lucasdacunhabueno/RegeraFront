@@ -21,6 +21,7 @@ import type { TemplateLocal, TipoProposta } from '../templates/template-models';
 import { TemplatesRepo } from '../templates/templates-repo';
 import { calcular, deCentesimos, deMilesimos, paraCentavos } from './calculo';
 import { gerarCodigoProvisorio } from './codigo-provisorio';
+import { MENSAGEM_PROPOSTA_SIGEM } from './formatos-proposta';
 import {
   codigoBase,
   codigoExibido,
@@ -307,9 +308,6 @@ export function linhaDoCatalogo(tipo: TipoProposta, quantasLinhas: number, itemC
 }
 
 const CODIGO_INVALIDO = 'CODIGO_EXIBIDO_INVALIDO';
-
-/** O texto do `PROPOSTA_SIGEM` do servidor (SO-R6). */
-const SIGEM_SEM_PDF = 'Proposta importada do SIGEM não tem PDF.';
 
 /** Por que "Gerar PDF novamente" vale (P4b-R13), ou null. */
 export type MotivoRegerar = 'CODIGO_EXIBIDO_INVALIDO' | 'SEM_DOCUMENTO';
@@ -1052,7 +1050,7 @@ export class PropostasRepo {
    * pendências dela.
    */
   private async exigirMotivoParaRegerar(p: PropostaLocal): Promise<Pendencia[]> {
-    if (importadaDoSigem(p)) throw new ErroProposta('PROPOSTA_SIGEM', 'proposta', SIGEM_SEM_PDF);
+    if (importadaDoSigem(p)) throw new ErroProposta('PROPOSTA_SIGEM', 'proposta', MENSAGEM_PROPOSTA_SIGEM);
     const pendencias = await this.pendenciasDa(p.id);
     exigirSemConflito(pendencias, 'regerar');
     const locais = await this.db.documentos.where('propostaId').equals(p.id).toArray();
